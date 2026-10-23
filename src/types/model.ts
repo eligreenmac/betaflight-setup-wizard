@@ -105,7 +105,7 @@ export interface DroneModel {
     propsOut: boolean;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
-  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null };
+  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
 }
 
 // ---- config engine

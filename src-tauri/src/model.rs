@@ -377,7 +377,9 @@ pub struct SwitchAssignment {
 pub struct Extras {
     pub beeper: Option<bool>,
     pub led_strip: Option<bool>,
-    /// Name shown in OSD / Configurator
+    /// Name shown in OSD / Configurator (`set craft_name = ...`, all of 4.4 / 4.5 / 2025.12;
+    /// the old `name` command no longer exists). 1-16 printable ASCII characters;
+    /// `""` clears it (written as `-`, the firmware's empty value); null = keep.
     pub craft_name: Option<String>,
 }
 

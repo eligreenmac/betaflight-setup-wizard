@@ -113,7 +113,8 @@
       "properties": {
         "beeper": { "type": ["boolean", "null"] },
         "ledStrip": { "type": ["boolean", "null"] },
-        "craftName": { "type": ["string", "null"], "maxLength": 16 }
+        "craftName": { "type": ["string", "null"], "maxLength": 16, "pattern": "^([ -~]{1,16})?$",
+                       "description": "set craft_name: 1-16 printable ASCII; an empty string clears it (written as -); null = keep" }
       }
     }
   },
