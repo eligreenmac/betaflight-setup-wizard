@@ -67,7 +67,9 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
  * and connect again. CONNECT_REBOOT_NOT_CONFIRMED = device_connect answered
  * PENDING_UNSAVED_CHANGES (its reboot of a board left with unsaved changes was not
  * confirmed), try connecting again. A reconnect or replug never clears the flag (it lives
- * in the app; a battery-powered FC keeps its RAM). UNKNOWN is the catch-all.
+ * in the app; a battery-powered FC keeps its RAM). OSD_HD_UNSUPPORTED = config_plan's CONFIG
+ * error for an HD OSD on firmware without MSP DisplayPort (Review step maps it; wizard/osd.ts
+ * isHdOsdPlanError), go back to the OSD settings. UNKNOWN is the catch-all.
  */
 export const UI_ERROR_CODES = [
   "NOT_IMPLEMENTED",
@@ -76,6 +78,7 @@ export const UI_ERROR_CODES = [
   "REBOOT_NOT_CONFIRMED",
   "REBOOT_BOARD_LOST",
   "CONNECT_REBOOT_NOT_CONFIRMED",
+  "OSD_HD_UNSUPPORTED",
   "UNKNOWN",
 ] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];

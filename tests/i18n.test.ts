@@ -9,6 +9,7 @@ import { isRtl } from "../src/i18n";
 import en from "../src/i18n/locales/en.json";
 import he from "../src/i18n/locales/he.json";
 import { ALL_STEPS } from "../src/wizard/engine";
+import { OSD_ELEMENTS, OSD_GROUPS } from "../src/wizard/osd";
 import { UPDATE_STAGES } from "../src/wizard/flash";
 import { PORT_ROLES } from "../src/wizard/ports";
 import { SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "../src/wizard/receiver";
@@ -111,6 +112,11 @@ describe("i18n", () => {
       ...["SERIAL", "SPI", "NONE"].flatMap((k) => [`components.rxKind.${k}`, `components.rxKindHint.${k}`]),
       ...["DIGITAL", "ANALOG", "NONE"].flatMap((k) => [`components.vtxKind.${k}`, `components.vtxKindHint.${k}`]),
       ...["done", "active", "failed"].map((s) => `stageState.${s}`),
+      ...OSD_ELEMENTS.flatMap((e) => [`osd.items.${e.name}.label`, `osd.items.${e.name}.hint`]),
+      ...OSD_GROUPS.map((g) => `osd.groups.${g}`),
+      ...["AUTO", "PAL", "NTSC", "HD"].flatMap((s) => [`osd.system.${s}`, `osd.system.${s}Hint`]),
+      ...["AUTO", "HD"].map((s) => `osd.system.detected.${s}`),
+      ...["analogGroup", "digitalGroup", "hdUnsupported", "hdBlocked", "analogOnDigital"].map((k) => `osd.system.${k}`),
       // Switches / Calibration / Beepers
       ...["always", "switch", "off", "keep"].flatMap((k) => [`switches.airmode.${k}`, `switches.airmode.${k}Hint`]),
       ...["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc", "calibration.warnAltholdNoBaro"],

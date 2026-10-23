@@ -8,6 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
+import { effectiveSystem, hdSupport } from "./osd";
 import { ACC_MODES, BARO_MODES, MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, NEEDS_DSHOT, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { catalogState } from "../api/catalog";
 import { validAlignment } from "./orientation";
@@ -225,6 +226,7 @@ export const guards: Record<string, StepGuard> = {
     canEnter: configured,
     validate: (s) => (s.ui.beeperMode === null ? [{ key: "validation.beepersChoose" }] : []),
   },
+  osd: { canEnter: configured, validate: validateOsd },
   review: {
     canEnter: configured,
     validate: (s) => (s.ui.script ? [] : [{ key: s.ui.planUnavailable ? "validation.planUnavailable" : "validation.notGenerated" }]),
@@ -254,4 +256,20 @@ export function canGoTo(targetId: string, currentId: string, s: WizardState, ste
   if (target <= current) return true;
   for (let i = 0; i < target; i++) if (!canLeave(steps[i]!.id, s)) return false;
   return guardFor(targetId).canEnter(s);
+}
+
+/**
+ * OSD: the video system must be known (and HD needs firmware with an HD OSD), and
+ * "set up" needs the layout loaded. A digital VTX with an analog OSD is only a warning
+ * (shown on the step).
+ */
+export function validateOsd(s: WizardState): Issue[] {
+  const system = effectiveSystem(s.model, s.osd, s.fc);
+  // "Keep the board's OSD" needs no video system (nothing OSD-related is sent).
+  if (s.osd.mode === "keep") return [];
+  if (!system) return [{ key: "validation.osdSystem" }];
+  if (system === "HD" && hdSupport(s.fc, s.osd) === false) return [{ key: "validation.osdHdUnsupported" }];
+  if (s.osd.mode === null) return [{ key: "validation.osdChoose" }];
+  if (s.osd.mode === "choose" && !s.osd.layout) return [{ key: "validation.osdLayout" }];
+  return [];
 }
