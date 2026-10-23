@@ -251,7 +251,13 @@ fn restore_golden_plans_per_line_pair() {
             if update {
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
                 std::fs::write(&path, &text).unwrap();
-            } else if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            } else if std::fs::read_to_string(&path)
+                .ok()
+                .map(|w| w.replace("\r\n", "\n"))
+                .as_deref()
+                != Some(text.as_str())
+            {
+                // (a Windows checkout may have CRLF line endings)
                 failures.push(path.display().to_string());
             }
         }
@@ -606,7 +612,12 @@ fn unknown_uid_matches_by_board_name_only() {
 
 #[test]
 fn refuses_a_plain_diff_and_unreadable_backups() {
-    let plain = backup_text(Dialect::V4_5).replace("defaults nosave\n", "");
+    // Line by line: a Windows checkout of the fixture has CRLF line endings.
+    let plain: String = backup_text(Dialect::V4_5)
+        .lines()
+        .filter(|l| l.trim_end() != "defaults nosave")
+        .map(|l| format!("{l}\n"))
+        .collect();
     let run = run_with(
         "o",
         &plain,
