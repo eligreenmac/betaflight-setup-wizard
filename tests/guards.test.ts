@@ -17,6 +17,7 @@ const fc = (firmwareVersion = "4.5.1"): FcInfo => ({
   mcu: "STM32F405",
   uid: null,
   buildOptions: [],
+  hdOsdSupported: null,
   serialPorts: [],
   rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] },
 });

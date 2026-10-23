@@ -403,6 +403,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       rxSpi: device.probed
         ? { present: elrs, expresslrsPins: elrs, protocol: elrs ? "EXPRESSLRS" : null, featureEnabled: elrs, resources: elrs ? ["RX_SPI_CS", "RX_SPI_EXTI", "RX_SPI_BIND", "RX_SPI_LED"] : [] }
         : { present: null, expresslrsPins: elrs, protocol: null, featureEnabled: null, resources: [] },
+      hdOsdSupported: null,
     };
   }
 

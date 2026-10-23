@@ -83,7 +83,7 @@ describe("device contract (#38) against the scenario mock", () => {
 
 describe("firmware update orchestration", () => {
   const poll = { tries: 3, intervalMs: 0 };
-  const fc = { fcVariant: "BTFL", firmwareVersion: "4.5.1", apiVersion: "1.46", boardName: "SPEEDYBEEF405V4", manufacturerId: null, mcu: null, uid: null, buildOptions: [], serialPorts: [], rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] } };
+  const fc = { fcVariant: "BTFL", firmwareVersion: "4.5.1", apiVersion: "1.46", boardName: "SPEEDYBEEF405V4", manufacturerId: null, mcu: null, uid: null, buildOptions: [], hdOsdSupported: null, serialPorts: [], rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] } };
 
   it("runs fetch, backup, bootloader, flash, reconnect and ends on the new version", async () => {
     const { runFirmwareUpdate } = await import("../src/wizard/flash");

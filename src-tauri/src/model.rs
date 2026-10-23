@@ -57,8 +57,15 @@ pub struct FcInfo {
     /// (u32 little-endian) as `%08x%08x%08x` in order U_ID_0, U_ID_1, U_ID_2 — always 24
     /// lowercase hex chars. Used as the backup folder name. `None` only if MSP_UID fails.
     pub uid: Option<String>,
-    /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
+    /// Build options compiled in, as Build API defines (e.g. "USE_OSD_HD"), decoded from the
+    /// MSP_BUILD_INFO option ids (API 1.46+, i.e. 4.5+). Ids with no known name are dropped.
+    /// Empty on 4.4 (MSP_BUILD_INFO carries no options) or when unknown.
     pub build_options: Vec<String>,
+    /// Whether this firmware build can drive an HD (MSP DisplayPort, 53x20 canvas) OSD, i.e.
+    /// was built with `USE_OSD_HD`. `true`/`false` only on firm evidence (§4.1 "HD OSD
+    /// support"); `null` when it cannot be determined (typically 4.4 with an OSD build).
+    #[serde(default)]
+    pub hd_osd_supported: Option<bool>,
     /// Serial ports exactly as the board reports them (MSP2_COMMON_SERIAL_CONFIG, falling
     /// back to MSP_CF_SERIAL_CONFIG). `identifier` is the raw firmware value (4.4/4.5:
     /// UART1=0; 2025.12+: UART1=51). Empty if the firmware answered neither command.

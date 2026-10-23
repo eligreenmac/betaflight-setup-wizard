@@ -23,7 +23,11 @@ export interface FcInfo {
   /** MCU unique id exactly as CLI `mcu_id` prints it: 24 lowercase hex chars
    * (`%08x%08x%08x` of U_ID_0..2). Backup folder name. null only if MSP_UID failed. */
   uid: string | null;
+  /** Build API defines compiled in (e.g. "USE_OSD_HD"), from MSP_BUILD_INFO on 4.5+. Empty on 4.4 / unknown. */
   buildOptions: string[];
+  /** Firmware built with USE_OSD_HD (HD / MSP DisplayPort OSD possible). null = can't tell
+   * (typically 4.4); never guessed true. ARCHITECTURE §4.1 "HD OSD support". */
+  hdOsdSupported: boolean | null;
   /** Serial ports exactly as the board reports them (raw identifiers). Empty if unknown. */
   serialPorts: FcSerialPort[];
   rxSpi: RxSpiInfo;

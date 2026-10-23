@@ -165,7 +165,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
 
 ### 2.2 Other types (see model.rs for fields)
 
-`HostPort`, `HostPortKind`, `FcInfo {…, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
+`HostPort`, `HostPortKind`, `FcInfo {…, buildOptions: string[], hdOsdSupported: boolean|null, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
 `FcSerialPort {name, identifier, functionMask, isConnectionPort}`,
 `RxSpiInfo {present, expresslrsPins, protocol, featureEnabled, resources}`,
 `BoardTarget`, `FirmwareRelease`, `FirmwareRequest`, `FirmwareImage`, `FirmwareFormat`,
@@ -428,6 +428,25 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   `RX_SPI_EXPRESSLRS_RESET` + `_BUSY` assigned, `protocol` = value printed by `get`.
   It leaves the CLI with `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC
   (the manager reconnects) — prefer running it where a reboot is expected anyway.
+- **Build options** (`FcInfo.buildOptions`): `device_identify` reads MSP_BUILD_INFO (5). From
+  API 1.46 (4.5, 2025.12) the reply is `date[11] time[8] gitRev[7]` followed by the compiled-in
+  option ids as u16 LE until the end of the payload (firmware `msp/msp_build_info.c`
+  `sbufWriteBuildInfoFlags`). Ids are mapped to Build API defines (`msp/msp_build_info.h`,
+  e.g. 16416 `USE_OSD_SD`, 16417 `USE_OSD_HD`, 4097 `USE_SERIALRX_CRSF`); unknown ids are
+  dropped. 4.4 (API 1.45) sends only date/time/gitRev → `[]`.
+- **HD OSD support** (`FcInfo.hdOsdSupported`): whether the build has `USE_OSD_HD` (without it
+  the firmware forces `vcd_video_system` HD → AUTO, `io/displayport_msp.c`). First firm answer wins:
+  1. MSP_BUILD_INFO option list (4.5+, non-empty): `true` iff it contains 16417 `USE_OSD_HD`,
+     else `false`.
+  2. MSP_OSD_CANVAS (189) with an empty reply: the build has no `USE_OSD` at all → `false`
+     (any OSD build answers 2 bytes, which says nothing about HD).
+  3. `device_probe_board` also runs `get displayport_msp_col_adjust`; `INVALID NAME` means no
+     MSP DisplayPort (`USE_MSP_DISPLAYPORT` is defined together with `USE_OSD`) → `false`.
+  Otherwise `null` — in practice 4.4 with an OSD build. The setting existing is *not* taken as
+  `true`: `USE_MSP_DISPLAYPORT` (and so `displayport_msp_col_adjust`) is also compiled into
+  SD-only (`USE_OSD_SD` without `USE_OSD_HD`) builds (`target/common_pre.h`). Config's plan
+  rejects HD when `displayport_msp_col_adjust` is missing, which agrees with every `false`
+  above; the UI should hide/disable HD on `false` and allow it with a caution on `null`.
 
 ### 4.2 Motor test safety (device)
 
