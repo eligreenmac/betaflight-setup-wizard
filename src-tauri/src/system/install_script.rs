@@ -74,6 +74,9 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
         s.push_str(l);
         s.push('\n');
     };
+    // Only .NET APIs and language keywords: no module cmdlets (Get-Acl,
+    // Copy-Item, ...), which fail to autoload when PSModulePath is polluted
+    // (e.g. PowerShell 7 paths inherited by Windows PowerShell 5.1).
     line("$ErrorActionPreference = 'Stop'");
     line("$rc = 0");
     line("$d = $null");
@@ -86,11 +89,11 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
         "  if (-not $base) {{ exit {EXIT_NO_PROGRAMDATA} }}"
     ));
     line(&format!(
-        "  $d = Join-Path $base {}",
+        "  $d = [IO.Path]::Combine($base, {})",
         ps_quote(&format!("{DIR_PREFIX}{run_id}"))
     ));
     line(&format!(
-        "  if (Test-Path -LiteralPath $d) {{ $d = $null; exit {EXIT_DIR_EXISTS} }}"
+        "  if ([IO.Directory]::Exists($d) -or [IO.File]::Exists($d)) {{ $d = $null; exit {EXIT_DIR_EXISTS} }}"
     ));
     line("  try {");
     line("    $sd = New-Object System.Security.AccessControl.DirectorySecurity");
@@ -98,30 +101,33 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
         "    $sd.SetSecurityDescriptorSddlForm({})",
         ps_quote(SECURE_DIR_SDDL)
     ));
-    line("    [void][System.IO.Directory]::CreateDirectory($d, $sd)");
+    line("    [void][IO.Directory]::CreateDirectory($d, $sd)");
     line(&format!("  }} catch {{ exit {EXIT_DIR_CREATE} }}"));
-    // Verify instead of trusting: protected DACL, owner + every ACE is SYSTEM or
-    // Administrators, nothing inside yet.
+    // Verify instead of trusting: no reparse point, protected DACL, owner +
+    // every ACE is SYSTEM or Administrators, nothing inside yet.
     line("  $ok = @('S-1-5-18', 'S-1-5-32-544')");
-    line("  $acl = Get-Acl -LiteralPath $d");
     line("  $sid = [System.Security.Principal.SecurityIdentifier]");
+    line(
+        "  $reparse = ([IO.File]::GetAttributes($d) -band [IO.FileAttributes]::ReparsePoint) -ne 0",
+    );
+    line("  $acl = [IO.Directory]::GetAccessControl($d)");
     line("  $owner = $acl.GetOwner($sid).Value");
     line("  $rules = @($acl.GetAccessRules($true, $true, $sid))");
-    line("  $bad = @($rules | Where-Object { $ok -notcontains $_.IdentityReference.Value -or $_.IsInherited })");
-    line("  $reparse = ((Get-Item -LiteralPath $d -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0");
+    line("  $bad = 0");
+    line("  foreach ($r in $rules) { if ($r.IsInherited -or $ok -notcontains $r.IdentityReference.Value) { $bad++ } }");
     line(&format!(
-        "  if ($reparse -or -not $acl.AreAccessRulesProtected -or $ok -notcontains $owner -or $rules.Count -eq 0 -or $bad.Count -ne 0) {{ exit {EXIT_DIR_INSECURE} }}"
+        "  if ($reparse -or -not $acl.AreAccessRulesProtected -or $ok -notcontains $owner -or $rules.Count -eq 0 -or $bad -ne 0) {{ exit {EXIT_DIR_INSECURE} }}"
     ));
     line(&format!(
-        "  if (@(Get-ChildItem -Force -LiteralPath $d).Count -ne 0) {{ exit {EXIT_DIR_NOT_EMPTY} }}"
+        "  if ([IO.Directory]::GetFileSystemEntries($d).Length -ne 0) {{ exit {EXIT_DIR_NOT_EMPTY} }}"
     ));
     line("  $mine = $true");
     line(&format!(
-        "  $exe = Join-Path $d {}",
+        "  $exe = [IO.Path]::Combine($d, {})",
         ps_quote(super::HELPER_EXE)
     ));
     line(&format!(
-        "  try {{ Copy-Item -LiteralPath {} -Destination $exe }} catch {{ exit {EXIT_COPY_HELPER} }}",
+        "  try {{ [IO.File]::Copy({}, $exe, $false) }} catch {{ exit {EXIT_COPY_HELPER} }}",
         ps_quote(helper)
     ));
     for (vid, pid, name) in devices {
@@ -131,7 +137,7 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
             .map(|a| {
                 if a == dest_marker {
                     format!(
-                        "(Join-Path $d {})",
+                        "([IO.Path]::Combine($d, {}))",
                         ps_quote(&format!("{vid:04x}_{pid:04x}"))
                     )
                 } else {
@@ -147,11 +153,13 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
         line("  $ErrorActionPreference = 'Stop'");
         line("  if ($code -ne 0) { $rc = $code; exit $rc }");
     }
+    // Error text goes to stderr (invisible in the hidden elevated window; shown
+    // by the Windows CI test).
     line(&format!(
-        "}} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); $rc = {EXIT_SCRIPT_ERROR}; exit $rc }}"
+        "}} catch {{ [Console]::Error.WriteLine($_.ToString() + [Environment]::NewLine + $_.InvocationInfo.PositionMessage); $rc = {EXIT_SCRIPT_ERROR}; exit $rc }}"
     ));
     line("finally {");
-    line("  if ($mine -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }");
+    line("  if ($mine -and [IO.Directory]::Exists($d)) { try { [IO.Directory]::Delete($d, $true) } catch { } }");
     line("}");
     line("exit $rc");
     s
@@ -213,17 +221,32 @@ mod tests {
         assert!(!s.to_ascii_lowercase().contains("temp"));
         assert!(!s.contains('"'));
         // helper is copied into the protected dir and run from there
-        assert!(s.contains(r"Copy-Item -LiteralPath 'C:\Program Files\BFSW\drivers\bfsw-wdi-simple.exe' -Destination $exe"));
+        assert!(s.contains(
+            r"[IO.File]::Copy('C:\Program Files\BFSW\drivers\bfsw-wdi-simple.exe', $exe, $false)"
+        ));
         assert_eq!(s.matches("& $exe ").count(), 2);
-        assert!(s.contains("(Join-Path $d '0483_df11')"));
-        assert!(s.contains("(Join-Path $d '2e3c_df11')"));
+        assert!(s.contains("([IO.Path]::Combine($d, '0483_df11'))"));
+        assert!(s.contains("([IO.Path]::Combine($d, '2e3c_df11'))"));
         assert!(s.contains("'--vid' '0x0483' '--pid' '0xDF11'"));
         assert!(s.contains("'STM32 DFU (Betaflight Setup Wizard)'"));
         // cleanup always runs
         assert!(s.contains("finally {"));
         assert!(s.contains("if ($mine -and"));
         assert!(s.contains("ReparsePoint"));
-        assert!(s.contains("Remove-Item -LiteralPath $d -Recurse -Force"));
+        assert!(s.contains("[IO.Directory]::Delete($d, $true)"));
+        // no module cmdlets (autoload breaks with a foreign PSModulePath)
+        for c in [
+            "Get-Acl",
+            "Copy-Item",
+            "Remove-Item",
+            "Get-Item",
+            "Get-ChildItem",
+            "Join-Path",
+            "Test-Path",
+            "Out-String",
+        ] {
+            assert!(!s.contains(c), "{c}");
+        }
     }
 
     #[test]
