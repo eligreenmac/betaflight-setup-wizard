@@ -391,3 +391,111 @@ fn vtx_none_clears_vtx_functions() {
         .commands
         .contains(&"serial 3 0 115200 57600 0 115200".to_string()));
 }
+
+#[test]
+fn every_generated_script_passes_the_apply_allowlist() {
+    for (name, dialects) in GOLDEN {
+        let m = model(name);
+        for &d in *dialects {
+            let mut fc = MockFc::load(firmware_dir(d), board_for(name));
+            let script = session::plan(&mut fc, &m).unwrap();
+            super::guard::validate_script(&script.commands)
+                .unwrap_or_else(|e| panic!("{name} {d:?}: {e}"));
+        }
+    }
+}
+
+#[test]
+fn apply_rejects_persist_reboot_wipe_lines_before_sending_anything() {
+    for bad in [
+        "save",
+        "save noreboot",
+        "SAVE",
+        "defaults",
+        "defaults nosave",
+        "reboot",
+        "exit",
+        "bl",
+        "dfu",
+        "flash_erase",
+        "msc",
+        "batch start",
+        "batch end",
+        "restore",
+        "bind_rx",
+        "bind_rx_spi",
+        "diff all",
+        "dump",
+        "play_sound",
+        "set motor_poles = 14\nsave",
+    ] {
+        let mut fc = MockFc::load("4.5", "speedybeef405v4");
+        let store = tmp_store("guard");
+        let mut script = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap();
+        script.commands.insert(2, bad.to_string());
+        fc.log.clear();
+        let e = session::apply(&mut fc, &script, &store, "UIDG", &mut |_| {}).unwrap_err();
+        assert_eq!(e.code(), "CONFIG", "{bad:?}");
+        assert!(e.to_string().contains("line 3"), "{bad:?}: {e}");
+        assert!(fc.log.is_empty(), "{bad:?}: sent {:?}", fc.log);
+        assert_eq!(fc.reboots, 0);
+        assert!(store.list().unwrap().is_empty(), "no backup either");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_rejects_tampered_backup_before_sending_anything() {
+    for (inject, why) in [
+        ("save", "persists"),
+        ("defaults", "resets"),
+        ("bl", "bootloader"),
+        ("exit", "reboots"),
+        ("flash_erase", "flash"),
+        ("status", "not a command"),
+    ] {
+        let mut fc = MockFc::load("4.5", "speedybeef405v4");
+        let store = tmp_store("guard-rb");
+        let bk = session::backup(&mut fc, &store, "UIDR").unwrap();
+        let text = std::fs::read_to_string(&bk.path).unwrap();
+        let tampered = text.replacen(
+            "# master\r\n",
+            &format!("# master\r\n{inject}\r\nset motor_poles = 16\r\n"),
+            1,
+        );
+        assert_ne!(text, tampered);
+        std::fs::write(&bk.path, tampered).unwrap();
+        fc.log.clear();
+        let e = session::rollback(&mut fc, &bk, &store, "UIDR", &mut |_| {}).unwrap_err();
+        assert_eq!(e.code(), "CONFIG", "{inject}");
+        assert!(e.to_string().contains(why), "{inject}: {e}");
+        assert!(e.to_string().contains(inject), "{inject}: {e}");
+        assert!(fc.log.is_empty(), "{inject}: sent {:?}", fc.log);
+        assert_eq!(store.list().unwrap().len(), 1, "no safety backup taken");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_replays_only_guarded_lines() {
+    let mut fc = MockFc::load("2025.12", "speedybeef405v4");
+    let store = tmp_store("guard-replay");
+    fc.preset(&["set motor_poles = 16"]);
+    let bk = session::backup(&mut fc, &store, "UIDP").unwrap();
+    fc.log.clear();
+    session::rollback(&mut fc, &bk, &store, "UIDP", &mut |_| {}).unwrap();
+    // version + diff all (safety backup), then the batch.
+    let i = fc.log.iter().position(|l| l == "batch start").unwrap();
+    assert_eq!(fc.log[i + 1], "defaults nosave");
+    let replayed = &fc.log[i + 1..fc.log.len() - 1];
+    assert!(replayed.contains(&"set motor_poles = 16".to_string()));
+    for l in replayed {
+        assert!(
+            !l.starts_with("board_name") && !l.starts_with("batch") && l != "save",
+            "{l}"
+        );
+    }
+    assert_eq!(fc.log.iter().filter(|l| *l == "batch start").count(), 1);
+    assert_eq!(fc.log.last().map(String::as_str), Some("save"));
+    let _ = std::fs::remove_dir_all(store.root());
+}

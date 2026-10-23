@@ -67,6 +67,8 @@ pub async fn config_plan(model: DroneModel) -> AppResult<CliScript> {
 
 /// Apply: `diff all` backup -> `batch start` + commands + `save` (batch still active) ->
 /// reboot -> reconnect. Resolves only after reconnect; emits `config://progress`.
+/// The script is checked first against the generator's verbs (`guard`): a line that
+/// would persist, reboot, wipe or leave the batch is a CONFIG error and nothing is sent.
 #[tauri::command]
 pub async fn config_apply(script: CliScript) -> AppResult<ApplyResult> {
     let _ = script;
@@ -81,6 +83,8 @@ pub async fn config_verify(model: DroneModel) -> AppResult<VerifyReport> {
 }
 
 /// Restore a backup: replay its `diff all` (`defaults nosave` + lines) + `save` + reconnect.
+/// Which backup lines are replayed is defined by `guard::replay_lines`; anything else in
+/// the file is a CONFIG error and nothing is sent.
 #[tauri::command]
 pub async fn config_rollback(backup: Backup) -> AppResult<ApplyResult> {
     let _ = backup;

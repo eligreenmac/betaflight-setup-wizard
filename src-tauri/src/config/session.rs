@@ -6,9 +6,10 @@
 
 use std::time::SystemTime;
 
-use super::backup::{replay_lines, BackupStore};
+use super::backup::BackupStore;
 use super::firmware::{parse_version, Dialect, VersionInfo};
 use super::generate::generate_for;
+use super::guard::{replay_lines, validate_script};
 use super::modes;
 use super::snapshot::{parse_dump, parse_serial, Snapshot};
 use crate::device::Connection;
@@ -114,7 +115,9 @@ pub fn backup<C: Connection + ?Sized>(
     store.save(&diff, board_uid, &board, &info.version, SystemTime::now())
 }
 
-/// Send `lines` inside a CLI batch, stop at the first error. Returns (applied, errors).
+/// Send `lines` inside a CLI batch, stop at the first rejected command. Returns
+/// (applied, errors). `lines` must already be validated (`guard`); the batch is
+/// opened here and closed by `finish` (`save`) or discarded (`exit`).
 fn send_batch<C: Connection + ?Sized>(
     conn: &mut C,
     lines: &[String],
@@ -122,18 +125,15 @@ fn send_batch<C: Connection + ?Sized>(
 ) -> AppResult<(usize, Vec<CliError>)> {
     let mut applied = 0;
     let total = lines.len().max(1) as f32;
-    let starts_batch = lines.first().map(String::as_str) == Some("batch start");
-    if !starts_batch {
-        let r = conn.cli_exec("batch start")?;
-        if is_cli_error("batch start", &r) {
-            return Ok((
-                0,
-                vec![CliError {
-                    command: "batch start".into(),
-                    response: r,
-                }],
-            ));
-        }
+    let r = conn.cli_exec("batch start")?;
+    if is_cli_error("batch start", &r) {
+        return Ok((
+            0,
+            vec![CliError {
+                command: "batch start".into(),
+                response: r.trim().to_string(),
+            }],
+        ));
     }
     for (i, line) in lines.iter().enumerate() {
         let resp = conn.cli_exec(line)?;
@@ -179,6 +179,8 @@ fn finish<C: Connection + Reconnect + ?Sized>(
 }
 
 /// C5: backup -> `batch start` + commands -> `save` (batch still active) -> reboot -> reconnect.
+/// The script is validated first (`guard::validate_script`: generator verbs only, no
+/// save/defaults/reboot/batch/...); a bad line is a CONFIG error and nothing is sent.
 /// The first rejected command aborts the batch; nothing is saved.
 pub fn apply<C: Connection + Reconnect + ?Sized>(
     conn: &mut C,
@@ -187,6 +189,7 @@ pub fn apply<C: Connection + Reconnect + ?Sized>(
     board_uid: &str,
     cb: Progress,
 ) -> AppResult<ApplyResult> {
+    validate_script(&script.commands)?;
     progress(cb, ConfigStage::Backup, 0.0, "diff all");
     let (_, dialect) = read_version(conn)?;
     if Dialect::from_dialect_str(&script.dialect) != Some(dialect) {
@@ -286,8 +289,9 @@ fn on(b: bool) -> String {
 }
 
 /// C6: restore a backup. Takes a safety backup first, refuses a different firmware line,
-/// replays the stored `diff all` (which starts with `batch start` + `defaults nosave`),
-/// saves and reconnects.
+/// replays the stored `diff all`, saves and reconnects. The backup is validated before
+/// anything is sent (`guard::replay_lines` documents exactly which lines are replayed);
+/// a tampered or foreign file is a CONFIG error.
 pub fn rollback<C: Connection + Reconnect + ?Sized>(
     conn: &mut C,
     target: &Backup,
@@ -296,6 +300,7 @@ pub fn rollback<C: Connection + Reconnect + ?Sized>(
     cb: Progress,
 ) -> AppResult<ApplyResult> {
     let text = std::fs::read_to_string(&target.path)?;
+    let lines = replay_lines(&text)?;
     progress(cb, ConfigStage::Backup, 0.0, "diff all");
     let (info, dialect) = read_version(conn)?;
     if Dialect::from_version(&target.firmware_version).ok() != Some(dialect) {
@@ -306,7 +311,6 @@ pub fn rollback<C: Connection + Reconnect + ?Sized>(
     }
     let safety = backup(conn, store, board_uid)?;
     progress(cb, ConfigStage::Backup, 1.0, &safety.path);
-    let lines = replay_lines(&text);
     let (applied, errors) = send_batch(conn, &lines, cb)?;
     finish(conn, applied, errors, Some(safety), cb)
 }
