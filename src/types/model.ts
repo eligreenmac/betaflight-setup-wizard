@@ -332,7 +332,7 @@ export interface AccNotAvailableDetails { present: boolean; enabled: boolean }
 export interface BoardMovingDetails { maxRateDps: number; limitDps: number; during: boolean }
 /** Why the FC may hold unsaved changes in RAM (ARCHITECTURE §4.1). */
 export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE";
-/** `details` of PENDING_UNSAVED_CHANGES: ask the user to reconnect or reboot the board, then retry. */
+/** `details` of PENDING_UNSAVED_CHANGES: offer "Reboot board" (`device_reboot`), then retry. A plain reconnect does not clear it. */
 export interface PendingUnsavedChangesDetails { reason: UnsavedChangesReason }
 
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /

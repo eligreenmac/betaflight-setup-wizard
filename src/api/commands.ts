@@ -19,6 +19,7 @@ export interface CommandMap {
   device_identify: [Record<string, never>, FcInfo];
   device_cli_exec: [{ line: string }, string];
   device_reboot_to_bootloader: [Record<string, never>, void];
+  device_reboot: [Record<string, never>, void];
   device_probe_board: [Record<string, never>, FcInfo];
   device_motor_test_start: [
     { motorIndex: number | null; throttle: number; propsOffConfirmed: boolean; limits: MotorTestLimits | null },
@@ -91,6 +92,8 @@ export const api = {
     identify: () => call("device_identify", none),
     cliExec: (line: string) => call("device_cli_exec", { line }),
     rebootToBootloader: () => call("device_reboot_to_bootloader", none),
+    /** "Reboot board": app-issued firmware reboot, resolves once it is confirmed (ack + same board back); clears PENDING_UNSAVED_CHANGES. PENDING_UNSAVED_CHANGES / MSP if not confirmed, SERIAL if the board did not come back. */
+    reboot: () => call("device_reboot", none),
     probeBoard: () => call("device_probe_board", none),
     /** First call starts the test, later calls change the throttle. Feeds the watchdog. */
     motorTestStart: (motorIndex: number | null, throttle: number, propsOffConfirmed: boolean, limits: MotorTestLimits | null = null) =>

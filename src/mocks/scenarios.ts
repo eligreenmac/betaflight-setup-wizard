@@ -192,6 +192,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_reboot_to_bootloader: () => {
       device.inDfu = true;
     },
+    device_reboot: () => undefined,
     flasher_list_targets: () => [{ target: "SPEEDYBEEF405V4", manufacturer: "SPBE", mcu: "STM32F405" }],
     flasher_list_releases: () => [
       { release: "2025.12.0-RC1", prerelease: true },
