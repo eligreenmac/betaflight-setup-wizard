@@ -1,0 +1,139 @@
+diff all
+
+# version
+# Betaflight / STM32F405 (S405) 2026.6.2 Oct 23 2026 / 17:42:13 (norevision) MSP API: 1.48
+
+# start the command batch
+batch start
+
+# reset configuration to default settings
+defaults nosave
+
+board_name SPEEDYBEEF405V4
+manufacturer_id SPBE
+mcu_id 000000000000000100000002
+signature 
+
+# resources
+resource LED_STRIP 1 A08
+
+# timer
+timer A08 AF1
+# pin A08: TIM1 CH1 (AF1)
+
+# dma
+dma pin A08 0
+# pin A08: DMA2 Stream 6 Channel 0
+
+# feature
+feature GPS
+feature LED_STRIP
+feature -RX_SERIAL
+feature RX_MSP
+feature OPTICALFLOW
+
+# beeper
+beeper -CRASHFLIP
+beeper -ON_USB
+
+# beacon
+beacon RX_LOST
+
+# map
+map TAER1234
+
+# serial
+serial UART1 2 115200 57600 0 115200
+serial UART2 64 115200 57600 0 115200
+serial UART3 131073 115200 57600 0 115200
+serial UART6 262144 115200 57600 0 115200
+serial UART4 524289 115200 57600 0 115200
+
+# aux
+aux 0 0 0 1700 2100 0 0
+aux 1 1 1 1300 1700 0 0
+aux 2 35 2 1700 2100 0 0
+aux 3 54 3 1700 2100 0 0
+aux 4 3 3 900 1300 0 0
+aux 5 11 3 1300 1700 0 0
+aux 6 56 4 1700 2100 0 0
+aux 7 13 4 900 1300 0 56
+
+# adjrange
+adjrange 0 0 3 1700 2100 25 3 0 0
+adjrange 1 0 3 900 1300 33 3 0 0
+adjrange 2 0 3 1300 1700 32 3 0 0
+
+# rxfail
+rxfail 4 s 1500
+
+# master
+set mag_hardware = QMC5883L
+set debug_mode = D_MAX
+set motor_idle = 450
+set serialrx_provider = CRSF
+set expresslrs_uid = 41,42,43,44,45,46
+set osd_vbat_pos = 2465
+set craft_name = RESTORE
+
+profile 0
+
+# profile 0
+set p_roll = 50
+set d_roll = 35
+set d_max_roll = 45
+set simplified_d_max_gain = 90
+set angle_p_gain = 60
+set angle_limit = 60
+set horizon_limit_sticks = 70
+set feedforward_jitter_factor = 10
+
+profile 1
+
+# profile 1
+set p_roll = 55
+set d_roll = 35
+set d_max_roll = 45
+set simplified_d_max_gain = 90
+set angle_p_gain = 60
+set angle_limit = 60
+set horizon_limit_sticks = 70
+set feedforward_jitter_factor = 10
+
+# restore original profile selection
+profile 0
+
+rateprofile 0
+
+# rateprofile 0
+set rates_type = ACTUAL
+set roll_rc_rate = 12
+
+battery_profile 0
+
+# battery_profile 0
+set battery_profile_name = 4S1500
+set bat_capacity = 1500
+set vbat_max_cell_voltage = 435
+
+battery_profile 1
+
+# battery_profile 1
+set battery_profile_name = 4S850
+set bat_capacity = 850
+set vbat_max_cell_voltage = 440
+
+battery_profile 2
+
+# restore original rateprofile selection
+rateprofile 0
+
+# restore original battery_profile selection
+battery_profile 1
+
+# flight plan
+waypoint clear
+
+# save configuration
+save
+# 

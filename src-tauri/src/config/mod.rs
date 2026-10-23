@@ -16,6 +16,8 @@
 //! - [`backup`]: backup files on disk
 //! - [`msp`]: MSP identification ids, encoders and decoders (checked against SITL)
 //! - [`guard`]: allowlists for what apply / rollback may send (script and backup replay)
+//! - [`restore`]: restore after flash (`config_restore_after_flash`), also across firmware
+//!   lines; [`restore_tables`]: per-line setting / value / feature / adjustment tables
 //! - `mock` (tests only): `MockFc` CLI simulator
 
 pub mod backup;
@@ -28,6 +30,8 @@ pub mod md5;
 pub mod modes;
 pub mod msp;
 pub mod osd;
+pub mod restore;
+pub mod restore_tables;
 pub mod serial_functions;
 pub mod session;
 pub mod snapshot;
@@ -37,6 +41,8 @@ pub mod vtx_table;
 pub(crate) mod mock;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_restore;
 #[cfg(test)]
 mod tests_sitl;
 #[cfg(test)]
