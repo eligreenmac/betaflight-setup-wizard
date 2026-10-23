@@ -391,6 +391,10 @@ pub struct Esc {
     /// Per-motor DShot spin-direction reversal is phase 2 (not in the MVP model).
     #[serde(default)]
     pub props_out: bool,
+    /// Motor idle in 0.01 % (550 = 5.5 %), 0..=2000. Written as `dshot_idle_value` on
+    /// 4.4 / 4.5 (exists only with DShot) and `motor_idle` on 2025.12; null = keep.
+    #[serde(default)]
+    pub idle: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

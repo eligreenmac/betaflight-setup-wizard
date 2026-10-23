@@ -129,7 +129,9 @@
         "motorPoles": { "type": ["integer", "null"], "minimum": 4, "maximum": 64 },
         "telemetryPort": { "$ref": "#/$defs/portName" },
         "propsOut": { "type": "boolean", "default": false,
-                      "description": "yaw_motors_reversed. Per-motor DShot spin-direction reversal is phase 2 (not in the schema)." }
+                      "description": "yaw_motors_reversed. Per-motor DShot spin-direction reversal is phase 2 (not in the schema)." },
+        "idle": { "type": ["integer", "null"], "minimum": 0, "maximum": 2000,
+                  "description": "0.01 % units (550 = 5.5 %): dshot_idle_value (4.4/4.5) / motor_idle (2025.12); null = keep" }
       }
     },
     "switches": {
