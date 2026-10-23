@@ -7,7 +7,10 @@
 
 use super::manager::{host_ports, ConnectionManager};
 use super::motor::MotorTestRequest;
-use super::{MOTOR_TEST_STOPPED_EVENT, RC_CHANNELS_EVENT, RC_STOPPED_EVENT};
+use super::{
+    ATTITUDE_EVENT, ATTITUDE_STOPPED_EVENT, MOTOR_TEST_STOPPED_EVENT, RC_CHANNELS_EVENT,
+    RC_STOPPED_EVENT,
+};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     AccCalibrationResult, Attitude, FcInfo, HostPort, MotorTestLimits, MotorTestSession,
@@ -135,39 +138,49 @@ pub async fn device_rc_stream_stop(app: AppHandle) -> AppResult<()> {
     blocking(app, |m, _| m.rc_stream_stop()).await
 }
 
-// Contract stubs (shared PR): implemented in the device PR, see ARCHITECTURE.md §4.3.
-
 /// Sensor status: per sensor (gyro, acc, baro, mag) `present` / `enabled` / configured and
 /// detected hardware, plus `accCalibrated` and a read-only alignment readout. No writes.
 #[tauri::command]
-pub async fn device_sensors() -> AppResult<SensorStatus> {
-    Err(AppError::NotImplemented("device_sensors"))
+pub async fn device_sensors(app: AppHandle) -> AppResult<SensorStatus> {
+    blocking(app, |m, _| m.get_sensors()).await
 }
 
 /// Calibrate the accelerometer (MSP_ACC_CALIBRATION) with the board level and still;
 /// resolves when the FC is done. The FC saves the result to EEPROM by itself. Errors:
 /// `BOARD_ARMED`, `ACC_NOT_AVAILABLE`, `BOARD_MOVING`, `ACC_CALIBRATION_FAILED`.
 #[tauri::command]
-pub async fn device_acc_calibrate() -> AppResult<AccCalibrationResult> {
-    Err(AppError::NotImplemented("device_acc_calibrate"))
+pub async fn device_acc_calibrate(app: AppHandle) -> AppResult<AccCalibrationResult> {
+    blocking(app, |m, _| m.acc_calibrate()).await
 }
 
 /// One MSP_ATTITUDE sample (`seq` and `timestampMs` are 0).
 #[tauri::command]
-pub async fn device_get_attitude() -> AppResult<Attitude> {
-    Err(AppError::NotImplemented("device_get_attitude"))
+pub async fn device_get_attitude(app: AppHandle) -> AppResult<Attitude> {
+    blocking(app, |m, _| m.get_attitude()).await
 }
 
 /// Stream MSP_ATTITUDE on `device://attitude` (`rate_hz` default 10, clamped 1..=30).
 /// Exclusive with the motor test and the RC stream (`PORT_BUSY {heldBy: APP}`).
 #[tauri::command]
-pub async fn device_attitude_stream_start(rate_hz: Option<u32>) -> AppResult<()> {
-    let _ = rate_hz;
-    Err(AppError::NotImplemented("device_attitude_stream_start"))
+pub async fn device_attitude_stream_start(app: AppHandle, rate_hz: Option<u32>) -> AppResult<()> {
+    blocking(app, move |m, app| {
+        let a1 = app.clone();
+        let a2 = app.clone();
+        m.attitude_stream_start(
+            rate_hz,
+            move |ev| {
+                let _ = a1.emit(ATTITUDE_EVENT, ev);
+            },
+            move |ev| {
+                let _ = a2.emit(ATTITUDE_STOPPED_EVENT, ev);
+            },
+        )
+    })
+    .await
 }
 
 /// Idempotent.
 #[tauri::command]
-pub async fn device_attitude_stream_stop() -> AppResult<()> {
-    Err(AppError::NotImplemented("device_attitude_stream_stop"))
+pub async fn device_attitude_stream_stop(app: AppHandle) -> AppResult<()> {
+    blocking(app, |m, _| m.attitude_stream_stop()).await
 }
