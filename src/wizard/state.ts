@@ -19,14 +19,22 @@ import {
   type VerifyReport,
 } from "../types/model";
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
-import { MODES, normalizeModeNames, SWITCH_POSITIONS } from "./switches";
+import { MAX_AUX, MODES, modeKeyOf, modeName, normalizeModeNames, SWITCH_POSITIONS, type ModeKey } from "./switches";
+import type { Airmode } from "./modelExt";
 import { defaultTelemetry } from "./receiver";
+import { emptyExt, type ModelExt } from "./modelExt";
+import type { SensorsInfo } from "../api/pending";
 
 export type FirmwareDecision = "keep" | "update" | null;
 /** CRSF on a UART can be ExpressLRS or TBS Crossfire; only ExpressLRS has a binding phrase. */
 export type CrsfFamily = "ELRS" | "CROSSFIRE" | null;
 /** ExpressLRS binding: "phrase" = binding phrase (SPI: hashed to receiver.elrsUid); "button" = bind mode. */
 export type ElrsBinding = "phrase" | "button" | null;
+/** PREARM on the Switches step: added, explicitly skipped, or not decided (optional). */
+export type PrearmChoice = "add" | "skip" | null;
+/** Beepers step: keep the board's beeps, or choose them (starts from the recommendation). */
+export type BeeperMode = "keep" | "choose" | null;
+export type CalibrationStatus = "idle" | "running" | "done" | "failed";
 export type ApplyStatus = "idle" | "generating" | "applying" | "verifying" | "verified" | "mismatch" | "failed";
 
 export interface UiState extends RoleOptions {
@@ -56,6 +64,13 @@ export interface UiState extends RoleOptions {
   elrsBinding: ElrsBinding;
   /** Backups created in this session (fallback list when config_list_backups is missing). */
   sessionBackups: Backup[];
+  prearmChoice: PrearmChoice;
+  beeperMode: BeeperMode;
+  /** Sensors reported by device_sensors (null = not read yet / unavailable). */
+  sensors: SensorsInfo | null;
+  accCalibration: CalibrationStatus;
+  /** Orientation check answer: true = the picture moved the same way. */
+  orientationOk: boolean | null;
 }
 
 export interface WizardState {
@@ -64,6 +79,8 @@ export interface WizardState {
   ports: FcSerialPort[];
   connectedPath: string | null;
   ui: UiState;
+  /** Proposed DroneModel fields (wizard/modelExt.ts); null = keep the board's value. */
+  ext: ModelExt;
 }
 
 function emptyUi(): UiState {
@@ -85,6 +102,11 @@ function emptyUi(): UiState {
     sessionBackups: [],
     crsfFamily: null,
     elrsBinding: null,
+    prearmChoice: null,
+    beeperMode: null,
+    sensors: null,
+    accCalibration: "idle",
+    orientationOk: null,
   };
 }
 
@@ -96,7 +118,7 @@ export function initialModel(): DroneModel {
 }
 
 export function createWizardState(): WizardState {
-  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi() };
+  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi(), ext: emptyExt() };
 }
 
 export const wizard = reactive<WizardState>(createWizardState());
@@ -130,6 +152,12 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
     s.model.esc.telemetryPort = null;
     s.ui.motorOrderOk = false;
     s.ui.motorDirectionOk = false;
+    // Sensors, calibration and mounting belong to the other board.
+    s.ui.sensors = null;
+    s.ui.accCalibration = "idle";
+    s.ui.orientationOk = null;
+    s.ext.sensors = null;
+    s.ext.boardAlignment = null;
   }
   prefillFromBoard(s.ports, s.model, s.ui);
   markDirty(s);
@@ -191,5 +219,45 @@ export function setEscTelemetry(s: WizardState, enabled: boolean): void {
 function afterComponentsChange(s: WizardState): void {
   clearUnneededRolePorts(s.model, s.ui);
   prefillFromBoard(s.ports, s.model, s.ui);
+  markDirty(s);
+}
+
+/** Add a mode switch on the first free AUX channel (high position). No-op if already there. */
+export function addModeSwitch(s: WizardState, k: ModeKey): void {
+  if (s.model.switches.some((x) => modeKeyOf(x.mode) === k)) return;
+  const auxUsed = new Set(s.model.switches.map((x) => x.auxChannel));
+  let aux = 0;
+  while (auxUsed.has(aux) && aux < MAX_AUX - 1) aux++;
+  s.model.switches.push({ mode: modeName(k), auxChannel: aux, rangeMin: SWITCH_POSITIONS.high[0], rangeMax: SWITCH_POSITIONS.high[1] });
+  if (k === "prearm") s.ui.prearmChoice = "add";
+  if (k === "airMode") s.ext.airmode = "switch";
+  markDirty(s);
+}
+
+export function removeModeSwitch(s: WizardState, index: number): void {
+  const k = modeKeyOf(s.model.switches[index]?.mode ?? "");
+  if (k === "arm") return;
+  s.model.switches.splice(index, 1);
+  if (k === "prearm") s.ui.prearmChoice = null;
+  // Without its switch, "air mode on a switch" is no answer any more: back to "keep".
+  if (k === "airMode" && s.ext.airmode === "switch") s.ext.airmode = null;
+  markDirty(s);
+}
+
+/** PREARM: add it on a switch, or explicitly skip it (removes any PREARM switch). */
+export function setPrearm(s: WizardState, choice: "add" | "skip"): void {
+  if (choice === "add") addModeSwitch(s, "prearm");
+  else {
+    s.model.switches = s.model.switches.filter((x) => modeKeyOf(x.mode) !== "prearm");
+    s.ui.prearmChoice = "skip";
+    markDirty(s);
+  }
+}
+
+/** AIRMODE: "always" (feature), "switch" (AIR MODE box on a switch), "off", or null = keep. */
+export function setAirmode(s: WizardState, mode: Airmode | null): void {
+  s.ext.airmode = mode;
+  if (mode === "switch") addModeSwitch(s, "airMode");
+  else s.model.switches = s.model.switches.filter((x) => modeKeyOf(x.mode) !== "airMode");
   markDirty(s);
 }

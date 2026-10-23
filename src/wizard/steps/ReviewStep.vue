@@ -9,6 +9,9 @@ import type { CliScript } from "../../types/model";
 import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
+import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
+import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
+import { calibrationWarnings } from "../guards";
 import { modeKeyOf } from "../switches";
 import { wizard } from "../state";
 
@@ -27,7 +30,7 @@ async function load(): Promise<void> {
   wizard.ui.planUnavailable = false;
   plan.value = null;
   try {
-    const r = await fetchPlan(wizard.model, wizard.ports);
+    const r = await fetchPlan(toPlanModel(wizard.model, wizard.ext), wizard.ports);
     if (r.status === "ready") {
       plan.value = r.script;
       previewOnly.value = false;
@@ -56,8 +59,24 @@ const rows = computed(() => {
   ];
   for (const role of neededRoles(wizard.model, wizard.ui)) r.push([t(`roles.${role}`), getRolePort(wizard.model, role) ?? "—"]);
   r.push([t("review.switches"), m.value.switches.map((s) => `${modeKeyOf(s.mode) ? t(`switches.modes.${modeKeyOf(s.mode)}`) : s.mode} AUX${s.auxChannel + 1}`).join(", ")]);
+  const x = wizard.ext;
+  const skip = new Set(simulatedFields());
+  const keep = t("review.keep");
+  r.push([t("review.airmode"), x.airmode ? t(`switches.airmode.${x.airmode}`) : keep]);
+  r.push([
+    t("review.sensors"),
+    x.sensors && !skip.has("sensors")
+      ? `${t("calibration.sensors.acc")}: ${x.sensors.acc ? t("review.on") : t("review.off")} · ${t("calibration.sensors.baro")}: ${x.sensors.baro ? t("review.on") : t("review.off")}`
+      : keep,
+  ]);
+  const preset = x.boardAlignment && ALIGNMENT_PRESETS.find((p) => sameAlignment(x.boardAlignment, p.align));
+  r.push([t("review.alignment"), x.boardAlignment && !skip.has("boardAlignment") ? (preset ? t(`calibration.orientation.presets.${preset.id}`) : `${x.boardAlignment.roll}/${x.boardAlignment.pitch}/${x.boardAlignment.yaw}`) : keep]);
+  r.push([t("review.accCalibration"), t(`review.calibration.${wizard.ui.accCalibration}`)]);
+  r.push([t("review.beepers"), x.beepers ? (x.beepers.disabled.length ? t("review.beepersOff", { list: x.beepers.disabled.join(", ") }) : t("review.beepersAllOn")) : keep]);
   return r;
 });
+const unplanned = computed(() => (previewOnly.value ? [] : unplannedChoices(wizard.ext, plan.value)));
+const warnings = computed(() => calibrationWarnings(wizard));
 </script>
 
 <template>
@@ -89,6 +108,13 @@ const rows = computed(() => {
       <dl class="kv">
         <template v-for="[k, v] in rows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
       </dl>
+
+      <div v-for="w in warnings" :key="w.key" class="callout callout--warn" :data-warning="w.key">{{ t(w.key) }}</div>
+
+      <div v-if="unplanned.length" class="callout callout--warn" data-test="unplanned">
+        <strong>{{ t("review.unplannedTitle") }}</strong>
+        <p>{{ t("review.unplannedBody", { list: unplanned.map((f) => t(`review.fields.${f}`)).join(", ") }) }}</p>
+      </div>
 
       <div v-if="plan.warnings.length" class="callout callout--warn">
         <h3>{{ t("review.warnings") }}</h3>

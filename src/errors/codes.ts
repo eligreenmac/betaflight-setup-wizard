@@ -65,8 +65,15 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
  */
 export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "UNKNOWN"] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
-export type ErrorCode = DesignErrorCode | UiOnlyCode;
-export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES];
+/**
+ * Backend codes agreed for commands that are not in the shared contract yet
+ * (api/pending.ts). TODO(shared): move into error.rs / ARCHITECTURE §2.3 with Device's PR.
+ * ACC_NOT_AVAILABLE: device_acc_calibrate with the accelerometer missing or disabled.
+ */
+export const PENDING_ERROR_CODES = { ACC_NOT_AVAILABLE: "Device" } as const satisfies Record<string, ErrorCategory>;
+export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
+export type ErrorCode = DesignErrorCode | UiOnlyCode | PendingErrorCode;
+export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES, ...(Object.keys(PENDING_ERROR_CODES) as PendingErrorCode[])];
 
 /** error.rs codes -> DESIGN.md §6 / UI codes. UNSUPPORTED_FIRMWARE and NOT_IMPLEMENTED pass through as-is. */
 export const LEGACY_CODE_ALIASES: Record<string, ErrorCode> = {
@@ -100,6 +107,7 @@ export function isErrorCode(code: string): code is ErrorCode {
 
 export function categoryOf(code: ErrorCode): ErrorCategory {
   if (code === "MIXED_BACKEND") return "Safety";
+  if (code in PENDING_ERROR_CODES) return PENDING_ERROR_CODES[code as PendingErrorCode];
   return code in ERROR_CODE_CATEGORY ? ERROR_CODE_CATEGORY[code as DesignErrorCode] : "Operation";
 }
 

@@ -95,6 +95,7 @@ const TABLE: Record<ErrorCode, Entry> = {
   CONFIG_UNSUPPORTED: { steps: 2, actions: [{ id: "editComponents", labelKey: "actions.editComponents", primary: true }, reportIssue], showMessage: true },
   MIXED_BACKEND: { steps: 2, actions: [reportIssue] },
   UNKNOWN: { steps: 1, actions: [retry, reportIssue] },
+  ACC_NOT_AVAILABLE: { steps: 2, actions: [], warning: true },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */

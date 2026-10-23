@@ -13,6 +13,9 @@ import { UPDATE_STAGES } from "../src/wizard/flash";
 import { PORT_ROLES } from "../src/wizard/ports";
 import { SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "../src/wizard/receiver";
 import { MODE_KEYS, SWITCH_POSITIONS } from "../src/wizard/switches";
+import { BEEPER_GROUPS, BEEPERS } from "../src/wizard/beepers";
+import { EXT_FIELDS } from "../src/wizard/modelExt";
+import { ALIGNMENT_PRESETS } from "../src/wizard/orientation";
 
 function flat(o: object, p = ""): Record<string, string> {
   return Object.fromEntries(
@@ -100,6 +103,15 @@ describe("i18n", () => {
       ...["SERIAL", "SPI", "NONE"].flatMap((k) => [`components.rxKind.${k}`, `components.rxKindHint.${k}`]),
       ...["DIGITAL", "ANALOG", "NONE"].flatMap((k) => [`components.vtxKind.${k}`, `components.vtxKindHint.${k}`]),
       ...["done", "active", "failed"].map((s) => `stageState.${s}`),
+      // Switches / Calibration / Beepers
+      ...["always", "switch", "off", "keep"].flatMap((k) => [`switches.airmode.${k}`, `switches.airmode.${k}Hint`]),
+      ...["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc"],
+      ...["level", "noseDown", "noseUp", "rightDown", "leftDown"].map((d) => `calibration.orientation.direction.${d}`),
+      ...ALIGNMENT_PRESETS.map((p) => `calibration.orientation.presets.${p.id}`),
+      ...BEEPER_GROUPS.flatMap((g) => [`beepers.groups.${g}`, `beepers.groupHints.${g}`]),
+      ...BEEPERS.flatMap((b) => [`beepers.items.${b.key}`, `beepers.explain.${b.key}`]),
+      ...["idle", "running", "done", "failed"].map((s) => `review.calibration.${s}`),
+      ...EXT_FIELDS.map((f) => `review.fields.${f}`),
     ];
     expect(need.filter((k) => !(k in EN))).toEqual([]);
   });

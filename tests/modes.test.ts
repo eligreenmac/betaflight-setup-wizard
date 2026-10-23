@@ -9,7 +9,7 @@ const fc = (firmwareVersion: string): FcInfo => ({ fcVariant: "BTFL", firmwareVe
 
 describe("mode names: stable in the model, labels by firmware", () => {
   it("the model only ever holds the stable config::modes names", () => {
-    expect(Object.values(MODES)).toEqual(["ARM", "ANGLE", "BEEPER", "FLIP OVER AFTER CRASH", "ALTHOLD", "POSHOLD"]);
+    expect(Object.values(MODES)).toEqual(["ARM", "ANGLE", "BEEPER", "FLIP OVER AFTER CRASH", "ALTHOLD", "POSHOLD", "PREARM", "AIR MODE"]);
     for (const fw of ["4.4.3", "4.5.2", "2025.12.0"]) {
       expect(modeName("altHold")).toBe("ALTHOLD");
       expect(modeName("posHold")).toBe("POSHOLD");

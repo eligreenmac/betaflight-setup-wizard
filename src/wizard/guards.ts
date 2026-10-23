@@ -8,7 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
-import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, NEEDS_DSHOT, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
@@ -71,7 +71,26 @@ export function validateSwitches(s: WizardState): Issue[] {
       if (a.auxChannel === b.auxChannel && a.rangeMin < b.rangeMax && b.rangeMin < a.rangeMax && (a.mode === MODES.arm || b.mode === MODES.arm))
         issues.push({ key: "validation.armOverlap", params: { mode: a.mode === MODES.arm ? b.mode : a.mode } });
     }
+  // Prearm is a second, separate switch: on the arm switch it adds no safety.
+  for (const p of sw.filter((m) => m.mode === MODES.prearm))
+    if (arms.some((a) => a.auxChannel === p.auxChannel)) issues.push({ key: "validation.prearmSameSwitch" });
+  // Turtle mode spins the motors backwards with DShot commands.
+  for (const m of sw) {
+    const k = modeKeyOf(m.mode);
+    if (k && NEEDS_DSHOT.includes(k) && !s.model.esc.protocol.startsWith("DSHOT")) issues.push({ key: "validation.turtleNeedsDshot" });
+  }
+  if (s.ext.airmode === "switch" && !sw.some((m) => m.mode === MODES.airMode)) issues.push({ key: "validation.airmodeSwitchMissing" });
   return issues;
+}
+
+/** Non-blocking warnings on the Calibration step (shown there and on Review). */
+export function calibrationWarnings(s: WizardState): Issue[] {
+  const out: Issue[] = [];
+  const accOn = s.ext.sensors ? s.ext.sensors.acc : s.ui.sensors ? s.ui.sensors.acc.enabled : true;
+  const self = s.model.switches.filter((m) => m.mode === MODES.angle);
+  if (!accOn && self.length) out.push({ key: "calibration.warnAngleNoAcc" });
+  if (!accOn && s.model.gps.enabled) out.push({ key: "calibration.warnGpsNoAcc" });
+  return out;
 }
 
 export const guards: Record<string, StepGuard> = {
@@ -152,6 +171,16 @@ export const guards: Record<string, StepGuard> = {
     },
   },
   switches: { canEnter: configured, validate: validateSwitches },
+  calibration: {
+    canEnter: configured,
+    // Calibration and the orientation check are recommended, not gating (the board may
+    // already be calibrated, and some backends cannot calibrate yet). Running = wait.
+    validate: (s) => (s.ui.accCalibration === "running" ? [{ key: "validation.calibrationRunning" }] : []),
+  },
+  beepers: {
+    canEnter: configured,
+    validate: (s) => (s.ui.beeperMode === null ? [{ key: "validation.beepersChoose" }] : []),
+  },
   review: {
     canEnter: configured,
     validate: (s) => (s.ui.script ? [] : [{ key: s.ui.planUnavailable ? "validation.planUnavailable" : "validation.notGenerated" }]),

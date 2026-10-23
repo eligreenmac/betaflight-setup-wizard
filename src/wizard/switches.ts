@@ -27,10 +27,14 @@ import { compareVersions } from "./version";
  * "BEEPER", "FLIP OVER AFTER CRASH", "ALTHOLD", "POSHOLD"). Never box ids, never a
  * firmware's display name: config::modes maps stable names to box ids per firmware.
  * Only the labels shown to the user depend on the firmware version.
+ * PREARM and AIR MODE use config::modes' canonical spelling on main ("PREARM",
+ * "AIR MODE"); its resolver also accepts "AIRMODE" / "FLIP_OVER_AFTER_CRASH".
  */
-export const MODE_KEYS = ["arm", "angle", "beeper", "turtle", "altHold", "posHold"] as const;
+export const MODE_KEYS = ["arm", "angle", "beeper", "turtle", "altHold", "posHold", "prearm", "airMode"] as const;
 export type ModeKey = (typeof MODE_KEYS)[number];
-export const OPTIONAL_MODES: ModeKey[] = ["angle", "beeper", "turtle", "altHold", "posHold"];
+export const OPTIONAL_MODES: ModeKey[] = ["angle", "beeper", "turtle", "altHold", "posHold", "prearm", "airMode"];
+/** Modes with their own section on the Switches step (not in the generic "add" row). */
+export const SPECIAL_MODES: ModeKey[] = ["prearm", "airMode"];
 
 /** Stable names written to the model (and sent to config_plan / config_apply). */
 export const MODES = {
@@ -40,6 +44,8 @@ export const MODES = {
   turtle: "FLIP OVER AFTER CRASH",
   altHold: "ALTHOLD",
   posHold: "POSHOLD",
+  prearm: "PREARM",
+  airMode: "AIR MODE",
 } as const satisfies Record<ModeKey, string>;
 export type StableModeName = (typeof MODES)[ModeKey];
 
@@ -60,6 +66,8 @@ const DISPLAY_NAMES: Record<ModeKey, { legacy: string; current: string }> = {
   turtle: { legacy: "FLIP OVER AFTER CRASH", current: "FLIP OVER AFTER CRASH" },
   altHold: { legacy: "BARO", current: "ALTHOLD" },
   posHold: { legacy: "GPS HOLD", current: "POS HOLD" },
+  prearm: { legacy: "PREARM", current: "PREARM" },
+  airMode: { legacy: "AIR MODE", current: "AIR MODE" },
 };
 
 export function usesNewModeNames(firmwareVersion: string | null | undefined): boolean {
@@ -107,3 +115,30 @@ export const RANGE_MAX = 2100;
 export const RANGE_STEP = 25;
 /** AUX1..AUX12 */
 export const MAX_AUX = 12;
+
+/** Modes that only work with a DShot ESC protocol (turtle spins the motors backwards via DShot commands). */
+export const NEEDS_DSHOT: ModeKey[] = ["turtle"];
+
+/** A switch must move at least this far (µs) to count as "flipped" during detection. */
+export const DETECT_THRESHOLD = 300;
+
+/**
+ * Live switch detection: compare an RC frame with the frame taken when the user pressed
+ * "Detect", and return the AUX channel (0-based) that moved the most, with the position
+ * it is in now. null = nothing moved far enough yet.
+ */
+export function detectSwitch(baseline: number[], current: number[]): { auxChannel: number; position: SwitchPosition } | null {
+  let best: { aux: number; delta: number } | null = null;
+  for (let aux = 0; aux < MAX_AUX; aux++) {
+    const i = auxToChannelIndex(aux);
+    const a = baseline[i];
+    const b = current[i];
+    if (a === undefined || b === undefined) continue;
+    const d = Math.abs(b - a);
+    if (d >= DETECT_THRESHOLD && (!best || d > best.delta)) best = { aux, delta: d };
+  }
+  if (!best) return null;
+  const v = current[auxToChannelIndex(best.aux)]!;
+  const position = (Object.keys(SWITCH_POSITIONS) as SwitchPosition[]).find((p) => inRange(v, SWITCH_POSITIONS[p][0], SWITCH_POSITIONS[p][1])) ?? (v < 1300 ? "low" : "high");
+  return { auxChannel: best.aux, position };
+}

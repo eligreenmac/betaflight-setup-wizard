@@ -12,14 +12,26 @@
  * config_restore, config_elrs_uid, device_probe_board and the motor/RC commands
  * answer NOT_IMPLEMENTED.
  *
+ * Sensors / calibration / attitude (pending Device contract, api/pending.ts): gyro, acc
+ * and baro present (baro disabled), no mag. `no-sensors`: no acc and no baro.
+ * `calib-fail`: the first accelerometer calibration fails. `mounted-yaw90`: the board is
+ * mounted turned 90° to the right, so tilting the nose down shows as a roll until the
+ * user picks the "arrow points right" (yaw 90) alignment. The attitude stream follows
+ * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
+ * side down, every 2 s.
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { Backup, ClearedPort, CliScript, DroneModel, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
+import type { PendingCommandName } from "../api/pending";
+import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
+import { availableBeepers, beeperName } from "../wizard/beepers";
+import { reportedAttitude, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
 export const SCENARIOS = [
@@ -38,6 +50,9 @@ export const SCENARIOS = [
   "flash-verify",
   "read-protected",
   "driver-replace",
+  "no-sensors",
+  "calib-fail",
+  "mounted-yaw90",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -81,6 +96,15 @@ interface MockDevice {
   armed: boolean;
   rcTimer: ReturnType<typeof setInterval> | null;
   backups: { backup: Backup; ports: FcSerialPort[] }[];
+  sensors: { gyro: { present: boolean }; acc: { present: boolean; enabled: boolean }; baro: { present: boolean; enabled: boolean }; mag: { present: boolean; enabled: boolean } };
+  accCalFailuresLeft: number;
+  /** Successful device_acc_calibrate calls (tests). */
+  accCalibrations: number;
+  /** How the board is mounted on the frame (the truth the alignment check should find). */
+  mount: BoardAlignment;
+  /** Simulated frame tilt; null = automatic demo cycle. */
+  tilt: Euler | null;
+  attitudeTimer: ReturnType<typeof setInterval> | null;
 }
 
 /** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
@@ -127,6 +151,15 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     rcTimer: null,
     probed: false,
     backups: [],
+    sensors:
+      scenario === "no-sensors"
+        ? { gyro: { present: true }, acc: { present: false, enabled: false }, baro: { present: false, enabled: false }, mag: { present: false, enabled: false } }
+        : { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: true, enabled: false }, mag: { present: false, enabled: false } },
+    accCalFailuresLeft: scenario === "calib-fail" ? 1 : 0,
+    accCalibrations: 0,
+    mount: scenario === "mounted-yaw90" ? { roll: 0, pitch: 0, yaw: 90 } : { roll: 0, pitch: 0, yaw: 0 },
+    tilt: null,
+    attitudeTimer: null,
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
@@ -334,6 +367,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       device.motorLog.push(`start ${motorIndex} ${throttle}`);
       motorFault();
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
+      if (device.attitudeTimer) throw portBusy("COM5", "APP", "attitude stream running");
       const lim = {
         maxThrottle: Math.min(limits?.maxThrottle ?? DEFAULT_MAX_TEST_THROTTLE, HARD_MAX_TEST_THROTTLE),
         watchdogMs: Math.min(2000, Math.max(100, limits?.watchdogMs ?? DEFAULT_MOTOR_WATCHDOG_MS)),
@@ -365,6 +399,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_rc_stream_start: ({ rateHz }) => {
       legacy("device_rc_stream_start");
       if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
+      if (device.attitudeTimer) throw portBusy("COM5", "APP", "attitude stream running");
       if (device.rcTimer) clearInterval(device.rcTimer);
       const hz = Math.min(50, Math.max(1, rateHz ?? 15));
       let seq = 0;
@@ -402,11 +437,56 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
+  // ---- pending Device contract (api/pending.ts): sensors, acc calibration, attitude stream.
+  const autoTilt = (ms: number): Euler => {
+    const phase = Math.floor(ms / 2000) % 4;
+    return phase === 1 ? { roll: 0, pitch: -30, yaw: 0 } : phase === 3 ? { roll: 30, pitch: 0, yaw: 0 } : { roll: 0, pitch: 0, yaw: 0 };
+  };
+  const pendingHandlers: Record<PendingCommandName, (args: never) => unknown> = {
+    device_sensors: () => {
+      legacy("device_sensors");
+      // Extra keys are allowed by the contract; the UI must ignore them.
+      return { ...JSON.parse(JSON.stringify(device.sensors)), rangefinder: { present: false, enabled: false } };
+    },
+    device_acc_calibrate: async () => {
+      legacy("device_acc_calibrate");
+      if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
+      if (!device.sensors.acc.present || !device.sensors.acc.enabled) throw err("ACC_NOT_AVAILABLE", "accelerometer missing or disabled");
+      await sleep(stepMs * 3);
+      if (device.accCalFailuresLeft > 0) {
+        device.accCalFailuresLeft--;
+        throw err("MSP_BAD_RESPONSE", "accelerometer calibration did not finish (board moved?)");
+      }
+      device.accCalibrations++;
+    },
+    device_attitude_stream_start: ({ rateHz }: { rateHz: number | null }) => {
+      legacy("device_attitude_stream_start");
+      if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
+      if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
+      if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      const hz = Math.min(50, Math.max(1, rateHz ?? 20));
+      let seq = 0;
+      device.attitudeTimer = setInterval(() => {
+        seq++;
+        const ms = Math.round((seq / hz) * 1000);
+        const a = reportedAttitude(device.tilt ?? autoTilt(ms), device.mount);
+        events.emit("device://attitude", { seq, timestampMs: ms, ...a });
+      }, 1000 / hz);
+    },
+    device_attitude_stream_stop: () => {
+      legacy("device_attitude_stream_stop");
+      if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      device.attitudeTimer = null;
+    },
+  };
+
   const inner = createMockBackend({ ...handlers, ...deviceHandlers });
   // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
-  const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_");
+  const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_") || cmd.startsWith("device_attitude_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
+    const p = pendingHandlers[cmd as unknown as PendingCommandName];
+    if (p) return p(args);
     return inner(cmd, args);
   }) as Backend;
 
@@ -424,7 +504,7 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
 };
 
 /** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
-export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript {
+export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): CliScript {
   const opts = { escTelemetry: model.esc.telemetryPort !== null };
   const commands: string[] = [];
   const warnings: string[] = [];
@@ -457,12 +537,23 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
   if (model.esc.telemetryPort) commands.push("feature ESC_SENSOR");
   // Like config::modes: stable names only, mapped to permanent box ids here (backend side).
-  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, "FLIP OVER AFTER CRASH": 35 };
+  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, AIRMODE: 28, FLIPOVERAFTERCRASH: 35, PREARM: 36 };
   model.switches.forEach((s, i) => {
-    const id = boxIds[s.mode];
+    const id = boxIds[s.mode.toUpperCase().replace(/[^A-Z0-9]/g, "")];
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
+  // Proposed fields (wizard/modelExt.ts); absent / null = keep the board's value.
+  if (model.airmode) commands.push(model.airmode === "always" ? "feature AIRMODE" : "feature -AIRMODE");
+  if (model.sensors) commands.push(`set acc_hardware = ${model.sensors.acc ? "AUTO" : "NONE"}`, `set baro_hardware = ${model.sensors.baro ? "AUTO" : "NONE"}`);
+  if (model.boardAlignment) for (const k of ["roll", "pitch", "yaw"] as const) commands.push(`set align_board_${k} = ${model.boardAlignment[k]}`);
+  if (model.beepers) {
+    const off = new Set(model.beepers.disabled);
+    for (const b of availableBeepers(model.fc.firmwareVersion || null)) {
+      const n = beeperName(b, model.fc.firmwareVersion || null);
+      commands.push(off.has(n) ? `beeper -${n}` : `beeper ${n}`);
+    }
+  }
   commands.push("save");
   return { commands, warnings, dialect: "4.5", cleared };
 }
