@@ -12,6 +12,40 @@
       "type": ["string", "null"],
       "pattern": "^(UART([1-9]|1[0-5])|LPUART1|SOFTSERIAL[12])$"
     },
+    "vtxTable": {
+      "description": "Betaflight vtxtable; limits from drivers/vtx_table.h (same on 4.4/4.5/2025.12).",
+      "type": "object",
+      "required": ["bands", "powerLevels"],
+      "additionalProperties": false,
+      "properties": {
+        "bands": {
+          "type": "array", "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["name", "letter", "factory", "frequencies"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 8 },
+              "letter": { "type": "string", "minLength": 1, "maxLength": 1 },
+              "factory": { "type": "boolean" },
+              "frequencies": { "type": "array", "maxItems": 8, "items": { "type": "integer", "minimum": 0, "maximum": 5999 } }
+            }
+          }
+        },
+        "powerLevels": {
+          "type": "array", "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["value", "label"],
+            "additionalProperties": false,
+            "properties": {
+              "value": { "type": "integer", "minimum": 0, "maximum": 65535 },
+              "label": { "type": "string", "minLength": 1, "maxLength": 3 }
+            }
+          }
+        }
+      }
+    },
     "elrsDomain": {
       "description": "expresslrs_domain (betaflight cli/settings.c lookupTableFreqDomain). SX1280 builds: ISM2400, CE2400; SX127x builds: the sub-GHz values.",
       "enum": [null, "AU433", "AU915", "EU433", "EU868", "IN866", "FCC915", "ISM2400", "CE2400"]
@@ -67,7 +101,12 @@
         "protocol": { "enum": [null, "SMARTAUDIO", "TRAMP", "MSP"] },
         "port": { "$ref": "#/$defs/portName" },
         "digitalSystem": { "enum": [null, "DJI", "WALKSNAIL", "HDZERO", "OTHER"] },
-        "region": { "type": ["string", "null"], "pattern": "^[A-Z]{2}$", "description": "ISO-3166 alpha-2" }
+        "region": { "type": ["string", "null"], "pattern": "^[A-Z]{2}$",
+                    "description": "ISO-3166 alpha-2; the UI picks a table preset from it, the generator only writes table" },
+        "table": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/vtxTable" }], "description": "vtxtable; null = keep the FC's table" },
+        "band": { "type": ["integer", "null"], "minimum": 1, "maximum": 8, "description": "vtx_band, 1-based into table; null = keep" },
+        "channel": { "type": ["integer", "null"], "minimum": 1, "maximum": 8, "description": "vtx_channel, 1-based; null = keep" },
+        "power": { "type": ["integer", "null"], "minimum": 1, "maximum": 8, "description": "vtx_power, 1-based into powerLevels; null = keep" }
       }
     },
     "gps": {

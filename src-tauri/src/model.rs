@@ -289,7 +289,51 @@ pub struct Vtx {
     /// Digital system hint (affects OSD/canvas settings).
     pub digital_system: Option<DigitalSystem>,
     /// ISO-3166 region code for analog VTX tables / power legality, e.g. "IL".
+    /// The UI uses it to pick a table preset; the generator only writes `table`.
     pub region: Option<String>,
+    /// Analog VTX table (`vtxtable ...`); null = keep the FC's table.
+    #[serde(default)]
+    pub table: Option<VtxTable>,
+    /// Selected band / channel / power level, 1-based indexes into `table`
+    /// (`vtx_band`, `vtx_channel`, `vtx_power`); null = keep.
+    #[serde(default)]
+    pub band: Option<u8>,
+    #[serde(default)]
+    pub channel: Option<u8>,
+    #[serde(default)]
+    pub power: Option<u8>,
+}
+
+/// Betaflight VTX table. Limits (drivers/vtx_table.h, same on 4.4 / 4.5 / 2025.12):
+/// at most 8 bands, 8 channels per band, 8 power levels; band name <= 8 chars,
+/// power label <= 3 chars; user frequencies <= 5999 MHz.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxTable {
+    pub bands: Vec<VtxBand>,
+    pub power_levels: Vec<VtxPowerLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxBand {
+    /// e.g. "BOSCAM_A"
+    pub name: String,
+    /// One character, e.g. "A"
+    pub letter: String,
+    /// FACTORY (VTX uses its own frequencies) vs CUSTOM (FC sends `frequencies`).
+    pub factory: bool,
+    /// MHz per channel; 0 = channel disabled. Same length for every band.
+    pub frequencies: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxPowerLevel {
+    /// Protocol-specific value (SmartAudio 2.1: dBm; Tramp: mW; SmartAudio 1/2: index).
+    pub value: u16,
+    /// OSD label, up to 3 chars, e.g. "25", "200", "1W".
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

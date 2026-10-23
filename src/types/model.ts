@@ -95,6 +95,12 @@ export interface DroneModel {
     port: string | null;
     digitalSystem: DigitalSystem | null;
     region: string | null;
+    /** Analog VTX table (`vtxtable`); null = keep the FC's table. */
+    table?: VtxTable | null;
+    /** 1-based band / channel / power level into `table`; null = keep. */
+    band?: number | null;
+    channel?: number | null;
+    power?: number | null;
   };
   gps: { enabled: boolean; port: string | null; provider: GpsProvider | null };
   esc: {
@@ -106,6 +112,12 @@ export interface DroneModel {
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
   extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
+}
+
+/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
+export interface VtxTable {
+  bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
+  powerLevels: { value: number; label: string }[];
 }
 
 // ---- config engine
