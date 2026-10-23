@@ -9,7 +9,7 @@
  * api/catalog.ts). Without a catalog (not loaded / empty) the full #65 list is shown.
  */
 import { catalogHas } from "../api/catalog";
-import { BEEPER_NAMES, type BeeperName, type DshotBeaconCondition } from "../types/pendingModel";
+import { BEEPER_NAMES, type BeeperName, type DshotBeaconCondition } from "../types/model";
 
 export type BeeperGroup = "important" | "helpful" | "noisy";
 export interface BeeperDef {

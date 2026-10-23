@@ -36,7 +36,7 @@ import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
 import { CATALOG_COMMAND, type FirmwareCatalog } from "../api/catalog";
-import { BEEPER_NAMES } from "../types/pendingModel";
+import { BEEPER_NAMES } from "../types/model";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 import { compareVersions } from "../wizard/version";
@@ -640,7 +640,7 @@ export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): C
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
-  // #65 fields (types/pendingModel.ts); absent / null = keep the board's value.
+  // #65 fields (src/types/model.ts); absent / null = keep the board's value.
   const fw = model.fc.firmwareVersion || "";
   (model.removeModes ?? []).forEach((m, i) => {
     // The demo FC has no ranges for these: reset a spare slot like the engine would (no-op otherwise).

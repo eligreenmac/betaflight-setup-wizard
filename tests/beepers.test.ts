@@ -11,7 +11,7 @@ import { generateCli } from "../src/mocks/scenarios";
 import { availableBeaconEvents, availableBeepers, BEEPERS, KEEP_ON, recommendedDisabled, setBeacon, setBeeper } from "../src/wizard/beepers";
 import { mockFirmwareCatalog } from "../src/mocks/scenarios";
 import { parseCatalog, resetCatalog } from "../src/api/catalog";
-import { BEEPER_NAMES } from "../src/types/pendingModel";
+import { BEEPER_NAMES } from "../src/types/model";
 import { guards } from "../src/wizard/guards";
 import { toPlanModel } from "../src/wizard/modelExt";
 import { nav, resetNav } from "../src/wizard/nav";

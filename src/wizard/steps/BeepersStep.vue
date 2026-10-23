@@ -18,7 +18,7 @@ import {
   setBeeper,
   type BeeperDef,
 } from "../beepers";
-import type { DshotBeaconCondition } from "../../types/pendingModel";
+import type { DshotBeaconCondition } from "../../types/model";
 import { markDirty, wizard } from "../state";
 
 defineProps<{ stepId: string }>();

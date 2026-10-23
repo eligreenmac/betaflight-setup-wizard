@@ -13,7 +13,7 @@ import { toPlanModel } from "../src/wizard/modelExt";
 import { generateCli } from "../src/mocks/scenarios";
 import { addModeSwitch, createWizardState, removeModeSwitch, resetWizard, setAirmode, setModeRemoval, setPrearm, wizard, type WizardState } from "../src/wizard/state";
 import { unplannedChoices } from "../src/wizard/modelExt";
-import type { DroneModelNext } from "../src/types/pendingModel";
+import type { DroneModel } from "../src/types/model";
 import { detectSwitch, MODES, modeKeyOf, SWITCH_POSITIONS } from "../src/wizard/switches";
 import { settle } from "./walk";
 
@@ -151,7 +151,7 @@ describe("switch validation", () => {
     s.ext.sensors = { acc: null, baro: false, mag: null };
     s.ext.beepers = { disabled: ["ON_USB"], dshotBeaconDisabled: null };
     s.ext.boardAlignment = { roll: 0, pitch: 0, yaw: 90 };
-    const p: DroneModelNext = toPlanModel(s.model, s.ext);
+    const p: DroneModel = toPlanModel(s.model, s.ext);
     expect(p.airmode).toBe("SWITCH");
     expect(p.switches.map((x) => x.mode)).toEqual(["ARM", "AIR MODE"]);
     expect(p.removeModes).toEqual(["PREARM"]);

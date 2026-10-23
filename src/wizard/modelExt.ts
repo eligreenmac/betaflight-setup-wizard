@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * UI-side adapter for the DroneModel batch-2 fields of shared PR #65 (airmode,
- * removeModes, sensors, boardAlignment, beepers; the OSD is in its own PR). The exact #65
- * types are mirrored in src/types/pendingModel.ts (TODO(shared): import them from
- * src/types/model.ts when #65 lands; the shared file is not edited here).
+ * UI-side answers for the DroneModel batch-2 fields of shared #65, now in
+ * src/types/model.ts (airmode, removeModes, sensors, boardAlignment, beepers; the OSD is in
+ * its own PR).
  *
  * Like #65: everything optional, null = keep the flight controller's current value.
  * Untouched answers stay null; only an explicit choice sets a value. `sensors` is per
@@ -12,8 +11,7 @@
  * An engine that does not know these fields yet ignores them (serde defaults); Review
  * detects that with unplannedChoices() and says so instead of pretending they were written.
  */
-import type { CliScript, DroneModel } from "../types/model";
-import type { Airmode, Beepers, BoardAlignment, DroneModelNext, OptionalMode } from "../types/pendingModel";
+import type { Airmode, Beepers, BoardAlignment, CliScript, DroneModel, OptionalMode } from "../types/model";
 import { sourceMismatch } from "../api/fallback";
 import { SENSORS_COMMAND, ATTITUDE_START_COMMAND } from "../api/pending";
 
@@ -35,8 +33,8 @@ export interface ModelExt {
 
 export const emptyExt = (): ModelExt => ({ airmode: null, removeModes: [], sensors: null, boardAlignment: null, beepers: null });
 
-/** DroneModel plus the #65 fields (what config_plan / config_verify receive). */
-export type ExtendedDroneModel = DroneModelNext;
+/** DroneModel with the #65 fields (what config_plan / config_verify receive). */
+export type ExtendedDroneModel = DroneModel;
 
 export type ExtField = keyof ModelExt;
 export const EXT_FIELDS: ExtField[] = ["airmode", "removeModes", "sensors", "boardAlignment", "beepers"];
