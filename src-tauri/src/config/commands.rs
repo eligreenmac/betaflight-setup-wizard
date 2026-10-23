@@ -54,7 +54,7 @@ pub fn read_ports(links: &impl LinkSource) -> AppResult<Vec<FcSerialPort>> {
     links.with_link(|l| session::read_ports(l))
 }
 
-/// C4: `diff all` -> `backups/<mcu_id>/<UTC stamp>.txt`.
+/// C4: `diff all` -> `backups/<boardUid>/<UTC stamp>.txt`.
 pub fn backup(links: &impl LinkSource, store: &BackupStore) -> AppResult<Backup> {
     links.with_link(|l| {
         let uid = board_uid(l);
@@ -99,7 +99,7 @@ pub fn rollback(
 }
 
 /// C6: restore by id (`config_list_backups`): safety backup, then the rollback path.
-/// Refuses (CONFIG, nothing sent) a backup taken on another board (both `mcu_id`s
+/// Refuses (CONFIG, nothing sent) a backup taken on another board (both UIDs
 /// known and different) or on another firmware line (`session::rollback`).
 pub fn restore(
     links: &impl LinkSource,
@@ -115,7 +115,7 @@ pub fn restore(
         let known = |u: &str| !u.is_empty() && u != "unknown";
         if known(&uid) && known(&target.board_uid) && !uid.eq_ignore_ascii_case(&target.board_uid) {
             return Err(AppError::Config(format!(
-                "backup {} was taken on another board (mcu_id {}), the connected FC is {}; nothing was changed",
+                "backup {} was taken on another board (UID {}), the connected FC is {}; nothing was changed",
                 target.id, target.board_uid, uid
             )));
         }
