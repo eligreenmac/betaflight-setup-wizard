@@ -5,6 +5,7 @@
  * Kept out of the .vue file so it can be tested against the scenario mock.
  */
 import { api } from "../api/commands";
+import { flasherNext } from "../api/device";
 import { onEvent } from "../api/events";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { Backup, DfuDevice, FcInfo, FcSerialPort, FlashProgress } from "../types/model";
@@ -15,6 +16,10 @@ export type UpdateStage = (typeof UPDATE_STAGES)[number];
 export interface UpdateHooks {
   onStage: (stage: UpdateStage) => void;
   onProgress: (p: FlashProgress) => void;
+  /** The DFU device that will be flashed (needed to remove read protection after READ_PROTECTED). */
+  onDfu?: (d: DfuDevice) => void;
+  /** A settings backup was taken (reported right away so it survives a later failure). */
+  onBackup?: (b: Backup) => void;
 }
 
 export interface UpdateResult {
@@ -67,7 +72,10 @@ export async function runFirmwareUpdate(
   let backup: Backup | null = null;
   if (!dfu) {
     hooks.onStage("backup");
-    if (fc.fcVariant === "BTFL") backup = await api.config.backup();
+    if (fc.fcVariant === "BTFL") {
+      backup = await api.config.backup();
+      hooks.onBackup?.(backup);
+    }
     hooks.onStage("bootloader");
     await api.device.rebootToBootloader();
     dfu = await pollUntil(async () => (await api.flasher.listDfuDevices())[0], poll);
@@ -77,6 +85,7 @@ export async function runFirmwareUpdate(
   if (!dfu) throw fail("DFU_NOT_FOUND", "board did not appear in DFU mode");
   if (!dfu.driverOk) throw fail("DRIVER_MISSING", `WinUSB driver missing for ${dfu.vid.toString(16)}:${dfu.pid.toString(16)}`);
 
+  hooks.onDfu?.(dfu);
   hooks.onStage("flash");
   const unlisten = await onEvent("flasher://progress", hooks.onProgress);
   try {
@@ -92,4 +101,17 @@ export async function runFirmwareUpdate(
   const newFc = await api.device.identify();
   const ports = await api.config.readPorts();
   return { fc: newFc, ports, path: host.path, backup };
+}
+
+/**
+ * After READ_PROTECTED: remove the protection, which ERASES THE WHOLE CHIP (firmware and
+ * settings). Only call this after the user explicitly confirmed it (ReadProtectedPanel);
+ * it is never done automatically (ARCHITECTURE §2.3). The board re-enumerates in DFU,
+ * so wait for it before flashing again with runFirmwareUpdate (which then skips the reboot).
+ */
+export async function removeReadProtection(dfuSerial: string | null, poll: PollOptions = DEFAULT_POLL): Promise<DfuDevice> {
+  await flasherNext.removeReadProtection(dfuSerial, true);
+  const dfu = await pollUntil(async () => (await api.flasher.listDfuDevices())[0], poll);
+  if (!dfu) throw fail("DFU_NOT_FOUND", "board did not come back in DFU mode after removing read protection");
+  return dfu;
 }
