@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Workstream `device`: host port discovery (USB VID/PID), serial transport,
 //! MSP v1/v2 client, CLI mode. Owns the single active FC connection.
 //!
@@ -5,8 +6,21 @@
 //!   - `ConnectionManager` (Tauri managed state, device PR) lends `&mut dyn FcLink`
 //!     (`Connection` + `Reconnect`, below) to config/flasher; see ARCHITECTURE.md §4.1.
 
+pub mod cli;
 pub mod commands;
+pub mod error;
+pub mod manager;
+#[cfg(test)]
+pub(crate) mod mock;
+pub mod motor;
+pub mod msp;
+pub mod rc;
+pub mod rx_spi;
+pub mod serial;
+pub mod serial_ports;
 pub mod usb_ids;
+
+pub use manager::ConnectionManager;
 
 use crate::error::AppResult;
 use std::time::Duration;
