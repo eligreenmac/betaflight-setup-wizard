@@ -76,6 +76,14 @@
     },
     "done": {
       "title": "Done"
+    },
+    "calibration": {
+      "title": "Sensors and level",
+      "description": "Check the sensors, calibrate the accelerometer, and make sure the board knows which way it is mounted."
+    },
+    "beepers": {
+      "title": "Beeps",
+      "description": "Choose when the quad beeps. Beeps tell you about the battery and the radio link, and help you find a crashed quad."
     }
   },
   "welcome": {
@@ -346,7 +354,212 @@
       "beeper": "Beeper",
       "turtle": "Turtle mode (flip over after crash)",
       "altHold": "Altitude hold",
-      "posHold": "Position hold"
+      "posHold": "Position hold",
+      "prearm": "Prearm (second safety switch)",
+      "airMode": "Air mode",
+      "horizon": "Horizon (self-level, flips allowed)",
+      "gpsRescue": "GPS Rescue (fly home)"
+    },
+    "detect": "Detect",
+    "detecting": "Flip the switch now… (cancel)",
+    "detectHint": "Flip the switch you want to use for this mode on your radio. The wizard picks the channel that moves.",
+    "prearm": {
+      "title": "Prearm: a second safety switch (optional)",
+      "body": "With prearm, the quad only arms if this switch is on first. It protects against arming by accident, for example when you bump the arm switch while carrying the quad.",
+      "add": "Add a prearm switch",
+      "skip": "Skip",
+      "addHint": "A switch row is added above. Arm only works after this switch is on.",
+      "skipHint": "The wizard does not change prearm. If the board already has a prearm switch, it stays.",
+      "remove": "Remove it",
+      "removeHint": "If the board already has a prearm switch, it is removed. If it has none, nothing changes."
+    },
+    "turtle": {
+      "title": "Turtle mode: flip over after a crash (optional)",
+      "body": "If the quad lands upside down, turtle mode spins the motors backwards so you can flip it back over and fly on, without walking to it.",
+      "needsDshot": "Turtle mode needs the DShot ESC protocol. Your ESC is not set to DShot, so it will not work.",
+      "dshotOk": "Your ESC uses DShot, so turtle mode can work.",
+      "added": "Turtle mode is on a switch above."
+    },
+    "airmode": {
+      "title": "Air mode",
+      "body": "Air mode keeps the quad stable and under control even with the throttle all the way down, for example in flips, rolls and dives. Most pilots keep it always on.",
+      "always": "Always on (recommended)",
+      "alwaysHint": "Air mode is on whenever the quad is armed.",
+      "switch": "On a switch",
+      "switchHint": "Turn air mode on and off with a switch. A switch row is added above.",
+      "off": "Off",
+      "offHint": "At zero throttle the quad may wobble or drop and is harder to control.",
+      "keep": "Keep the board's current setting",
+      "keepHint": "The wizard does not change air mode."
+    },
+    "removeExisting": "If the board already has a switch for {mode}, remove it",
+    "removeHint": "The wizard cannot see which switches the board has now. Removing a switch the board does not have changes nothing."
+  },
+  "calibration": {
+    "sensors": {
+      "title": "Sensors on your board",
+      "loading": "Reading the sensors…",
+      "unavailable": "This app version cannot read the sensors yet. The board keeps its current sensor settings.",
+      "simulated": "The sensor list is from the demo, not from your board, so these choices will not be written.",
+      "gyro": "Gyroscope",
+      "gyroHint": "Measures how fast the quad turns. The quad cannot fly without it, so it is always on.",
+      "acc": "Accelerometer",
+      "accHint": "Knows which way is down. Needed for the self-level modes (Angle, Horizon) and some GPS features.",
+      "baro": "Barometer",
+      "baroHint": "Measures air pressure to estimate height. Needed for altitude hold.",
+      "alwaysOn": "Always on",
+      "missing": "Not on this board",
+      "keepHint": "If you do not change anything here, the board keeps its current sensor settings.",
+      "offHint": "Turned off in the board's settings. Turn it on if your board has one; the board looks for it after the settings are applied.",
+      "mag": "Magnetometer (compass)",
+      "magHint": "Knows which way is north. Only some GPS features use it; if you are not sure, leave it as it is.",
+      "fixAccOn": "Turn the accelerometer back on",
+      "fixRemoveModes": "Remove these switches: {modes}"
+    },
+    "warnAngleNoAcc": "A mode on your switches (Angle, Horizon, altitude or position hold, GPS Rescue) needs the accelerometer, but this board has no working one. That mode will not work.",
+    "warnGpsNoAcc": "The GPS is on, but the accelerometer is off. Some GPS features, like GPS Rescue, need it.",
+    "acc": {
+      "title": "Calibrate the accelerometer",
+      "step1": "Put the quad on a flat, level surface (a table or the floor).",
+      "step2": "Keep it completely still. Do not touch it or the cable.",
+      "step3": "Select Calibrate and wait a few seconds.",
+      "calibrate": "Calibrate",
+      "retry": "Try again",
+      "running": "Calibrating… keep the quad still.",
+      "done": "Done. The accelerometer is calibrated.",
+      "failedHint": "Make sure the quad is level and not moving, then try again.",
+      "accOff": "Turn the accelerometer on to calibrate it.",
+      "optional": "Recommended if you use Angle or Horizon mode. You can continue without it.",
+      "needed": "The board says its accelerometer has not been calibrated yet.",
+      "savesNow": "The calibration is saved on the board right away, before you apply the other settings.",
+      "unsaved": "The last apply did not finish, so the board may still have unsaved changes. If calibrating says so, press Reboot board first.",
+      "rebooting": "Restarting the board…",
+      "blockedApplying": "Settings are being written to the board. Calibrate after that finishes.",
+      "blockedPlan": "A setup plan is ready but not applied yet. Apply it first, then calibrate.",
+      "planDiscarded": "You came back after reviewing the plan, so that plan was dropped. Calibrate if you need to; the plan will be made again on the Review step."
+    },
+    "orientation": {
+      "title": "Is the board mounted the right way?",
+      "instructions": "Hold the quad level. Tilt the nose down, then tilt the right side down, and watch the pictures.",
+      "sideView": "From the side (nose on the right)",
+      "rearView": "From behind",
+      "waiting": "Waiting for the board…",
+      "direction": {
+        "level": "The board says: level.",
+        "noseDown": "The board says: nose down.",
+        "noseUp": "The board says: nose up.",
+        "rightDown": "The board says: right side down.",
+        "leftDown": "The board says: left side down."
+      },
+      "upsideDown": "It also thinks it is upside down.",
+      "question": "Did the picture move the same way as the quad?",
+      "yes": "Yes, it matches",
+      "no": "No, it moved differently",
+      "presetsIntro": "Pick how the board's arrow points on the frame. The picture updates right away, so try until tilting matches. The choice is saved when you apply.",
+      "presetsHint": "Tilt again after each choice: nose down must show nose down, right side down must show right side down.",
+      "keep": "Keep the board's current setting",
+      "presets": {
+        "default": "Arrow forward (default)",
+        "yaw90": "Arrow to the right (turned 90°)",
+        "yaw180": "Arrow backward (turned 180°)",
+        "yaw270": "Arrow to the left (turned 270°)",
+        "roll180": "Upside down, arrow forward",
+        "roll180yaw90": "Upside down, arrow to the right",
+        "roll180yaw180": "Upside down, arrow backward",
+        "roll180yaw270": "Upside down, arrow to the left"
+      },
+      "unavailable": "This app version cannot show the board's movement yet. You can skip this check.",
+      "busy": "The board is busy with another live test. Stop it and try again.",
+      "failed": "The live view could not start.",
+      "simulated": "This movement is from the demo, not from your board, so the mounting cannot be changed here.",
+      "current": "The board is set now to: roll {roll}°, pitch {pitch}°, yaw {yaw}°.",
+      "currentCustom": "This is not one of the choices below.",
+      "afterApply": "The board itself changes only after you apply the settings. The picture shows the result already.",
+      "stoppedDisconnected": "The live view stopped: the board was disconnected. Check the USB cable, then try again.",
+      "stoppedError": "The live view stopped: the board stopped answering. Try again."
+    },
+    "warnAltholdNoBaro": "Altitude hold is on a switch, but the barometer is turned off. Without it, altitude hold is much less accurate."
+  },
+  "beepers": {
+    "choose": "Choose the beeps (recommended)",
+    "chooseHint": "Starts with Betaflight's beeps, but quiet while the quad is only on USB power.",
+    "keep": "Keep the board's current beeps",
+    "keepHint": "The wizard does not change the beeps.",
+    "reset": "Reset to recommended",
+    "isRecommended": "These are the recommended beeps.",
+    "keepOnNote": "Lost signal and low battery beeps always stay on: they warn you before the quad falls, and help you find it after a crash.",
+    "locked": "Always on, for safety.",
+    "groups": {
+      "important": "Important",
+      "helpful": "Helpful",
+      "noisy": "Can be noisy"
+    },
+    "groupHints": {
+      "important": "Warnings about the radio link, the battery, and arming.",
+      "helpful": "Confirmations that something worked.",
+      "noisy": "Beeps many pilots turn off."
+    },
+    "items": {
+      "RX_LOST": "Signal lost",
+      "RX_LOST_LANDING": "Signal lost, landing",
+      "BAT_LOW": "Battery low",
+      "BAT_CRIT_LOW": "Battery critically low",
+      "RX_SET": "Switch moved",
+      "ARMING": "Arming",
+      "DISARMING": "Disarming",
+      "ARMED": "Armed, throttle down",
+      "GYRO_CALIBRATED": "Gyro ready",
+      "ACC_CALIBRATION": "Level calibrated",
+      "ACC_CALIBRATION_FAIL": "Level calibration failed",
+      "ARMING_GPS_FIX": "Arming with GPS",
+      "ARMING_GPS_NO_FIX": "Arming without GPS",
+      "GPS_STATUS": "GPS satellites",
+      "READY_BEEP": "Ready to fly",
+      "CRASH_FLIP": "Turtle mode",
+      "BLACKBOX_ERASE": "Flight log erased",
+      "RC_SMOOTHING_INIT_FAIL": "Radio smoothing problem",
+      "SYSTEM_INIT": "Power on",
+      "ON_USB": "Beep on USB power",
+      "DISARM_REPEAT": "Disarmed reminder",
+      "CAM_CONNECTION_OPEN": "Camera menu opened",
+      "CAM_CONNECTION_CLOSE": "Camera menu closed",
+      "MULTI_BEEPS": "Confirmation beeps"
+    },
+    "explain": {
+      "RX_LOST": "Beeps when the radio signal is lost, so you can find the quad.",
+      "RX_LOST_LANDING": "Beeps while the quad lands by itself after losing the signal.",
+      "BAT_LOW": "Warns that the battery is getting low: time to land.",
+      "BAT_CRIT_LOW": "Warns that the battery is almost empty: land now.",
+      "RX_SET": "Beeps when you flip the beeper switch on your radio, to find a lost quad.",
+      "ARMING": "Beeps when the quad arms, so you know the motors can spin.",
+      "DISARMING": "Beeps when the quad disarms.",
+      "ARMED": "Reminds you the quad is armed while the throttle is at zero.",
+      "GYRO_CALIBRATED": "Beeps when the gyro is ready after power on.",
+      "ACC_CALIBRATION": "Confirms that the level calibration worked.",
+      "ACC_CALIBRATION_FAIL": "Tells you the level calibration did not work.",
+      "ARMING_GPS_FIX": "Special arming beep when the GPS has a position.",
+      "ARMING_GPS_NO_FIX": "Special arming beep when the GPS has no position yet.",
+      "GPS_STATUS": "Beeps the number of GPS satellites found.",
+      "READY_BEEP": "Beeps once the quad is ready to arm.",
+      "CRASH_FLIP": "Beeps while turtle mode is on.",
+      "BLACKBOX_ERASE": "Confirms that the flight log memory was erased.",
+      "RC_SMOOTHING_INIT_FAIL": "Warns that radio smoothing could not start (older firmware).",
+      "SYSTEM_INIT": "Beeps when the board powers on.",
+      "ON_USB": "Lets the quad beep when it is only powered from USB. Off keeps your desk quiet.",
+      "DISARM_REPEAT": "Keeps beeping while disarmed with the throttle up.",
+      "CAM_CONNECTION_OPEN": "Beeps when the camera settings menu opens.",
+      "CAM_CONNECTION_CLOSE": "Beeps when the camera settings menu closes.",
+      "MULTI_BEEPS": "Short beeps that confirm a change, for example a new profile chosen with the sticks."
+    },
+    "beacon": {
+      "title": "Motor beacon (DShot)",
+      "body": "With DShot, the motors themselves can beep. They are much louder than a buzzer, which helps you find a quad that crashed in tall grass. Betaflight has this off by default.",
+      "keep": "Keep the board's current setting",
+      "change": "Choose",
+      "events": {
+        "RX_LOST": "When the radio signal is lost",
+        "RX_SET": "When you turn on the beeper switch"
+      }
     }
   },
   "review": {
@@ -369,7 +582,34 @@
     "nothingWritten": "Nothing is written until you select Apply on the next step.",
     "planUnavailableTitle": "This app version cannot apply settings yet",
     "planUnavailableBody": "The board connection in this version can only show a preview of the changes, so Apply is turned off. Update the app to apply settings. Nothing has been changed on the board.",
-    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes."
+    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes.",
+    "keep": "Keep current",
+    "on": "On",
+    "off": "Off",
+    "airmode": "Air mode",
+    "sensors": "Sensors",
+    "alignment": "Board mounting",
+    "accCalibration": "Level calibration",
+    "calibration": {
+      "idle": "Not done in this session",
+      "running": "Running",
+      "done": "Done",
+      "failed": "Failed"
+    },
+    "beepers": "Beeps",
+    "beepersOff": "All on except {list}",
+    "beepersAllOn": "All on",
+    "unplannedTitle": "Some choices cannot be written by this version yet",
+    "unplannedBody": "These choices are not in the list of changes and stay as they are on the board: {list}. Update the app to set them.",
+    "fields": {
+      "airmode": "air mode",
+      "sensors": "sensors",
+      "boardAlignment": "board mounting",
+      "beepers": "beeps",
+      "removeModes": "switches to remove"
+    },
+    "removeModes": "Switches to remove",
+    "beacon": "Motor beacon"
   },
   "apply": {
     "ready": "{n} settings are ready to write.",
@@ -403,7 +643,7 @@
       "step2": "If the same setting fails again, your firmware may not support it. Update the firmware and try again.",
       "step3": "You can restore the backup below to undo all changes."
     },
-    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Unplug the USB cable, plug it back in, and connect again to check them."
+    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Check the USB cable, then connect again to check them."
   },
   "done": {
     "success": "{board} is set up.",
@@ -493,7 +733,9 @@
     "openFirmwareHelp": "Firmware help",
     "reportIssue": "Report a problem",
     "technicalDetails": "Technical details",
-    "editComponents": "Change components"
+    "editComponents": "Change components",
+    "rebootBoard": "Reboot board",
+    "goConnect": "Go to Connect"
   },
   "validation": {
     "noBoard": "Connect a flight controller first.",
@@ -524,13 +766,21 @@
     "planUnavailable": "This app version cannot apply settings yet. Update the app.",
     "crsfFamilyRequired": "Choose which radio system the receiver uses.",
     "bindingRequired": "Choose how to bind the receiver.",
-    "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button."
+    "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button.",
+    "prearmSameSwitch": "Prearm must be on a different switch than arm.",
+    "turtleNeedsDshot": "Turtle mode needs the DShot ESC protocol. Change the ESC protocol, or remove turtle mode.",
+    "airmodeSwitchMissing": "Air mode is set to \"on a switch\": add the switch.",
+    "calibrationRunning": "Wait until the calibration is finished.",
+    "beepersChoose": "Choose the recommended beeps, or keep the current ones.",
+    "accNeededByModes": "The accelerometer is turned off, but these switches need it: {modes}. Turn the accelerometer on, or remove those switches.",
+    "alignmentInvalid": "The board mounting angles must be whole degrees from -180 to 360.",
+    "modeNotInFirmware": "{mode} is not available in Betaflight {version}. Remove it."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
       "title": "No flight controller found",
       "body": "The computer does not see a flight controller. This is usually the cable or the USB port.",
-      "step1": "Unplug the USB cable and plug it back in. Wait a few seconds.",
+      "step1": "Check that the USB cable is pushed in firmly at both ends. Wait a few seconds.",
       "step2": "Try another cable. Many USB cables only charge.",
       "step3": "Plug straight into the computer, not through a hub.",
       "step4": "Check that a light turns on on the board. If nothing lights up, it is not getting power."
@@ -539,7 +789,7 @@
       "title": "The flight controller's connection is in use",
       "body": "Another program, or another window of this app, has the connection open.",
       "step1": "Close other windows of this app, and apps such as Betaflight Configurator or Cura.",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "Wait a few seconds, then try again."
     },
     "PORT_BUSY_APP": {
       "title": "This app is already using the flight controller",
@@ -551,7 +801,7 @@
       "title": "Another program is using the flight controller",
       "body": "Another app on this computer has the connection open.",
       "step1": "Close Betaflight Configurator, Cura or another app that may use the port (for example ESC Configurator or a 3D-printer tool).",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "Wait a few seconds, then try again."
     },
     "DISCONNECTED": {
       "title": "The flight controller was disconnected",
@@ -563,24 +813,24 @@
       "title": "The flight controller stopped responding",
       "body": "The board did not answer in time.",
       "step1": "Check the cable, then select Try again.",
-      "step2": "If it keeps happening, unplug and replug the board."
+      "step2": "If it keeps happening, try another USB port or cable."
     },
     "SERIAL_ERROR": {
       "title": "Could not talk to the board",
       "body": "The USB connection reported an error.",
-      "step1": "Unplug and replug the board.",
+      "step1": "Check the USB cable and that the board is powered, then try again.",
       "step2": "Try another USB port or cable."
     },
     "DRIVER_MISSING": {
       "title": "Windows needs a driver for this board",
       "body": "Windows sees the board but has no driver for it. This is common on a new computer.",
       "step1": "Select Install the driver. It takes a minute.",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "When it is installed, try again."
     },
     "USB_ERROR": {
       "title": "USB error",
       "body": "The computer reported a USB problem while talking to the board.",
-      "step1": "Unplug and replug the board.",
+      "step1": "Check the USB cable and that the board is powered, then try again.",
       "step2": "Try another USB port, straight on the computer."
     },
     "UNSUPPORTED_FIRMWARE": {
@@ -684,7 +934,7 @@
     },
     "BOARD_ARMED": {
       "title": "The board is armed",
-      "body": "Motors cannot be tested while the board is armed.",
+      "body": "This cannot be done while the board is armed (motor test or calibration).",
       "step1": "Flip the arm switch on your radio to off."
     },
     "MOTOR_TEST_NOT_ACTIVE": {
@@ -733,6 +983,60 @@
       "body": "Part of this step was prepared by the simulation (demo mode) while your flight controller is real, or the other way round. Writing it could put made-up settings or firmware on a real board, so the app stopped. Nothing was written to the board.",
       "step1": "To finish on your real flight controller, update the app to a version that can do every step for real, then start again.",
       "step2": "To just explore the wizard, close the app, start it without a board connected and choose “Try the demo”."
+    },
+    "ACC_NOT_AVAILABLE": {
+      "title": "No accelerometer found",
+      "body": "The board did not find an accelerometer, so there is nothing to calibrate.",
+      "step1": "Some small or racing boards have no accelerometer. That is fine for Acro flying.",
+      "step2": "Skip the calibration. Angle and Horizon modes will not work without it."
+    },
+    "ACC_NOT_AVAILABLE_OFF": {
+      "title": "The accelerometer is turned off",
+      "body": "The accelerometer is turned off in the board's settings, so it cannot be calibrated now.",
+      "step1": "Turn the accelerometer on above and apply the settings.",
+      "step2": "Then come back and calibrate it."
+    },
+    "BOARD_MOVING": {
+      "title": "The quad is moving",
+      "body": "The quad must be completely still to calibrate. Nothing was changed.",
+      "step1": "Keep it still: put the quad on a table, and let go of it and the cable.",
+      "step2": "Try again."
+    },
+    "BOARD_MOVING_DURING": {
+      "title": "The quad moved while calibrating",
+      "body": "The quad moved during the calibration, so the result is not good.",
+      "step1": "Put the quad down on a flat, level surface and do not touch it or the cable.",
+      "step2": "Calibrate again."
+    },
+    "ACC_CALIBRATION_FAILED": {
+      "title": "The calibration did not finish",
+      "body": "The board did not finish calibrating the accelerometer.",
+      "step1": "Keep the quad level and still, and try again.",
+      "step2": "If it fails again, check the USB cable and that the board is powered, then try once more."
+    },
+    "PENDING_UNSAVED_CHANGES": {
+      "title": "The board has unsaved changes",
+      "body": "The board has changes that were never saved, and calibrating now would save them too. Press Reboot board first: the board will restart and nothing unsaved will be kept.",
+      "step1": "Press Reboot board. Your saved settings stay as they are; only the unsaved changes are dropped. Nothing was calibrated.",
+      "step2": "When the board is back, calibrate again."
+    },
+    "REBOOT_NOT_CONFIRMED": {
+      "title": "We couldn't confirm the board restarted",
+      "body": "We couldn't confirm the board restarted, so the unsaved changes may still be there. Press Reboot board again. If it keeps failing, check the USB cable and that the board is powered.",
+      "step1": "Press Reboot board again. It is safe to press it more than once.",
+      "step2": "If it keeps failing, check the USB cable and that the board is powered."
+    },
+    "REBOOT_BOARD_LOST": {
+      "title": "The board didn't come back after restarting",
+      "body": "The board didn't come back after restarting. Check the USB cable, then connect again. After you reconnect, Reboot board is still the way to clear the unsaved changes.",
+      "step1": "Check the USB cable and that the board is powered.",
+      "step2": "Go to Connect and connect again. If calibrating still says there are unsaved changes, press Reboot board."
+    },
+    "CONNECT_REBOOT_NOT_CONFIRMED": {
+      "title": "We couldn't confirm the board restarted",
+      "body": "This board still had unsaved changes, so it is restarted when you connect, but we couldn't confirm the restart. Try connecting again. If it keeps failing, check the USB cable and that the board is powered.",
+      "step1": "Select Try again. It is safe to try more than once.",
+      "step2": "If it keeps failing, check the USB cable and that the board is powered."
     }
   },
   "driverReplace": {

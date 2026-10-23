@@ -58,7 +58,11 @@ async function connect(): Promise<void> {
     const ports = info.fcVariant === "BTFL" ? await api.config.readPorts() : [];
     setBoard(wizard, info, ports, path);
   } catch (e) {
-    error.value = toUiError(e);
+    const ue = toUiError(e);
+    // device_connect reboots a board left with unsaved changes (#69); PENDING_UNSAVED_CHANGES
+    // here means that reboot was not confirmed. Connecting again retries it (a replug alone
+    // never clears the flag, it lives in the app).
+    error.value = ue.code === "PENDING_UNSAVED_CHANGES" ? uiError("CONNECT_REBOOT_NOT_CONFIRMED", `device_connect: ${ue.message}`) : ue;
   } finally {
     busy.value = false;
   }
