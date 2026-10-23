@@ -19,7 +19,7 @@ import {
   type VerifyReport,
 } from "../types/model";
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
-import { MODES, renameModesForFirmware, SWITCH_POSITIONS } from "./switches";
+import { MODES, normalizeModeNames, SWITCH_POSITIONS } from "./switches";
 import { defaultTelemetry } from "./receiver";
 
 export type FirmwareDecision = "keep" | "update" | null;
@@ -111,7 +111,7 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
   s.ports = ports;
   s.connectedPath = path;
   s.model.fc = { boardName: fc.boardName, firmwareVersion: fc.firmwareVersion, apiVersion: fc.apiVersion };
-  renameModesForFirmware(s.model.switches, fc.firmwareVersion);
+  normalizeModeNames(s.model.switches);
   if (changed) {
     // Port names from another board mean nothing here.
     s.model.receiver.port = null;

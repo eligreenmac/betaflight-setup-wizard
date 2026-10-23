@@ -8,7 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
-import { MAX_AUX, MODES, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { hasOnboardElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
@@ -49,6 +49,11 @@ export function validateSwitches(s: WizardState): Issue[] {
   for (const m of sw) {
     if (seen.has(m.mode)) issues.push({ key: "validation.modeDuplicate", params: { mode: m.mode } });
     seen.add(m.mode);
+    // Only stable names go to the config engine (config::modes maps them per firmware).
+    const k = modeKeyOf(m.mode);
+    const fw = s.fc?.firmwareVersion ?? s.model.fc.firmwareVersion;
+    if (!k || m.mode !== MODES[k]) issues.push({ key: "validation.modeUnknown", params: { mode: m.mode } });
+    else if (!modeAvailable(k, fw)) issues.push({ key: "validation.modeNeedsFirmware", params: { mode: m.mode, version: MODE_MIN_FIRMWARE[k] ?? "" } });
     const badRange =
       m.rangeMin < RANGE_MIN || m.rangeMax > RANGE_MAX || m.rangeMin >= m.rangeMax || m.rangeMin % RANGE_STEP !== 0 || m.rangeMax % RANGE_STEP !== 0;
     if (badRange) issues.push({ key: "validation.modeRangeInvalid", params: { mode: m.mode } });

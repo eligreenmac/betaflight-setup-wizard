@@ -431,8 +431,13 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript
   if (model.esc.motorPoles) commands.push(`set motor_poles = ${model.esc.motorPoles}`);
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
   if (model.esc.telemetryPort) commands.push("feature ESC_SENSOR");
-  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, BARO: 3, ALTHOLD: 3, BEEPER: 13, "GPS HOLD": 11, "POS HOLD": 11, "FLIP OVER AFTER CRASH": 35 };
-  model.switches.forEach((s, i) => commands.push(`aux ${i} ${boxIds[s.mode] ?? 0} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`));
+  // Like config::modes: stable names only, mapped to permanent box ids here (backend side).
+  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, "FLIP OVER AFTER CRASH": 35 };
+  model.switches.forEach((s, i) => {
+    const id = boxIds[s.mode];
+    if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
+    commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
+  });
   commands.push("save");
   return { commands, warnings, dialect: "4.5", cleared };
 }

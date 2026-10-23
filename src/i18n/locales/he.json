@@ -451,6 +451,8 @@
     "armRequired": "הוסיפו מתג חימוש.",
     "armAlwaysOn": "מתג החימוש צריך מצב כבוי.",
     "armOverlap": "החימוש ו־{mode} על אותו מצב מתג.",
+    "modeUnknown": "‏{mode} אינו מצב שהאשף יודע להגדיר.",
+    "modeNeedsFirmware": "‏{mode} דורש Betaflight {version} ומעלה. הסירו אותו או עדכנו את הקושחה.",
     "elrsArmAux1": "עם ExpressLRS, החימוש חייב להיות על AUX1.",
     "modeDuplicate": "{mode} מוגדר פעמיים.",
     "modeRangeInvalid": "מצב המתג של {mode} לא תקין.",

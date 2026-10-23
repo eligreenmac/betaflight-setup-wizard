@@ -13,6 +13,8 @@ import {
   inRange,
   MAX_AUX,
   MODE_KEYS,
+  displayBoxName,
+  modeAvailable,
   modeKeyOf,
   modeName,
   positionOf,
@@ -31,10 +33,12 @@ const live = ref<"starting" | "on" | "unavailable" | "stopped">("starting");
 let offs: Unlisten[] = [];
 
 const used = computed(() => new Set(wizard.model.switches.map((s) => modeKeyOf(s.mode))));
-const addable = computed(() => MODE_KEYS.filter((k) => k !== "arm" && !used.value.has(k) && (k !== "posHold" || wizard.model.gps.enabled)));
+const addable = computed(() =>
+  MODE_KEYS.filter((k) => k !== "arm" && !used.value.has(k) && modeAvailable(k, fw.value) && (k !== "posHold" || wizard.model.gps.enabled)),
+);
 const positions = Object.keys(SWITCH_POSITIONS) as SwitchPosition[];
 
-/** Mode label: translated name + the firmware's box name when it differs by version. */
+/** Mode label: translated name (the firmware's box name is shown as a hint when it differs by version). */
 function label(mode: string): string {
   const k = modeKeyOf(mode);
   return k ? t(`switches.modes.${k}`) : mode;
@@ -45,7 +49,7 @@ function add(k: ModeKey): void {
   const auxUsed = new Set(wizard.model.switches.map((s) => s.auxChannel));
   let aux = 0;
   while (auxUsed.has(aux) && aux < MAX_AUX - 1) aux++;
-  wizard.model.switches.push({ mode: modeName(k, fw.value), auxChannel: aux, rangeMin: SWITCH_POSITIONS.high[0], rangeMax: SWITCH_POSITIONS.high[1] });
+  wizard.model.switches.push({ mode: modeName(k), auxChannel: aux, rangeMin: SWITCH_POSITIONS.high[0], rangeMax: SWITCH_POSITIONS.high[1] });
   markDirty();
 }
 function remove(i: number): void {
@@ -98,7 +102,7 @@ onBeforeUnmount(() => {
       <div>
         <strong>{{ label(sw.mode) }}</strong>
         <small v-if="renamed(modeKeyOf(sw.mode))" class="hint" style="display: block">
-          {{ t("switches.boxName", { name: sw.mode, version: fw || "?" }) }}
+          {{ t("switches.boxName", { name: displayBoxName(modeKeyOf(sw.mode)!, fw), version: fw || "?" }) }}
         </small>
       </div>
       <select :value="sw.auxChannel" :aria-label="t('switches.channel')" @change="setAux(i, Number(($event.target as HTMLSelectElement).value))">

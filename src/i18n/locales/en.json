@@ -451,6 +451,8 @@
     "armRequired": "Add an arm switch.",
     "armAlwaysOn": "The arm switch needs an off position.",
     "armOverlap": "Arm and {mode} use the same switch position.",
+    "modeUnknown": "{mode} is not a mode this wizard can set.",
+    "modeNeedsFirmware": "{mode} needs Betaflight {version} or newer. Remove it or update the firmware.",
     "elrsArmAux1": "With ExpressLRS, arm must be on AUX1.",
     "modeDuplicate": "{mode} is set twice.",
     "modeRangeInvalid": "The switch position for {mode} is not valid.",
