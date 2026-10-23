@@ -41,8 +41,10 @@ export type CalibrationStatus = "idle" | "running" | "done" | "failed";
 export type ApplyStatus = "idle" | "generating" | "applying" | "verifying" | "verified" | "mismatch" | "failed";
 
 export interface UiState extends RoleOptions {
-  /** Latest stable release for this board (null = unknown / offline). */
+  /** Newest stable release for this board on a line the wizard can set up (null = unknown / offline). */
   latestRelease: string | null;
+  /** Config engine's answer per firmware line ("4.5", "2026.6"), see wizard/firmwareSupport.ts. Absent = unknown. */
+  firmwareLines: Record<string, "supported" | "unsupported">;
   firmwareDecision: FirmwareDecision;
   /** Firmware was flashed in this session. */
   flashed: boolean;
@@ -98,6 +100,7 @@ function emptyUi(): UiState {
   return {
     escTelemetry: false,
     latestRelease: null,
+    firmwareLines: {},
     firmwareDecision: null,
     flashed: false,
     propsOffAck: false,

@@ -318,16 +318,21 @@ describe("mid-wizard firmware update: receiver", () => {
     wizard.ui.configApplied = true;
     await at("receiver");
     const box = w!.get('[data-test="rx-option-missing"]');
-    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(en.receiver.optionMissingApplied.replaceAll("{protocol}", "CRSF"));
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(en.receiver.optionMissingApplied.replaceAll("{protocol}", en.receiver.protocols.CRSF));
     expect(box.text()).not.toContain(en.receiver.optionMissingChoices);
+    // Friendly protocol name everywhere, never the bare id at the start of a sentence.
+    expect(box.text()).toContain("You can't continue with CRSF (ExpressLRS, Crossfire, Tracer):");
+    expect(box.text()).toContain("To use CRSF (ExpressLRS, Crossfire, Tracer), finish the wizard");
     expect(box.text()).not.toContain("update the firmware to add this one");
     expect(w!.find('[data-test="reflash-offer"]').exists()).toBe(false);
     expect(w!.find('[data-test="reflash-blocked"]').exists()).toBe(false);
-    expect(guards.receiver.validate(wizard).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingApplied", params: { protocol: "CRSF" } }]);
+    expect(guards.receiver.validate(wizard).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingApplied", params: { rxProtocol: "CRSF" } }]);
     await click(w!, "next");
     expect(nav.currentId).toBe("receiver");
-    expect(w!.text()).toContain(en.validation.rxOptionMissingApplied.replace("{protocol}", "CRSF"));
+    expect(w!.text()).toContain(en.validation.rxOptionMissingApplied.replace("{rxProtocol}", en.receiver.protocols.CRSF));
     expect(w!.text()).not.toContain(en.validation.rxOptionMissing);
+    expect(w!.text()).toContain("CRSF (ExpressLRS, Crossfire, Tracer) isn't in the firmware on this board");
+    expect(w!.text()).not.toMatch(/\bCRSF isn't/);
     // Another protocol: the way forward.
     await w!.get('[data-protocol="SBUS"]').setValue(true);
     await settle();
@@ -341,9 +346,9 @@ describe("mid-wizard firmware update: receiver", () => {
     serialCrsf();
     wizard.ui.configApplied = true;
     await at("receiver");
-    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(he.receiver.optionMissingApplied.replaceAll("{protocol}", "CRSF"));
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(he.receiver.optionMissingApplied.replaceAll("{protocol}", he.receiver.protocols.CRSF));
     await click(w!, "next");
-    expect(w!.text()).toContain(he.validation.rxOptionMissingApplied.replace("{protocol}", "CRSF"));
+    expect(w!.text()).toContain(he.validation.rxOptionMissingApplied.replace("{rxProtocol}", he.receiver.protocols.CRSF));
   });
 
   it("no update possible for another reason (no board): the generic wording", () => {
@@ -352,7 +357,7 @@ describe("mid-wizard firmware update: receiver", () => {
     setReceiverProtocol(s, "CRSF");
     s.ui.rxMissing = { kind: "SERIAL", protocol: "CRSF", missing: ["MOCK_RX_CRSF"] };
     expect(reflashBlock(s)).toBe("noBoard");
-    expect(guards.receiver.validate(s).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingNoUpdate", params: { protocol: "CRSF" } }]);
+    expect(guards.receiver.validate(s).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingNoUpdate", params: { rxProtocol: "CRSF" } }]);
   });
 
   it("with the update available, the text still offers it", async () => {

@@ -15,6 +15,7 @@ import { validAlignment } from "./orientation";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { reflashBlock } from "./reflash";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
+import { lineSupport } from "./firmwareSupport";
 
 /** A validation problem; `key` is an i18n key under `validation.*`. */
 export interface Issue {
@@ -31,7 +32,10 @@ export interface StepGuard {
 
 const connected = (s: WizardState) => s.fc !== null;
 export const firmwareOk = (s: WizardState): boolean =>
-  s.fc !== null && isSupportedFirmware(s.fc.fcVariant, s.fc.firmwareVersion) && (s.ui.flashed || s.ui.firmwareDecision === "keep");
+  s.fc !== null &&
+  isSupportedFirmware(s.fc.fcVariant, s.fc.firmwareVersion) &&
+  lineSupport(s, s.fc.firmwareVersion) !== "unsupported" &&
+  (s.ui.flashed || s.ui.firmwareDecision === "keep");
 const configured = (s: WizardState) => connected(s) && firmwareOk(s) && s.ports.length > 0;
 
 /** Issues for one port role (shared by the receiver / vtx / gps / esc steps). */
@@ -152,6 +156,7 @@ export const guards: Record<string, StepGuard> = {
       if (!s.fc) return [{ key: "validation.noBoard" }];
       if (!isSupportedFirmware(s.fc.fcVariant, s.fc.firmwareVersion))
         return [{ key: "validation.firmwareUnsupported", params: { min: MIN_SUPPORTED_FIRMWARE } }];
+      if (lineSupport(s, s.fc.firmwareVersion) === "unsupported") return [{ key: "validation.firmwareNotSupportedYet", params: { version: s.fc.firmwareVersion } }];
       return firmwareOk(s) ? [] : [{ key: "validation.firmwareDecide" }];
     },
   },
@@ -179,7 +184,7 @@ export const guards: Record<string, StepGuard> = {
         // Say plainly when the update can't be offered: then another protocol is the only way on.
         const block = reflashBlock(s);
         const key = !block ? "validation.rxOptionMissing" : block === "applied" ? "validation.rxOptionMissingApplied" : "validation.rxOptionMissingNoUpdate";
-        issues.push({ key, params: { protocol: r.protocol ?? "" } });
+        issues.push({ key, params: { rxProtocol: r.protocol ?? "" } });
       }
       return [...issues, ...portIssues(s, "receiver")];
     },
