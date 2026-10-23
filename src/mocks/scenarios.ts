@@ -32,12 +32,11 @@
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FirmwareCatalog, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
-import { CATALOG_COMMAND, type FirmwareCatalog } from "../api/catalog";
 import { BEEPER_NAMES } from "../types/model";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
@@ -362,6 +361,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       // Not the real MD5-based derivation; just 6 deterministic bytes for the demo.
       return Array.from({ length: 6 }, (_, i) => [...phrase].reduce((h, c) => (h * 31 + c.charCodeAt(0) + i) & 0xff, 7));
     },
+    // Shared #66; pure (no board I/O), so mocking it is safe even next to a real board.
+    config_firmware_catalog: ({ firmwareVersion }) => mockFirmwareCatalog(firmwareVersion),
   };
 
   function legacy(cmd: string): void {
@@ -562,8 +563,6 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     await sleep(fast(cmd) ? latency / 2 : latency);
     const p = pendingHandlers[cmd as unknown as PendingCommandName];
     if (p) return p(args);
-    // TODO(shared): Config's read-only catalog (api/catalog.ts), not in CommandMap yet.
-    if ((cmd as string) === CATALOG_COMMAND) return mockFirmwareCatalog((args as { firmwareVersion?: string }).firmwareVersion ?? "");
     return inner(cmd, args);
   }) as Backend;
 
@@ -597,7 +596,7 @@ export const MOCK_OSD_CLI: Record<string, string> = {
 };
 
 /**
- * Demo config_firmware_catalog(firmwareVersion) (#66 shape, api/catalog.ts).
+ * Demo config_firmware_catalog(firmwareVersion) (shared #66 FirmwareCatalog).
  * 2025.12 has no RC_SMOOTHING_INIT_FAIL, adds DEBUG2 / LIDAR_DIST and manages ALTHOLD / POSHOLD.
  * Unknown / empty version = the 4.5 lists.
  */

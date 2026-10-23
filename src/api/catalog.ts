@@ -1,30 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Typed UI-side wrapper for Config's read-only `config_firmware_catalog(firmwareVersion)`
- * (shared PR #66; mocked in demo mode). What this firmware line has:
- * beeper conditions, DShot beacon events, OSD elements and modes. The UI uses it instead
- * of hard-coded lists.
+ * Config's read-only `config_firmware_catalog(firmwareVersion)` (shared #66,
+ * `api.config.firmwareCatalog`, type `FirmwareCatalog` in types/model.ts): what this
+ * firmware line has (beeper conditions, DShot beacon events, OSD elements, mode names).
+ * The UI uses it instead of hard-coded lists. While the Rust command is still a stub
+ * (NOT_IMPLEMENTED), the demo fallback (api/fallback.ts) answers it from the mock
+ * (mocks/scenarios.ts mockFirmwareCatalog), like any other unimplemented command.
  *
- * TODO(shared): use api.config.firmwareCatalog / FirmwareCatalog from #66 when it lands.
- * Shape as in #66 (parsed tolerantly: `{name}` objects are accepted, unknown keys ignored):
- *   { beepers: BeeperName[], beaconEvents: DshotBeaconCondition[], osdElements: string[], modes: string[] }
+ * The result is parsed tolerantly: `{name}` objects are accepted, duplicates and unknown
+ * keys dropped, so a newer backend never breaks the steps.
  */
 import { reactive } from "vue";
-import { call, type CommandName } from "./commands";
+import { api } from "./commands";
 import { toUiError, type UiError } from "../errors/codes";
+import type { BeeperName, DshotBeaconCondition, FirmwareCatalog } from "../types/model";
 
-export const CATALOG_COMMAND = "config_firmware_catalog";
-
-export interface FirmwareCatalog {
-  /** Beeper CLI names (#65 BeeperName spelling, e.g. CRASH_FLIP). */
-  beepers: string[];
-  /** DShot beacon events (`beacon` CLI names, e.g. RX_LOST, RX_SET). */
-  beaconEvents: string[];
-  /** OSD element names (osd_items_e without OSD_). */
-  osdElements: string[];
-  /** Mode names (config::modes stable names, e.g. "AIR MODE"). */
-  modes: string[];
-}
+export type { FirmwareCatalog };
 
 function names(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -36,14 +27,19 @@ function names(v: unknown): string[] {
   return out;
 }
 
+/** Unknown beeper / beacon names are kept: the steps only show the names they know. */
 export function parseCatalog(raw: unknown): FirmwareCatalog {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  return { beepers: names(o.beepers), beaconEvents: names(o.beaconEvents), osdElements: names(o.osdElements), modes: names(o.modes) };
+  return {
+    beepers: names(o.beepers) as BeeperName[],
+    beaconEvents: names(o.beaconEvents) as DshotBeaconCondition[],
+    osdElements: names(o.osdElements),
+    modes: names(o.modes),
+  };
 }
 
 export const catalogApi = {
-  get: async (firmwareVersion: string): Promise<FirmwareCatalog> =>
-    parseCatalog(await call(CATALOG_COMMAND as unknown as CommandName, { firmwareVersion } as never)),
+  get: async (firmwareVersion: string): Promise<FirmwareCatalog> => parseCatalog(await api.config.firmwareCatalog(firmwareVersion)),
 };
 
 /** Loaded catalog for the connected firmware (shared by the steps that need it). */
