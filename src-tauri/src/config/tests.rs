@@ -43,6 +43,7 @@ const GOLDEN: &[(&str, &[Dialect])] = &[
     ("cinematic-7in-hd", &Dialect::ALL),
     ("toothpick-3in-sbus", &[Dialect::V4_4, Dialect::V4_5]),
     ("whoop-65mm-spi-elrs", &Dialect::ALL),
+    ("longrange-7in-analog", &Dialect::ALL),
 ];
 
 /// Golden files: plan output against the fixture FC for each supported dialect.
@@ -622,4 +623,175 @@ fn exit_noreboot_alone_would_keep_the_batch() {
     assert_eq!(fc.snapshot().setting("motor_poles"), Some("22"));
     fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
     assert_ne!(fc.snapshot().setting("motor_poles"), Some("22"));
+}
+
+/// shared/config-model-ext: craftName, VTX table + band/channel/power, esc.idle,
+/// esc.motorOrder, gps.galileo / gps.sbasMode.
+#[test]
+fn model_ext_apply_and_verify_on_every_dialect() {
+    let m = model("longrange-7in-analog");
+    for d in Dialect::ALL {
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let store = tmp_store(&format!("ext-{}", d.as_str()));
+        let script = session::plan(&mut fc, &m).unwrap();
+        let r = session::apply(&mut fc, &script, &store, "UID1", &mut |_| {}).unwrap();
+        assert!(r.saved && r.errors.is_empty(), "{d:?}: {r:?}");
+        let v = session::verify(&mut fc, &m).unwrap();
+        assert!(v.ok, "{d:?}: {:?}", v.mismatches);
+
+        let snap = fc.snapshot();
+        let idle = if d == Dialect::V2025_12 {
+            "motor_idle"
+        } else {
+            "dshot_idle_value"
+        };
+        assert_eq!(snap.setting(idle), Some("450"), "{d:?}");
+        assert_eq!(
+            snap.setting("motor_output_reordering"),
+            Some("1,0,3,2,4,5,6,7")
+        );
+        assert_eq!(snap.setting("craft_name"), Some("LR7 Chimera"));
+        assert_eq!(snap.setting("gps_ublox_use_galileo"), Some("ON"));
+        assert_eq!(snap.setting("gps_sbas_mode"), Some("AUTO"));
+        assert_eq!(snap.setting("vtx_band"), Some("2"));
+        let t = snap.vtxtable.as_ref().unwrap();
+        assert_eq!((t.bands, t.channels, t.power_levels), (2, 8, 4));
+
+        // Drift in the table is reported per line.
+        fc.preset(&["vtxtable powerlabels 25 200 400 PIT"]);
+        let v = session::verify(&mut fc, &m).unwrap();
+        assert_eq!(v.mismatches.len(), 1, "{:?}", v.mismatches);
+        assert_eq!(v.mismatches[0].setting, "vtxtable powerlabels");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn model_ext_null_keeps_current_values() {
+    // The existing models leave every new field null: nothing new is generated.
+    for (name, dialects) in GOLDEN.iter().filter(|(n, _)| *n != "longrange-7in-analog") {
+        let m = model(name);
+        for &d in *dialects {
+            let fc = MockFc::load(firmware_dir(d), board_for(name));
+            let snap = fc.snapshot();
+            let s = generate_for(&m, d, &snap.ports, Some(&snap)).unwrap();
+            for c in &s.commands {
+                for key in [
+                    "vtxtable",
+                    "vtx_band",
+                    "vtx_channel",
+                    "vtx_power",
+                    "craft_name",
+                    "dshot_idle_value",
+                    "motor_idle",
+                    "motor_output_reordering",
+                    "gps_ublox_use_galileo",
+                    "gps_sbas_mode",
+                ] {
+                    assert!(!c.contains(key), "{name} {d:?}: {c}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn model_ext_validation() {
+    let base = model("longrange-7in-analog");
+    let fc = MockFc::load("4.5", "speedybeef405v4");
+    let snap = fc.snapshot();
+    let gen = |m: &DroneModel, d: Dialect| generate_for(m, d, &snap.ports, Some(&snap));
+    let bad = |f: &dyn Fn(&mut DroneModel), needle: &str| {
+        let mut m = base.clone();
+        f(&mut m);
+        let e = gen(&m, Dialect::V4_5).unwrap_err();
+        assert_eq!(e.code(), "CONFIG");
+        assert!(e.to_string().contains(needle), "{needle}: {e}");
+    };
+    bad(
+        &|m| m.extras.craft_name = Some("x".repeat(17)),
+        "craft name",
+    );
+    bad(
+        &|m| m.extras.craft_name = Some(" lead".into()),
+        "craft name",
+    );
+    bad(
+        &|m| m.extras.craft_name = Some("caf\u{e9}".into()),
+        "craft name",
+    );
+    bad(
+        &|m| m.esc.motor_order = Some(vec![0, 0, 1, 2]),
+        "permutation",
+    );
+    bad(
+        &|m| m.esc.motor_order = Some(vec![0, 1, 2, 4]),
+        "permutation",
+    );
+    bad(&|m| m.esc.idle = Some(2001), "motor idle");
+    bad(&|m| m.vtx.power = Some(5), "outside the VTX table (1-4)");
+    bad(&|m| m.vtx.band = Some(0), "VTX band 0");
+    bad(
+        &|m| {
+            m.vtx.table.as_mut().unwrap().bands[1]
+                .frequencies
+                .pop()
+                .map(|_| ())
+                .unwrap()
+        },
+        "same for every band",
+    );
+    bad(
+        &|m| m.vtx.table.as_mut().unwrap().bands[0].name = "TOOLONGNAME".into(),
+        "band name",
+    );
+    bad(
+        &|m| m.vtx.table.as_mut().unwrap().bands[0].frequencies[0] = 6000,
+        "5999",
+    );
+    bad(
+        &|m| m.vtx.table.as_mut().unwrap().power_levels[0].label = "1000".into(),
+        "power label",
+    );
+    bad(&|m| m.vtx.kind = VtxKind::None, "no VTX");
+    bad(
+        &|m| {
+            let t = m.vtx.table.as_mut().unwrap();
+            while t.power_levels.len() < 8 {
+                let p = t.power_levels[0].clone();
+                t.power_levels.push(p);
+            }
+            m.vtx.power = Some(8);
+        },
+        "CLI accepts 1-7",
+    );
+
+    // "" clears the name; the firmware's empty value is "-".
+    let mut m = base.clone();
+    m.extras.craft_name = Some(String::new());
+    let s = gen(&m, Dialect::V4_5).unwrap();
+    assert!(s.commands.contains(&"set craft_name = -".to_string()));
+
+    // Galileo is UBLOX-only; idle is DShot-only on 4.x: warnings, nothing written.
+    let mut m = base.clone();
+    m.gps.provider = Some(crate::model::GpsProvider::Nmea);
+    m.esc.protocol = crate::model::EscProtocol::Oneshot125;
+    m.esc.bidirectional_dshot = false;
+    for d in [Dialect::V4_4, Dialect::V4_5] {
+        let s = gen(&m, d).unwrap();
+        assert!(!s
+            .commands
+            .iter()
+            .any(|c| c.contains("galileo") || c.contains("idle")));
+        assert!(s.warnings.iter().any(|w| w.contains("Galileo")));
+        assert!(s.warnings.iter().any(|w| w.contains("motor idle")));
+    }
+    let s = gen(&m, Dialect::V2025_12).unwrap();
+    assert!(s.commands.contains(&"set motor_idle = 450".to_string()));
+
+    // Keeping the FC's table: band/channel/power are checked against it.
+    let mut m = base.clone();
+    m.vtx.table = None;
+    let e = gen(&m, Dialect::V4_5).unwrap_err(); // the fixture's table is empty (0 bands)
+    assert!(e.to_string().contains("outside the VTX table"), "{e}");
 }

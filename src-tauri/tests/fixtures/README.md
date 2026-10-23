@@ -69,7 +69,8 @@ Written by `tests/sitl/compose.py`, three layers:
    `ESC_SENSOR_UART` → ESC_SENSOR, or the `.config` `serial` lines), default RX feature,
    softserial when the feature is on;
 3. an overlay of defaults that SITL cannot compile (DSHOT, GPS, OSD, RX_SPI/ELRS),
-   each value with the firmware source file it comes from (see `OVERLAY` in compose.py).
+   each value with the firmware source file it comes from (see `OVERLAY` in compose.py),
+   including `gps_sbas_mode` / `gps_ublox_use_galileo` (pg/gps.c).
 
 The banner carries a `# COMPOSED FIXTURE (not a hardware recording)` line.
 
@@ -101,8 +102,17 @@ BFSW_SITL_BIN=<elf> cargo test sitl_end_to_end -- --test-threads=1
 ```
 
 `src/config/tests_sitl_e2e.rs`: MSP identification, apply (backup, batch, `save`, process
-restart), a rejected command (nothing saved), and rollback to the first backup. Skipped
-when `BFSW_SITL_BIN` is unset. Passes locally on 4.4.3, 4.5.5 and 2025.12.5.
+restart), a rejected command (nothing saved), rollback to the first backup, and the
+model-extension lines (`vtxtable`, `vtx_band/channel/power`, `craft_name`,
+`motor_output_reordering`, 2025.12 `motor_idle`) read back from `dump all`. GPS and DShot
+are not in SITL, so `gps_sbas_mode`, `gps_ublox_use_galileo` and `dshot_idle_value` are
+checked by MockFc and goldens only. Skipped when `BFSW_SITL_BIN` is unset. Passes locally
+on 4.4.3, 4.5.5 and 2025.12.5.
+
+SITL quirk: an 8-character VTX band name reads back with its last character replaced by
+a space (`BOSCAM_A` → `BOSCAM_`) on all three versions, although
+`VTX_TABLE_BAND_NAME_LENGTH` is 8 and real dumps show `BOSCAM_A` / `RACEBAND`. The e2e
+test uses 7-character names; the generator keeps the 8-character limit.
 
 ## 6. Public references (not included, no licence grant)
 
