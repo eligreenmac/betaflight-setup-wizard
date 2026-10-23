@@ -74,6 +74,23 @@ Written by `tests/sitl/compose.py`, three layers:
 
 The banner carries a `# COMPOSED FIXTURE (not a hardware recording)` line.
 
+Batch 2 (beepers, OSD) adds to the overlay, each from the firmware source:
+
+- `beeper` / `beacon` sections (`io/beeper.c` `beeperTable`, all beepers on, both DShot
+  beacon conditions off). 2025.12 prints `CRASHFLIP` (4.x: `CRASH_FLIP`) and has no
+  `RC_SMOOTHING_INIT_FAIL`: 24 / 24 / 23 lines.
+- every `osd_<element>_pos` the board's build has (`cli/settings.c`, defaults from
+  `osd/osd.c` `pgResetFn_osdElementConfig`). Defaults are hidden at the centre of the
+  default canvas: 4.4 SD (15,7), e.g. `osd_vbat_pos = 234`; 4.5 / 2025.12 HD (26,10),
+  `osd_vbat_pos = 341`. `osd_warnings_pos` is the one visible default (all profile bits)
+  at (centre-6, centre+3): 14665 / 14772. `gps_lap_*` need `USE_GPS_LAP_TIMER` (cloud-build option, not included);
+  `lidar_dist` needs `USE_RANGEFINDER`, which 2025.12 enables only with >= 1024 KB flash
+  (F405 yes, F411 no).
+- `osd_displayport_device`: AUTO on 4.4, **MSP on 4.5 / 2025.12** (`USE_OSD_HD` is in
+  `common_pre.h`), the earlier fixtures had AUTO there. `osd_canvas_width/height` 53/20
+  exist on 4.4 / 4.5 only (2025.12: `#ifdef OSD_CANVAS_SIZE_DEBUG`).
+  `vcd_video_system = AUTO`, `displayport_msp_col/row_adjust = 0`.
+
 Consequences now covered by tests: the SpeedyBee F405 V4 ships with UART2 = RX_SERIAL,
 UART4 = MSP and UART5 = ESC_SENSOR, so a plan that puts GPS on UART4 must report the
 existing MSP function (`board_default_msp_port_is_not_taken_silently`), and plans clear
@@ -93,6 +110,9 @@ the default ESC-sensor function on UART5 when the model has no ESC telemetry (go
 - MockFc BOARD_INFO / BUILD_INFO carry fixed hardware revision, capabilities, signature,
   gyro rate and an empty build-option list.
 - Only two boards (F405 UART RX, F411 SPI ELRS).
+- MockFc `beeper` / `beacon` answer like `cli.c` (`Enabled X` / `Disabled X`, prefix match
+  in table order, `INVALID NAME`); `beeper` without arguments and `beeper list` are not
+  modelled.
 
 ## 5. Opt-in end-to-end test against SITL
 
@@ -108,6 +128,12 @@ model-extension lines (`vtxtable`, `vtx_band/channel/power`, `craft_name`,
 are not in SITL, so `gps_sbas_mode`, `gps_ublox_use_galileo` and `dshot_idle_value` are
 checked by MockFc and goldens only. Skipped when `BFSW_SITL_BIN` is unset. Passes locally
 on 4.4.3, 4.5.5 and 2025.12.5.
+
+Step 9 (batch 2) runs plan → apply → verify for `batch2-freestyle-hd` (airmode SWITCH,
+removeModes with an old PREARM range, a kept unmanaged range, sensors, board alignment).
+SITL has no `beeper` / `beacon` commands and no OSD settings, so the plan must warn for the
+beepers and fail with CONFIG for the OSD; serial / DShot / GPS lines are left out of the
+applied script. Beeper and OSD lines are covered by MockFc and the goldens.
 
 SITL quirk: an 8-character VTX band name reads back with its last character replaced by
 a space (`BOSCAM_A` → `BOSCAM_`) on all three versions, although

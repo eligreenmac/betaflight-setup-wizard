@@ -10,7 +10,8 @@ Layer 2  the board definition: betaflight/unified-targets .config (4.4) or
          betaflight/config config.h (4.5, 2025.12), copied verbatim under
          tests/fixtures/boards/: board_name, manufacturer_id, MCU, pin resources,
          which UARTs exist, default serial functions/features/settings.
-Layer 3  settings that SITL cannot compile (DShot, GPS, OSD, SPI ELRS) with the
+Layer 3  settings and commands that SITL cannot compile (DShot, GPS, OSD, SPI ELRS,
+         beeper / beacon) with the
          defaults from the firmware sources of the same tag (OVERLAY below cites them).
 
 Nothing here is a hardware recording; see tests/fixtures/README.md.
@@ -34,13 +35,72 @@ OVERLAY = {
         "gps_auto_config": "ON",              # pg/gps.c .autoConfig = GPS_AUTOCONFIG_ON
         "gps_sbas_mode": "NONE",              # pg/gps.c .sbasMode = SBAS_NONE
         "gps_ublox_use_galileo": "OFF",       # pg/gps.c .gps_ublox_use_galileo = false
-        "osd_displayport_device": "AUTO",     # osd/osd.c (MAX7456 present)
         "vcd_video_system": "AUTO",           # pg/vcd.c VIDEO_SYSTEM_AUTO
+        "displayport_msp_col_adjust": "0",    # io/displayport_msp.c pgResetFn: colAdjust 0
+        "displayport_msp_row_adjust": "0",    # (USE_MSP_DISPLAYPORT, defined with USE_OSD)
     },
-    "4.4": {"dshot_idle_value": "550"},       # pg/motor.c digitalIdleOffsetValue = 550
-    "4.5": {"dshot_idle_value": "550"},       # pg/motor.c digitalIdleOffsetValue = 550
-    "2025.12": {},                            # motor_idle is present in SITL
+    # osd/osd.c pgResetFn_osdConfig. 4.4: displayPortDevice AUTO, canvas HD 53x20 under
+    # USE_OSD_HD. 4.5 / 2025.12: USE_OSD_HD (target/common_pre.h, both SD and HD) -> MSP,
+    # 53x20. 2025.12 has no osd_canvas_* CLI settings (#ifdef OSD_CANVAS_SIZE_DEBUG).
+    "4.4": {"dshot_idle_value": "550",        # pg/motor.c digitalIdleOffsetValue = 550
+            "osd_displayport_device": "AUTO", "osd_canvas_width": "53", "osd_canvas_height": "20"},
+    "4.5": {"dshot_idle_value": "550",        # pg/motor.c digitalIdleOffsetValue = 550
+            "osd_displayport_device": "MSP", "osd_canvas_width": "53", "osd_canvas_height": "20"},
+    "2025.12": {"osd_displayport_device": "MSP"},  # motor_idle is present in SITL
 }
+
+# io/beeper.c beeperTable (dump order; `ALL` is not printed). Default beeper_off_flags = 0
+# (all on); beacon (USE_DSHOT): DSHOT_BEACON_ALLOWED_MODES = RX_LOST | RX_SET, both off by
+# default (DEFAULT_DSHOT_BEACON_OFF_FLAGS). SITL has neither command (no USE_BEEPER).
+BEEPERS_44 = ("GYRO_CALIBRATED RX_LOST RX_LOST_LANDING DISARMING ARMING ARMING_GPS_FIX "
+              "ARMING_GPS_NO_FIX BAT_CRIT_LOW BAT_LOW GPS_STATUS RX_SET ACC_CALIBRATION "
+              "ACC_CALIBRATION_FAIL READY_BEEP MULTI_BEEPS DISARM_REPEAT ARMED SYSTEM_INIT ON_USB "
+              "BLACKBOX_ERASE CRASH_FLIP CAM_CONNECTION_OPEN CAM_CONNECTION_CLOSE "
+              "RC_SMOOTHING_INIT_FAIL").split()
+BEEPERS = {"4.4": BEEPERS_44, "4.5": BEEPERS_44,
+           "2025.12": [("CRASHFLIP" if b == "CRASH_FLIP" else b) for b in BEEPERS_44
+                       if b != "RC_SMOOTHING_INIT_FAIL"]}
+
+# cli/settings.c `osd_<name>_pos` per release (all with USE_OSD; the board builds have the
+# defaults of target/common_pre.h). gps_lap_* need USE_GPS_LAP_TIMER (a cloud-build option,
+# not in common_pre.h); lidar_dist needs USE_RANGEFINDER (2025.12, flash >= 1024 KB).
+OSD_44 = ("vbat rssi link_quality link_tx_power rssi_dbm rsnr tim_1 tim_2 remaining_time_estimate "
+          "flymode anti_gravity g_force throttle vtx_channel crosshairs ah_sbar ah current mah_drawn "
+          "wh_drawn motor_diag craft_name pilot_name gps_speed gps_lon gps_lat gps_sats home_dir "
+          "home_dist flight_dist compass_bar altitude pid_roll pid_pitch pid_yaw debug power "
+          "pidrate_profile warnings avg_cell_voltage pit_ang rol_ang battery_usage disarmed nheading "
+          "up_down_reference ready_mode nvario esc_tmp esc_rpm esc_rpm_freq rtc_date_time "
+          "adjustment_range flip_arrow core_temp log_status stick_overlay_left stick_overlay_right "
+          "rate_profile_name pid_profile_name profile_name rcchannels camera_frame efficiency "
+          "total_flights aux sys_goggle_voltage sys_vtx_voltage sys_bitrate sys_delay sys_distance "
+          "sys_lq sys_goggle_dvr sys_vtx_dvr sys_warnings sys_vtx_temp sys_fan_speed").split()
+
+
+def osd_pos(x, y):  # osd/osd.h OSD_POS: x bits 0-4 + bit 10, y bits 5-9
+    return (x & 31) | ((x << 5) & 0x400) | ((y & 31) << 5)
+
+
+def osd_defaults(fw, flash_kb):
+    """osd/osd.c pgResetFn_osdElementConfig: every element hidden at (midCol - 5, midRow);
+    WARNINGS visible in all 3 OSD profiles (bits 11-13) at (midCol - 6, midRow + 3)
+    (2025.12: midCol - OSD_WARNINGS_PREFFERED_SIZE / 2 = midCol - 6); a few fixed ones.
+    4.4 uses the SD centre when USE_OSD_SD is defined; 4.5 / 2025.12 the HD centre when
+    USE_OSD_HD is defined (both are, on these builds)."""
+    mid_col, mid_row = (15, 7) if fw == "4.4" else (26, 10)
+    names = list(OSD_44)
+    if fw == "2025.12":
+        names.insert(names.index("power"), "debug2")
+        if flash_kb >= 1024:
+            names.append("lidar_dist")
+    special = {
+        "warnings": osd_pos(mid_col - 6, mid_row + 3) | 0x3800,
+        "crosshairs": osd_pos(mid_col - 2, mid_row - 1),
+        "ah": osd_pos(mid_col - 1, mid_row - 5),
+        "ah_sbar": osd_pos(mid_col - 1, mid_row - 1),
+        "camera_frame": osd_pos(mid_col - 12, mid_row - 6),
+        "up_down_reference": osd_pos(mid_col - 2, mid_row - 1),
+    }
+    return {f"osd_{n}_pos": str(special.get(n, osd_pos(mid_col - 5, mid_row))) for n in names}
 # pg/motor.c: 4.4 defaults to DISABLED (kept from SITL); 4.5 uses DEFAULT_MOTOR_DSHOT_SPEED
 # (target/STM32F411/target.h: DSHOT300) else DSHOT600; 2025.12 DSHOT600.
 MOTOR_PROTOCOL = {("4.5", "STM32F405"): "DSHOT600", ("4.5", "STM32F411"): "DSHOT300",
@@ -145,6 +205,7 @@ def compose(fw, board_key):
         settings.update(ELRS)
         if fw in ELRS_SWITCH:
             settings["expresslrs_switch_mode"] = ELRS_SWITCH[fw]
+    settings.update(osd_defaults(fw, 1024 if b["mcu"] == "STM32F405" else 512))
     settings.update(b["settings"])
 
     out, section, master_done = [], None, False
@@ -172,6 +233,10 @@ def compose(fw, board_key):
             continue
         if ln.startswith("# "):
             section = ln[2:].strip()
+            if section == "map":
+                out.append("# beeper")
+                out += [f"beeper {n}" for n in BEEPERS[fw]]
+                out += ["", "# beacon", "beacon -RX_LOST", "beacon -RX_SET", ""]
         if section == "feature" and ln.startswith("feature "):
             name = ln.split()[1].lstrip("-")
             on = name in b["features"] or name in ("AIRMODE", "ANTI_GRAVITY")

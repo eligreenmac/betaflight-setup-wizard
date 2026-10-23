@@ -546,6 +546,122 @@ fn sitl_end_to_end_apply_error_and_rollback() {
     }
     let r = fc.cli_exec("set craft_name = -").unwrap();
     assert!(!r.contains("###ERROR"), "{r}");
+    // discard step 8 (unsaved) before step 9
+    fc.exit_cli(false).unwrap();
+    if dialect != Dialect::V4_4 {
+        fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+    }
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+
+    // 9. Batch 2 through plan -> apply -> verify on the real CLI: airmode, optional modes
+    //    and removeModes, sensors, board alignment. SITL has no beeper / beacon commands
+    //    (warnings) and no OSD (CONFIG error); serial / DShot / GPS are not part of this
+    //    step (SITL lacks them), so only the batch-2 lines of the plan are applied.
+    let mut m: crate::model::DroneModel = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/models/batch2-freestyle-hd.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    m.receiver.kind = crate::model::ReceiverKind::None;
+    m.vtx = crate::model::Vtx {
+        kind: crate::model::VtxKind::None,
+        protocol: None,
+        port: None,
+        digital_system: None,
+        region: None,
+        table: None,
+        band: None,
+        channel: None,
+        power: None,
+    };
+    m.esc.telemetry_port = None;
+    fc.enter_cli().unwrap();
+    // an old PREARM range (removeModes) and an unmanaged MAG range (kept)
+    for l in ["aux 10 36 4 1700 2100 0 0", "aux 11 5 5 1700 2100 0 0"] {
+        let r = fc.cli_exec(l).unwrap();
+        assert!(!r.contains("###ERROR"), "{l}: {r}");
+    }
+    let osd_err = session::plan(&mut fc, &m).unwrap_err();
+    assert_eq!(osd_err.code(), "CONFIG");
+    assert!(osd_err.to_string().contains("no OSD"), "{osd_err}");
+    m.osd = None;
+    let plan = session::plan(&mut fc, &m).unwrap();
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("no beeper command"))
+            && plan.warnings.iter().any(|w| w.contains("no DShot beacon")),
+        "{:?}",
+        plan.warnings
+    );
+    assert!(plan.warnings.iter().any(|w| w.contains("kept 1 aux")));
+    let batch2 = |c: &str| {
+        c.ends_with("AIRMODE")
+            || c.starts_with("aux ")
+            || c.starts_with("set acc_hardware")
+            || c.starts_with("set baro_hardware")
+            || c.starts_with("set mag_hardware")
+            || c.starts_with("set align_board_")
+            || c.starts_with("beeper")
+            || c.starts_with("beacon")
+    };
+    let cmds: Vec<&str> = plan
+        .commands
+        .iter()
+        .map(String::as_str)
+        .filter(|c| batch2(c))
+        .collect();
+    assert!(cmds.contains(&"feature -AIRMODE"), "{cmds:?}");
+    assert!(cmds.contains(&"aux 10 0 0 900 900 0 0"), "{cmds:?}");
+    assert!(cmds.contains(&"set align_board_yaw = 90"), "{cmds:?}");
+    let r = session::apply(&mut fc, &script(&cmds), &store, &uid, &mut |_| {}).unwrap();
+    assert!(r.saved && r.errors.is_empty(), "{r:?}");
+    fc.enter_cli().unwrap();
+    let v = session::verify(&mut fc, &m).unwrap();
+    let b2: Vec<_> = v
+        .mismatches
+        .iter()
+        .filter(|x| {
+            let k = x.setting.as_str();
+            k.starts_with("aux")
+                || k.contains("AIRMODE")
+                || k.contains("_hardware")
+                || k.contains("align_board")
+        })
+        .collect();
+    assert!(b2.is_empty(), "{b2:?}");
+    let dump = fc.cli_exec("dump all").unwrap();
+    let snap = super::snapshot::parse_dump(&dump);
+    assert_eq!(
+        snap.features.get("AIRMODE"),
+        Some(&false),
+        "dump ({} lines), feature lines: {:?}",
+        dump.lines().count(),
+        dump.lines()
+            .filter(|l| l.starts_with("feature"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(snap.setting("align_board_yaw"), Some("90"));
+    assert_eq!(snap.setting("baro_hardware"), Some("NONE"));
+    let used: Vec<(u8, u8)> = snap
+        .aux
+        .iter()
+        .filter(|a| a.is_used())
+        .map(|a| (a.slot, a.mode_id))
+        .collect();
+    assert!(
+        used.contains(&(1, 28)) && used.contains(&(11, 5)),
+        "{used:?}"
+    );
+    assert!(!used.iter().any(|u| u.1 == 36), "{used:?}");
+    assert!(snap.beepers.is_none() && snap.beacons.is_none());
+    fc.exit_cli(false).unwrap();
+    if dialect != Dialect::V4_4 {
+        fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+    }
 
     drop(fc);
     let _ = std::fs::remove_dir_all(&dir);

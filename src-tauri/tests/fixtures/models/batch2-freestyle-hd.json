@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.5", "apiVersion": "1.46" },
+  "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true },
+  "vtx": { "kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI" },
+  "gps": { "enabled": false },
+  "esc": { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14, "propsOut": true },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "AIR MODE", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "ANGLE", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "BEEPER", "auxChannel": 3, "rangeMin": 1700, "rangeMax": 2100 }
+  ],
+  "airmode": "SWITCH",
+  "removeModes": ["PREARM", "FLIP OVER AFTER CRASH"],
+  "beepers": {
+    "disabled": ["GYRO_CALIBRATED", "ON_USB", "CRASH_FLIP", "RC_SMOOTHING_INIT_FAIL"],
+    "dshotBeaconDisabled": ["RX_SET"]
+  },
+  "sensors": { "acc": true, "baro": false, "mag": false },
+  "boardAlignment": { "roll": 0, "pitch": 0, "yaw": 90 },
+  "osd": {
+    "videoSystem": "HD",
+    "elements": [
+      { "name": "MAIN_BATT_VOLTAGE", "enabled": true },
+      { "name": "LINK_QUALITY", "enabled": true },
+      { "name": "WARNINGS", "enabled": true },
+      { "name": "FLYMODE", "enabled": true },
+      { "name": "ITEM_TIMER_2", "enabled": true },
+      { "name": "CRAFT_NAME", "enabled": true, "x": 20, "y": 18 },
+      { "name": "AVG_CELL_VOLTAGE", "enabled": true, "x": 45, "y": 2 },
+      { "name": "RSSI_VALUE", "enabled": false }
+    ]
+  },
+  "extras": { "craftName": "BATCH2" }
+}

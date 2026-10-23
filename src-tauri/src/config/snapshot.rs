@@ -100,6 +100,11 @@ pub struct Snapshot {
     pub resources: BTreeMap<String, String>,
     /// The `vtxtable` block; None when the dump has none (VTX table compiled out).
     pub vtxtable: Option<VtxTableState>,
+    /// `beeper [-]NAME` lines in dump order (name, enabled); None = the dump has none
+    /// (no beeper command in this build, e.g. SITL).
+    pub beepers: Option<Vec<(String, bool)>>,
+    /// `beacon [-]NAME` lines (DShot beacon); None = none in the dump (no USE_DSHOT).
+    pub beacons: Option<Vec<(String, bool)>>,
 }
 
 impl Snapshot {
@@ -117,6 +122,10 @@ impl Snapshot {
 
     pub fn setting(&self, name: &str) -> Option<&str> {
         self.settings.get(name).map(String::as_str)
+    }
+
+    pub fn has_setting(&self, name: &str) -> bool {
+        self.settings.contains_key(name)
     }
 }
 
@@ -222,6 +231,22 @@ pub fn parse_dump(text: &str) -> Snapshot {
                 let rest = line["vtxtable".len()..].trim();
                 let _ = s.vtxtable.get_or_insert_with(Default::default).apply(rest);
             }
+            Some(verb @ ("beeper" | "beacon")) => {
+                if let Some(f) = t.next() {
+                    let list = if verb == "beeper" {
+                        &mut s.beepers
+                    } else {
+                        &mut s.beacons
+                    };
+                    let (name, on) = match f.strip_prefix('-') {
+                        Some(n) => (n, false),
+                        None => (f, true),
+                    };
+                    let list = list.get_or_insert_with(Vec::new);
+                    list.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+                    list.push((name.to_ascii_uppercase(), on));
+                }
+            }
             Some("resource") => {
                 let parts: Vec<&str> = t.collect();
                 if parts.len() >= 3 {
@@ -268,5 +293,15 @@ mod tests {
         assert_eq!(s.features.get("RX_SPI"), Some(&false));
         assert_eq!(s.setting("expresslrs_uid"), Some("0,0,0,0,0,0"));
         assert!(s.aux[0].is_used() && !s.aux[1].is_used());
+        assert!(s.beepers.is_none() && s.beacons.is_none());
+        let s = parse_dump("beeper GYRO_CALIBRATED\nbeeper -RX_LOST\nbeacon -RX_SET\n");
+        assert_eq!(
+            s.beepers,
+            Some(vec![
+                ("GYRO_CALIBRATED".into(), true),
+                ("RX_LOST".into(), false)
+            ])
+        );
+        assert_eq!(s.beacons, Some(vec![("RX_SET".into(), false)]));
     }
 }
