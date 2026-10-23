@@ -1056,6 +1056,17 @@ pub(crate) mod fake {
                         }
                         // identify() extras: a too-short payload reads as "unknown".
                         codes::MSP2_COMMON_SERIAL_CONFIG | codes::MSP_RX_CONFIG => Some(vec![]),
+                        // 4.5+ appends the build option ids (DSHOT, OSD_SD, OSD_HD); 4.4 doesn't.
+                        codes::MSP_BUILD_INFO => {
+                            let mut p = b"Jan  1 202500:00:00abc1234".to_vec();
+                            if me.api_minor >= 46 {
+                                for id in [8231u16, 16416, 16417] {
+                                    p.extend(id.to_le_bytes());
+                                }
+                            }
+                            Some(p)
+                        }
+                        codes::MSP_OSD_CANVAS => Some(vec![53, 20]),
                         codes::MSP_RC => {
                             Some([1500u16; 8].iter().flat_map(|v| v.to_le_bytes()).collect())
                         }

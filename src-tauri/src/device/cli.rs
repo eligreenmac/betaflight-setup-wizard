@@ -157,17 +157,20 @@ impl<S: SerialLink> CliSession<S> {
         Ok(self.link)
     }
 
-    /// Read-only board probe: `serial`, `resource`, `get rx_spi_protocol`. Changes nothing.
+    /// Read-only board probe: `serial`, `resource`, `get rx_spi_protocol`,
+    /// `get displayport_msp_col_adjust`. Changes nothing.
     /// Feed the result to `FcIdentity::apply_cli_probe`.
     pub fn probe_board(&mut self) -> Result<CliBoardProbe> {
         let serial = self.run("serial")?;
         let resource = self.run("resource")?;
         let get = self.run("get rx_spi_protocol")?;
         let rx_spi_protocol = (!get.contains("###ERROR")).then_some(get);
+        let displayport_msp_col_adjust = Some(self.run("get displayport_msp_col_adjust")?);
         Ok(CliBoardProbe {
             serial,
             resource,
             rx_spi_protocol,
+            displayport_msp_col_adjust,
         })
     }
 }
@@ -180,6 +183,9 @@ pub struct CliBoardProbe {
     pub resource: String,
     /// `get rx_spi_protocol` output; `None` when the CLI rejected the name (no USE_RX_SPI).
     pub rx_spi_protocol: Option<String>,
+    /// Raw `get displayport_msp_col_adjust` output, error text included (`INVALID NAME` = no
+    /// MSP DisplayPort, so no HD OSD). `None` = not asked.
+    pub displayport_msp_col_adjust: Option<String>,
 }
 
 impl<S: SerialLink> CliSession<S> {
@@ -305,6 +311,7 @@ mod tests {
                     "serial" => out += "serial 20 1 115200 57600 0 115200\r\nserial 0 64 115200 57600 0 115200\r\n\r\n# ",
                     "resource" => out += "resource MOTOR 1 B10\r\nresource RX_SPI_CS 1 A15\r\nresource RX_SPI_EXTI 1 C14\r\n\r\n# ",
                     "get rx_spi_protocol" => out += "###ERROR IN get: INVALID NAME: rx_spi_protocol###\r\n\r\n# ",
+                    "get displayport_msp_col_adjust" => out += "###ERROR IN get: INVALID NAME: displayport_msp_col_adjust###\r\n\r\n# ",
                     other => out += &format!("###ERROR: UNKNOWN COMMAND '{other}'###\r\n\r\n# "),
                 }
                 line.clear();
@@ -375,7 +382,17 @@ mod tests {
         assert!(probe.serial.starts_with("serial 20 1"));
         assert_eq!(probe.rx_spi_protocol, None);
         let w = s.link_mut().written_str();
-        assert_eq!(w, "#serial\nresource\nget rx_spi_protocol\n");
+        assert_eq!(
+            w,
+            "#serial\nresource\nget rx_spi_protocol\nget displayport_msp_col_adjust\n"
+        );
+        assert_eq!(
+            probe
+                .displayport_msp_col_adjust
+                .as_deref()
+                .and_then(crate::device::build_info::hd_osd_from_cli_get),
+            Some(false)
+        );
         let link = s.exit_no_reboot().unwrap();
         assert!(link.written_str().ends_with("exit noreboot\n"));
 

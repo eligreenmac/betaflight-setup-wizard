@@ -491,3 +491,49 @@ fn link_uid_is_cached() {
     assert!(r.in_cli(), "reading the uid does not leave the CLI");
     assert_eq!(r.exits(), 0);
 }
+
+/// `FcInfo.hdOsdSupported` end to end (identify + CLI probe) on each firmware line, with the
+/// real SpeedyBee F405 V4 dumps as the CLI. The fake FC's MSP_BUILD_INFO carries
+/// DSHOT/OSD_SD/OSD_HD on 4.5+ and nothing on 4.4; its MSP_OSD_CANVAS answers 53x20.
+#[test]
+fn probe_board_reports_hd_osd_per_version() {
+    for (fw, want) in [
+        (Fw::V4_4, None),
+        (Fw::V4_5, Some(true)),
+        (Fw::V2025_12, Some(true)),
+    ] {
+        let r = rig(fw);
+        let info = r.m.identify().unwrap();
+        assert_eq!(info.hd_osd_supported, want, "{fw:?} identify");
+        let info = r.m.probe_board().unwrap();
+        // 4.4: the dump has displayport_msp_col_adjust, which SD-only builds have too → null.
+        assert_eq!(info.hd_osd_supported, want, "{fw:?} probe");
+        assert!(
+            r.fc.cli_lines
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|l| l == "get displayport_msp_col_adjust"),
+            "{fw:?}"
+        );
+        let names = if want.is_some() {
+            vec!["USE_DSHOT", "USE_OSD_SD", "USE_OSD_HD"]
+        } else {
+            vec![]
+        };
+        assert_eq!(info.build_options, names, "{fw:?}");
+        assert!(!r.sent().contains("save"), "{fw:?}");
+    }
+
+    // 4.4 build without MSP DisplayPort (no OSD): the CLI rejects the name → false.
+    let r = rig(Fw::V4_4);
+    let dump: String = Fw::V4_4
+        .dump()
+        .lines()
+        .filter(|l| !l.contains("displayport_msp_col_adjust"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    *r.fc.cli_backend.lock().unwrap() = Some(Box::new(Cfg(MockFc::from_dump(&dump))));
+    assert_eq!(r.m.identify().unwrap().hd_osd_supported, None);
+    assert_eq!(r.m.probe_board().unwrap().hd_osd_supported, Some(false));
+}

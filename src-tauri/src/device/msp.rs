@@ -17,6 +17,7 @@
 //! dir: '<' host->FC, '>' FC->host, '!' error / unsupported
 //! ```
 
+use crate::device::build_info;
 use crate::device::error::{DeviceError, Result};
 use crate::device::rx_spi::{parse_rx_config_spi_protocol, RxSpiInfo};
 use crate::device::serial::SerialLink;
@@ -48,6 +49,8 @@ pub mod codes {
     pub const MSP_MOTOR: u16 = 104;
     pub const MSP_RC: u16 = 105;
     pub const MSP_ATTITUDE: u16 = 108;
+    /// `canvas_cols, canvas_rows` on OSD builds, an empty reply without `USE_OSD`.
+    pub const MSP_OSD_CANVAS: u16 = 189;
     pub const MSP_SENSOR_ALIGNMENT: u16 = 126;
     pub const MSP_MOTOR_CONFIG: u16 = 131;
     pub const MSP_STATUS_EX: u16 = 150;
@@ -489,6 +492,12 @@ pub struct FcIdentity {
     /// Onboard SPI receiver. From `identify()` only the MSP hints are set (`hasRxSpi: null`);
     /// [`FcIdentity::apply_cli_probe`] makes it authoritative.
     pub rx_spi: RxSpiInfo,
+    /// Build API defines decoded from MSP_BUILD_INFO (4.5+); empty on 4.4 / unknown.
+    #[serde(default)]
+    pub build_options: Vec<String>,
+    /// `USE_OSD_HD` compiled in; `None` = undetermined (see `device::build_info`).
+    #[serde(default)]
+    pub hd_osd_supported: Option<bool>,
 }
 
 impl FcIdentity {
@@ -504,6 +513,12 @@ impl FcIdentity {
             .apply_cli(&probe.resource, probe.rx_spi_protocol.as_deref());
         if self.serial_config.is_none() {
             self.serial_config = serial_config_from_cli(&probe.serial, Some(self.api_version));
+        }
+        if self.hd_osd_supported.is_none() {
+            self.hd_osd_supported = probe
+                .displayport_msp_col_adjust
+                .as_deref()
+                .and_then(build_info::hd_osd_from_cli_get);
         }
     }
 }
@@ -566,6 +581,15 @@ fn optional<T>(r: Result<T>) -> Result<Option<T>> {
             Ok(None)
         }
         Err(e) => Err(e),
+    }
+}
+
+/// Like [`optional`], but a timeout is also "no answer": for requests that only fill
+/// optional identity fields, so they can never fail `identify`.
+fn best_effort<T>(r: Result<T>) -> Result<Option<T>> {
+    match r {
+        Err(DeviceError::Timeout { .. }) | Err(DeviceError::MspMalformed(_)) => Ok(None),
+        r => optional(r),
     }
 }
 
@@ -771,6 +795,7 @@ impl<S: SerialLink> MspClient<S> {
                 .and_then(|p| parse_rx_config_spi_protocol(&p)),
         )?;
         let rx_spi = RxSpiInfo::from_msp(features, rx_proto);
+        let (build_options, hd_osd_supported) = self.build_options_and_hd_osd(api_version)?;
         Ok(FcIdentity {
             api_version,
             fc_variant,
@@ -779,7 +804,28 @@ impl<S: SerialLink> MspClient<S> {
             uid,
             serial_config,
             rx_spi,
+            build_options,
+            hd_osd_supported,
         })
+    }
+
+    /// MSP_BUILD_INFO options (4.5+) and the MSP part of the HD OSD decision: build options
+    /// first, then an empty MSP_OSD_CANVAS reply (no OSD at all). ARCHITECTURE §4.1.
+    fn build_options_and_hd_osd(&mut self, api: ApiVersion) -> Result<(Vec<String>, Option<bool>)> {
+        let info = best_effort(
+            self.request(codes::MSP_BUILD_INFO, &[])
+                .and_then(|p| build_info::parse_build_info(&p, api)),
+        )?;
+        let names = info.as_ref().map(|b| b.option_names()).unwrap_or_default();
+        let mut hd = build_info::hd_osd_from_build_options(
+            info.as_ref().and_then(|b| b.option_ids.as_deref()),
+        );
+        if hd.is_none() {
+            if let Some(p) = best_effort(self.request(codes::MSP_OSD_CANVAS, &[]))? {
+                hd = build_info::hd_osd_from_osd_canvas(&p);
+            }
+        }
+        Ok((names, hd))
     }
 
     /// Serial port list: MSP2_COMMON_SERIAL_CONFIG (what the configurator uses), falling back to
@@ -1134,6 +1180,142 @@ mod tests {
         assert_eq!(json["rxSpi"]["hasRxSpi"], serde_json::Value::Null);
     }
 
+    /// Fake FC for the HD OSD decision: `api_minor` 45 = 4.4, 46 = 4.5, 47 = 2025.12.
+    /// `None` replies are MSP errors (command not compiled in).
+    fn fake_fc_osd(
+        api_minor: u8,
+        build_info: Option<Vec<u8>>,
+        canvas: Option<Vec<u8>>,
+    ) -> MockSerial {
+        let mut parser = MspParser::default();
+        let board = board_info_payload();
+        MockSerial::new(move |w| {
+            let mut out = Vec::new();
+            for ev in parser.feed(w) {
+                let MspEvent::Frame(f) = ev else { continue };
+                let reply = |p: &[u8]| MspFrame::response(f.version, f.code, p).encode().unwrap();
+                let err = || {
+                    MspFrame {
+                        version: f.version,
+                        direction: Direction::Error,
+                        flag: 0,
+                        code: f.code,
+                        payload: vec![],
+                    }
+                    .encode()
+                    .unwrap()
+                };
+                out.extend(match f.code {
+                    codes::MSP_API_VERSION => reply(&[0, 1, api_minor]),
+                    codes::MSP_FC_VARIANT => reply(b"BTFL"),
+                    codes::MSP_FC_VERSION => reply(&[4, 5, 2]),
+                    codes::MSP_BOARD_INFO => reply(&board),
+                    codes::MSP_BUILD_INFO => build_info.as_deref().map_or_else(err, reply),
+                    codes::MSP_OSD_CANVAS => canvas.as_deref().map_or_else(err, reply),
+                    _ => err(),
+                });
+            }
+            out
+        })
+    }
+
+    fn build_info_reply(ids: &[u16]) -> Vec<u8> {
+        let mut p = b"Jan  1 202500:00:00abc1234".to_vec();
+        for id in ids {
+            p.extend(id.to_le_bytes());
+        }
+        p
+    }
+
+    #[test]
+    fn identify_hd_osd_per_firmware_line() {
+        use crate::device::build_info::{BUILD_OPTION_OSD_HD as HD, BUILD_OPTION_OSD_SD as SD};
+        let id = |minor, bi: Option<Vec<u8>>, canvas: Option<Vec<u8>>| {
+            MspClient::new(fake_fc_osd(minor, bi, canvas))
+                .identify()
+                .unwrap()
+        };
+        let hd_build = build_info_reply(&[4097, 8231, SD, HD]);
+        let sd_build = build_info_reply(&[4097, 8231, SD]);
+        for minor in [46, 47] {
+            // 4.5 / 2025.12: the build option list decides; canvas not needed.
+            let i = id(minor, Some(hd_build.clone()), None);
+            assert_eq!(i.hd_osd_supported, Some(true));
+            assert_eq!(
+                i.build_options,
+                ["USE_SERIALRX_CRSF", "USE_DSHOT", "USE_OSD_SD", "USE_OSD_HD"]
+            );
+            let i = id(minor, Some(sd_build.clone()), Some(vec![30, 16]));
+            assert_eq!(i.hd_osd_supported, Some(false));
+            // MSP_BUILD_INFO failing: canvas evidence only.
+            let i = id(minor, None, Some(vec![]));
+            assert_eq!(i.hd_osd_supported, Some(false));
+            assert!(i.build_options.is_empty());
+            assert_eq!(id(minor, None, Some(vec![53, 20])).hd_osd_supported, None);
+        }
+        // 4.4: no options in MSP_BUILD_INFO.
+        let i = id(45, Some(build_info_reply(&[])), Some(vec![53, 20]));
+        assert_eq!(i.hd_osd_supported, None);
+        assert!(i.build_options.is_empty());
+        let i = id(45, Some(build_info_reply(&[])), Some(vec![]));
+        assert_eq!(i.hd_osd_supported, Some(false));
+        assert_eq!(id(45, None, None).hd_osd_supported, None);
+
+        // CLI probe: "INVALID NAME" settles a null to false; an existing setting doesn't.
+        let mut i = id(45, Some(build_info_reply(&[])), Some(vec![30, 16]));
+        let mut probe = crate::device::cli::CliBoardProbe {
+            displayport_msp_col_adjust: Some("displayport_msp_col_adjust = 0".into()),
+            ..Default::default()
+        };
+        i.apply_cli_probe(&probe);
+        assert_eq!(i.hd_osd_supported, None);
+        probe.displayport_msp_col_adjust =
+            Some("###ERROR IN get: INVALID NAME: displayport_msp_col_adjust###".into());
+        i.apply_cli_probe(&probe);
+        assert_eq!(i.hd_osd_supported, Some(false));
+        // ...and never overrides a decision from build options.
+        let mut i = id(46, Some(hd_build), None);
+        i.apply_cli_probe(&probe);
+        assert_eq!(i.hd_osd_supported, Some(true));
+    }
+
+    #[test]
+    fn identify_survives_silent_build_info() {
+        // A firmware that never answers the optional requests still identifies (after the
+        // per-request timeout), with the fields left undetermined.
+        let mut parser = MspParser::default();
+        let board = board_info_payload();
+        let m = MockSerial::new(move |w| {
+            let mut out = Vec::new();
+            for ev in parser.feed(w) {
+                let MspEvent::Frame(f) = ev else { continue };
+                let reply = |p: &[u8]| MspFrame::response(f.version, f.code, p).encode().unwrap();
+                out.extend(match f.code {
+                    codes::MSP_API_VERSION => reply(&[0, 1, 46]),
+                    codes::MSP_FC_VARIANT => reply(b"BTFL"),
+                    codes::MSP_FC_VERSION => reply(&[4, 5, 2]),
+                    codes::MSP_BOARD_INFO => reply(&board),
+                    codes::MSP_BUILD_INFO | codes::MSP_OSD_CANVAS => vec![],
+                    c => MspFrame {
+                        version: f.version,
+                        direction: Direction::Error,
+                        flag: 0,
+                        code: c,
+                        payload: vec![],
+                    }
+                    .encode()
+                    .unwrap(),
+                });
+            }
+            out
+        });
+        let mut c = MspClient::new(m);
+        c.timeout = Duration::from_millis(30);
+        let i = c.identify().unwrap();
+        assert_eq!(i.hd_osd_supported, None);
+        assert!(i.build_options.is_empty());
+    }
+
     #[test]
     fn identify_reads_serial_ports_msp2_raw_ids() {
         let id = MspClient::new(fake_fc_with(Serial::V2)).identify().unwrap();
@@ -1172,6 +1354,7 @@ mod tests {
             serial: "serial UART1 64 115200 57600 0 115200".into(),
             resource: "resource RX_SPI_CS 1 NONE\r\n".into(),
             rx_spi_protocol: None,
+            displayport_msp_col_adjust: None,
         };
         id.apply_cli_probe(&probe);
         assert_eq!(id.rx_spi.has_rx_spi, Some(false));

@@ -1559,8 +1559,8 @@ pub fn fc_info(id: &FcIdentity) -> FcInfo {
         manufacturer_id: non_empty(&b.manufacturer_id),
         mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
         uid: id.uid.map(|u| u.mcu_id()),
-        build_options: Vec::new(),
-        hd_osd_supported: None,
+        build_options: id.build_options.clone(),
+        hd_osd_supported: id.hd_osd_supported,
         serial_ports,
         rx_spi: RxSpiInfo {
             present: r.has_rx_spi,
@@ -2105,8 +2105,15 @@ mod tests {
             uid: Some(uid),
             serial_config: None,
             rx_spi: DevRxSpi::from_msp(None, None),
+            build_options: vec!["USE_DSHOT".into(), "USE_OSD_HD".into()],
+            hd_osd_supported: Some(true),
         };
         let info = fc_info(&id);
+        assert_eq!(info.build_options, ["USE_DSHOT", "USE_OSD_HD"]);
+        assert_eq!(info.hd_osd_supported, Some(true));
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["hdOsdSupported"], true);
+        assert_eq!(json["buildOptions"][1], "USE_OSD_HD");
         assert_eq!(info.uid.as_deref(), Some("123456780000000f80000000"));
         assert_eq!(info.uid.as_ref().unwrap().len(), 24);
         assert_eq!(info.api_version, "1.46");
