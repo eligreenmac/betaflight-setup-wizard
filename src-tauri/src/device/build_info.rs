@@ -2,15 +2,16 @@
 //! MSP_BUILD_INFO build options and the `FcInfo.hdOsdSupported` decision (ARCHITECTURE §4.1
 //! "Build options" / "HD OSD support").
 //!
-//! Firmware sources (betaflight tags 4.4.3, 4.5.5, 2025.12.5):
+//! Firmware sources (betaflight tags 4.4.3, 4.5.5, 2025.12.5, 2026.6.2):
 //! * `msp/msp.c` `case MSP_BUILD_INFO`: `buildDate[11] buildTime[8] shortGitRevision[7]`, then
 //!   (4.5+, "Added in API version 1.46") `sbufWriteBuildInfoFlags()`. 4.4.3 stops after the
 //!   git revision.
 //! * `msp/msp_build_info.c`: one `sbufWriteU16` per compiled-in option, no count, no terminator.
 //! * `msp/msp_build_info.h`: the option ids (same values as the Build API `/api/options` and
-//!   Configurator `build_options.ts`).
+//!   Configurator `build_options.ts`). 2026.6.2 emits `BUILD_OPTION_FLIGHT_PLAN` twice when a
+//!   build has both `USE_FLIGHT_PLAN` and `ENABLE_FLIGHT_PLAN`, so names are de-duplicated.
 //! * `target/common_pre.h`: `USE_MSP_DISPLAYPORT` is defined inside `#if defined(USE_OSD)`
-//!   on all three lines, for SD-only builds too, so `displayport_msp_col_adjust` (`cli/settings.c`,
+//!   on all four lines, for SD-only builds too, so `displayport_msp_col_adjust` (`cli/settings.c`,
 //!   `#ifdef USE_MSP_DISPLAYPORT`) only proves "has an OSD", not "has HD".
 //! * `io/displayport_msp.c` `displayPortMspInit`: `#ifndef USE_OSD_HD` forces
 //!   `vcd_video_system` HD → AUTO, so HD needs `USE_OSD_HD`.
@@ -30,7 +31,8 @@ const GIT_REV_LEN: usize = 7;
 /// Bytes before the option ids.
 pub const BUILD_INFO_HEADER_LEN: usize = DATE_LEN + TIME_LEN + GIT_REV_LEN;
 
-/// Option id → Build API define. 2025.12.5 `msp_build_info.h` (a superset of 4.5.5's).
+/// Option id → Build API define. 2026.6.2 `msp_build_info.h` (a superset of 2025.12.5's, which
+/// is a superset of 4.5.5's; 2026.6 adds 16427..=16429).
 pub const BUILD_OPTION_NAMES: &[(u16, &str)] = &[
     (4097, "USE_SERIALRX_CRSF"),
     (4098, "USE_SERIALRX_FPORT"),
@@ -81,6 +83,10 @@ pub const BUILD_OPTION_NAMES: &[(u16, &str)] = &[
     (16424, "USE_WING"),
     (16425, "USE_POSITION_HOLD"),
     (16426, "USE_CHIRP"),
+    // 2026.6.2
+    (16427, "USE_FLIGHT_PLAN"),
+    (16428, "USE_OPTICALFLOW"),
+    (16429, "USE_RANGEFINDER"),
 ];
 
 /// Decoded MSP_BUILD_INFO.
@@ -110,9 +116,13 @@ impl BuildInfo {
         if !unknown.is_empty() {
             log::info!("MSP_BUILD_INFO: dropping unknown build option ids {unknown:?}");
         }
-        ids.filter_map(|id| option_name(*id))
-            .map(str::to_string)
-            .collect()
+        let mut names: Vec<String> = Vec::new();
+        for name in ids.filter_map(|id| option_name(*id)) {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
+            }
+        }
+        names
     }
 }
 

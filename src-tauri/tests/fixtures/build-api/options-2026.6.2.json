@@ -1,0 +1,337 @@
+{
+ "radioProtocols": [
+  {
+   "name": "CRSF",
+   "value": "USE_SERIALRX_CRSF",
+   "default": true,
+   "key": 4097,
+   "includesTelemetry": true
+  },
+  {
+   "name": "FPORT",
+   "value": "USE_SERIALRX_FPORT",
+   "default": false,
+   "key": 4098,
+   "includesTelemetry": true
+  },
+  {
+   "name": "GHOST",
+   "value": "USE_SERIALRX_GHST",
+   "default": false,
+   "key": 4099,
+   "includesTelemetry": true
+  },
+  {
+   "name": "IBUS",
+   "value": "USE_SERIALRX_IBUS",
+   "default": false,
+   "key": 4100
+  },
+  {
+   "name": "JETIEXBUS",
+   "value": "USE_SERIALRX_JETIEXBUS",
+   "default": false,
+   "key": 4101,
+   "includesTelemetry": true
+  },
+  {
+   "name": "MAVLINK",
+   "value": "USE_SERIALRX_MAVLINK",
+   "default": false,
+   "key": 4109
+  },
+  {
+   "name": "PPM",
+   "value": "USE_RX_PPM",
+   "default": false,
+   "key": 4102
+  },
+  {
+   "name": "SBUS",
+   "value": "USE_SERIALRX_SBUS",
+   "default": false,
+   "key": 4103
+  },
+  {
+   "name": "SPEKTRUM",
+   "value": "USE_SERIALRX_SPEKTRUM",
+   "default": false,
+   "key": 4104
+  },
+  {
+   "name": "SRXL2",
+   "value": "USE_SERIALRX_SRXL2",
+   "default": false,
+   "key": 4105
+  },
+  {
+   "name": "SUMD",
+   "value": "USE_SERIALRX_SUMD",
+   "default": false,
+   "key": 4106
+  },
+  {
+   "name": "SUMH",
+   "value": "USE_SERIALRX_SUMH",
+   "default": false,
+   "key": 4107
+  },
+  {
+   "name": "XBUS",
+   "value": "USE_SERIALRX_XBUS",
+   "default": false,
+   "key": 4108
+  }
+ ],
+ "telemetryProtocols": [
+  {
+   "name": "[None]",
+   "value": "",
+   "default": false
+  },
+  {
+   "name": "FRSKY_HUB",
+   "value": "USE_TELEMETRY_FRSKY_HUB",
+   "default": false,
+   "key": 12301
+  },
+  {
+   "name": "HOTT",
+   "value": "USE_TELEMETRY_HOTT",
+   "default": false,
+   "key": 12302
+  },
+  {
+   "name": "IBUS EXTENDED",
+   "value": "USE_TELEMETRY_IBUS_EXTENDED",
+   "default": false,
+   "key": 12303
+  },
+  {
+   "name": "LTM",
+   "value": "USE_TELEMETRY_LTM",
+   "default": false,
+   "key": 12304
+  },
+  {
+   "name": "MAVLINK",
+   "value": "USE_TELEMETRY_MAVLINK",
+   "default": false,
+   "key": 12305
+  },
+  {
+   "name": "SMARTPORT",
+   "value": "USE_TELEMETRY_SMARTPORT",
+   "default": false,
+   "key": 12306
+  },
+  {
+   "name": "SRXL",
+   "value": "USE_TELEMETRY_SRXL",
+   "default": false,
+   "key": 12307
+  }
+ ],
+ "generalOptions": [
+  {
+   "name": "Acro Trainer",
+   "value": "USE_ACRO_TRAINER",
+   "default": true,
+   "key": 16404
+  },
+  {
+   "name": "AKK (SA FIX)",
+   "value": "USE_AKK_SMARTAUDIO",
+   "default": false,
+   "key": 16405
+  },
+  {
+   "name": "Altitude Hold",
+   "value": "USE_ALTITUDE_HOLD",
+   "default": false,
+   "key": 16422
+  },
+  {
+   "name": "Batt. Continue",
+   "value": "USE_BATTERY_CONTINUE",
+   "default": false,
+   "key": 16406
+  },
+  {
+   "name": "Cam. Control",
+   "value": "USE_CAMERA_CONTROL",
+   "default": false,
+   "key": 16407
+  },
+  {
+   "name": "Chirp",
+   "value": "USE_CHIRP",
+   "default": false,
+   "key": 16426
+  },
+  {
+   "name": "Dashboard",
+   "value": "USE_DASHBOARD",
+   "default": false,
+   "key": 16408
+  },
+  {
+   "name": "EMFAT (AutoRun, Icon)",
+   "value": "USE_EMFAT_TOOLS",
+   "default": false,
+   "key": 16409
+  },
+  {
+   "name": "ESC Serial (SK) inc. 4way",
+   "value": "USE_ESCSERIAL_SIMONK",
+   "default": false,
+   "key": 16410
+  },
+  {
+   "name": "FLIGHT PLAN",
+   "value": "USE_FLIGHT_PLAN",
+   "default": false,
+   "key": 16427
+  },
+  {
+   "name": "GPS",
+   "value": "USE_GPS",
+   "default": true,
+   "key": 16412
+  },
+  {
+   "name": "LED Strip",
+   "value": "USE_LED_STRIP",
+   "default": true,
+   "key": 16413
+  },
+  {
+   "name": "LED Strip (64)",
+   "value": "USE_LED_STRIP_64",
+   "default": false,
+   "key": 16414
+  },
+  {
+   "name": "Magnetometers",
+   "value": "USE_MAG",
+   "default": false,
+   "key": 16415
+  },
+  {
+   "name": "Optical Flow",
+   "value": "USE_OPTICALFLOW",
+   "default": true,
+   "key": 16428
+  },
+  {
+   "name": "OSD (Analog)",
+   "value": "USE_OSD_SD",
+   "default": true,
+   "key": 16416,
+   "group": "OSD",
+   "groupedName": "Analog"
+  },
+  {
+   "name": "OSD (Digital)",
+   "value": "USE_OSD_HD",
+   "default": true,
+   "key": 16417,
+   "group": "OSD",
+   "groupedName": "Digital"
+  },
+  {
+   "name": "OSD (FrSky)",
+   "value": "USE_FRSKYOSD",
+   "default": false,
+   "key": 16411,
+   "group": "OSD",
+   "groupedName": "FrSky"
+  },
+  {
+   "name": "Pin IO",
+   "value": "USE_PINIO",
+   "default": true,
+   "key": 16418
+  },
+  {
+   "name": "Position Hold",
+   "value": "USE_POSITION_HOLD",
+   "default": false,
+   "key": 16425
+  },
+  {
+   "name": "Race Pro",
+   "value": "USE_RACE_PRO",
+   "default": false,
+   "key": 16419
+  },
+  {
+   "name": "Range Finder",
+   "value": "USE_RANGEFINDER",
+   "default": true,
+   "key": 16429
+  },
+  {
+   "name": "Soft Serial",
+   "value": "USE_SOFTSERIAL",
+   "default": false,
+   "key": 16423
+  },
+  {
+   "name": "Servos",
+   "value": "USE_SERVOS",
+   "default": false,
+   "key": 16420
+  },
+  {
+   "name": "VTX",
+   "value": "USE_VTX",
+   "default": true,
+   "key": 16421
+  },
+  {
+   "name": "Wing",
+   "value": "USE_WING",
+   "default": false,
+   "key": 16424
+  }
+ ],
+ "motorProtocols": [
+  {
+   "name": "BRUSHED",
+   "value": "USE_BRUSHED",
+   "default": false,
+   "key": 8230
+  },
+  {
+   "name": "DSHOT",
+   "value": "USE_DSHOT",
+   "default": true,
+   "key": 8231
+  },
+  {
+   "name": "MULTISHOT",
+   "value": "USE_MULTISHOT",
+   "default": false,
+   "key": 8232
+  },
+  {
+   "name": "ONESHOT",
+   "value": "USE_ONESHOT",
+   "default": false,
+   "key": 8233
+  },
+  {
+   "name": "PROSHOT",
+   "value": "USE_PROSHOT",
+   "default": false,
+   "key": 8234
+  },
+  {
+   "name": "PWM",
+   "value": "USE_PWM_OUTPUT",
+   "default": false,
+   "key": 8235
+  }
+ ]
+}

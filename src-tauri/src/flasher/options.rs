@@ -157,6 +157,8 @@ pub(crate) mod tests {
         include_str!("../../tests/fixtures/build-api/options-4.5.2.json");
     pub(crate) const OPTIONS_2025_12_2: &str =
         include_str!("../../tests/fixtures/build-api/options-2025.12.2.json");
+    pub(crate) const OPTIONS_2026_6_2: &str =
+        include_str!("../../tests/fixtures/build-api/options-2026.6.2.json");
 
     fn list(json: &str) -> BuildOptions {
         serde_json::from_str(json).unwrap()
@@ -328,7 +330,7 @@ pub(crate) mod tests {
             s(&["USE_SERIALRX_SBUS", "USE_OSD_SD"])
         );
 
-        // Every name the mapping can produce is offered by 4.4.3, 4.5.2 and 2025.12.2.
+        // Every name the mapping can produce is offered by 4.4.3, 4.5.2, 2025.12.2 and 2026.6.2.
         let mut names: Vec<&str> = vec![osd_option(V::Hd), osd_option(V::Pal)];
         for p in [
             P::Crsf,
@@ -344,11 +346,79 @@ pub(crate) mod tests {
             names.extend(rx_option(K::Serial, Some(p)));
         }
         names.extend(rx_option(K::Ppm, None));
-        for json in [OPTIONS_4_4_3, OPTIONS_4_5_2, OPTIONS_2025_12_2] {
+        for json in [
+            OPTIONS_4_4_3,
+            OPTIONS_4_5_2,
+            OPTIONS_2025_12_2,
+            OPTIONS_2026_6_2,
+        ] {
             let offered = offered(&list(json));
             for n in &names {
                 assert!(offered.contains(*n), "{n} not offered");
             }
         }
+    }
+
+    #[test]
+    fn options_2026_6_2_parse_and_extend_2025_12() {
+        let l = list(OPTIONS_2026_6_2);
+        assert!(
+            l.extra.is_empty(),
+            "no unknown top-level lists: {:?}",
+            l.extra.keys()
+        );
+        assert_eq!(l.radio_protocols.len(), 13);
+        let new = offered(&l);
+        let old = offered(&list(OPTIONS_2025_12_2));
+        assert!(old.is_subset(&new), "2026.6.2 removed {:?}", &old - &new);
+        assert_eq!(
+            new.difference(&old).cloned().collect::<Vec<_>>(),
+            s(&["USE_FLIGHT_PLAN"])
+        );
+        for o in [
+            "USE_RX_PPM",
+            "USE_SERIALRX_SPEKTRUM",
+            "USE_SERIALRX_CRSF",
+            "USE_OSD_HD",
+            "USE_OSD_SD",
+        ] {
+            assert!(new.contains(o), "{o}");
+        }
+        let osd: Vec<_> = l
+            .general_options
+            .iter()
+            .filter(|o| o.group.as_deref() == Some("OSD"))
+            .map(|o| o.value.as_str())
+            .collect();
+        assert_eq!(osd, ["USE_OSD_SD", "USE_OSD_HD", "USE_FRSKYOSD"]);
+
+        // A 2026.6 board re-flashed to 2025.12.2 only loses USE_FLIGHT_PLAN.
+        let board: Vec<String> = new.into_iter().collect();
+        let r = resolve("2025.12.2", &board, &[], &list(OPTIONS_2025_12_2)).unwrap();
+        assert_eq!(r.dropped, s(&["USE_FLIGHT_PLAN"]));
+        let r = resolve("2026.6.2", &board, &[], &l).unwrap();
+        assert!(r.dropped.is_empty());
+    }
+
+    /// Every Build API option key of 2026.6.2 decodes to the same define via the
+    /// MSP_BUILD_INFO table (`device::build_info`), so a 2026.6 board's options survive.
+    #[test]
+    fn options_2026_6_2_keys_match_the_build_info_table() {
+        let v: serde_json::Value = serde_json::from_str(OPTIONS_2026_6_2).unwrap();
+        let mut n = 0;
+        for group in v.as_object().unwrap().values() {
+            for o in group.as_array().unwrap() {
+                let (Some(key), Some(value)) = (o["key"].as_u64(), o["value"].as_str()) else {
+                    continue;
+                };
+                assert_eq!(
+                    crate::device::build_info::option_name(key as u16),
+                    Some(value),
+                    "key {key}"
+                );
+                n += 1;
+            }
+        }
+        assert!(n >= 50, "{n}");
     }
 }

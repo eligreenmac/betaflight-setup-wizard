@@ -86,7 +86,13 @@ fn rig_ex(port: Port, api_minor: u8, exit_reboots: bool) -> Rig {
     let (mut fc, sim) = sim::fake(Sim::default());
     fc.api_minor = api_minor;
     fc.exit_reboots = exit_reboots;
-    let fw = if api_minor >= 46 { "4.5" } else { "4.4" };
+    // API 1.48 (2026.6) uses the 2025.12 dump for the CLI side. TODO(config#32): use a
+    // 2026.6 dump once `tests/fixtures/2026.6/` exists.
+    let fw = match api_minor {
+        48.. => "2025.12",
+        46 | 47 => "4.5",
+        _ => "4.4",
+    };
     let fail = Arc::new(Mutex::new(None));
     *fc.cli_backend.lock().unwrap() = Some(Box::new(Cfg {
         mock: MockFc::from_dump(&fixture(fw, "speedybeef405v4")),
@@ -297,9 +303,14 @@ fn confirmed_reboot_clears() {
 
 #[test]
 fn reconnect_reboots_a_dirty_board_and_clears() {
-    for port in [Port::Usb, Port::Uart] {
+    for (port, api) in [
+        (Port::Usb, 46),
+        (Port::Uart, 46),
+        (Port::Usb, 48),
+        (Port::Uart, 48),
+    ] {
         // disconnect + connect
-        let r = rig(port, 46);
+        let r = rig(port, api);
         r.failed_apply_without_reboot(&format!("reconnect-{port:?}"));
         let reboots = r.msp_reboots();
         r.m.disconnect().unwrap();
@@ -313,7 +324,7 @@ fn reconnect_reboots_a_dirty_board_and_clears() {
         assert_eq!(r.msp_reboots(), reboots + 1);
 
         // connect to the already-open port while dirty reopens it (no early return)
-        let r = rig(port, 46);
+        let r = rig(port, api);
         r.failed_apply_without_reboot(&format!("reopen-{port:?}"));
         r.m.connect(PORT).unwrap();
         assert_eq!(r.pending(), None);
@@ -394,8 +405,13 @@ fn msp_reboot_error_plus_port_drop_does_not_clear() {
 
 #[test]
 fn device_reboot_clears() {
-    for port in [Port::Usb, Port::Uart] {
-        let r = rig(port, 46);
+    for (port, api) in [
+        (Port::Usb, 46),
+        (Port::Uart, 46),
+        (Port::Usb, 48),
+        (Port::Uart, 48),
+    ] {
+        let r = rig(port, api);
         r.failed_apply_without_reboot(&format!("devreboot-{port:?}"));
         let reboots = r.msp_reboots();
         r.m.reboot().unwrap_or_else(|e| panic!("{port:?}: {e}"));
@@ -411,7 +427,7 @@ fn device_reboot_clears() {
 
 #[test]
 fn device_reboot_from_an_open_cli_sends_exit_never_save() {
-    for api in [45, 46, 47] {
+    for api in [45, 46, 47, 48] {
         let r = rig(Port::Uart, api);
         r.m.with_link(|l| l.cli_exec("set gyro_lpf1_static_hz = 250"))
             .unwrap();
@@ -452,32 +468,49 @@ fn unconfirmed_device_reboot_errors() {
 
 #[test]
 fn msp_write_and_exit_noreboot_mark_ram() {
-    let r = rig(Port::Uart, 46);
-    // MSP_SET_FEATURE_CONFIG (unknown to the fake: times out, but it was sent).
-    let _ = r.m.with_link(|l| l.msp_request(37, &[0, 0, 0, 0]));
-    assert_eq!(r.pending(), Some(UnsavedChangesReason::MspWrite));
-    r.assert_refused("MSP_WRITE");
+    // 4.5, 2025.12, 2026.6.
+    for api in [46, 47, 48] {
+        let r = rig(Port::Uart, api);
+        // MSP_SET_FEATURE_CONFIG (unknown to the fake: times out, but it was sent).
+        let _ = r.m.with_link(|l| l.msp_request(37, &[0, 0, 0, 0]));
+        assert_eq!(
+            r.pending(),
+            Some(UnsavedChangesReason::MspWrite),
+            "api {api}"
+        );
+        r.assert_refused("MSP_WRITE");
 
-    let r = rig(Port::Uart, 46);
-    r.m.with_link(|l| {
-        l.enter_cli()?;
-        l.exit_cli(false)
-    })
-    .unwrap();
-    assert_eq!(r.pending(), Some(UnsavedChangesReason::ExitNoReboot));
-    r.assert_refused("EXIT_NOREBOOT");
+        let r = rig(Port::Uart, api);
+        r.m.with_link(|l| {
+            l.enter_cli()?;
+            l.exit_cli(false)
+        })
+        .unwrap();
+        assert_eq!(
+            r.pending(),
+            Some(UnsavedChangesReason::ExitNoReboot),
+            "api {api}"
+        );
+        r.assert_refused("EXIT_NOREBOOT");
+    }
 }
 
 #[test]
 fn open_cli_with_changes_is_left_by_rebooting_before_calibration() {
     // A non-read-only CLI line left in an open CLI: calibrate leaves the CLI with plain
     // `exit` (a confirmed reboot), which discards the change, then calibrates.
-    let r = rig(Port::Usb, 46);
-    r.m.with_link(|l| l.cli_exec("set gyro_lpf1_static_hz = 250"))
-        .unwrap();
-    assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
-    r.assert_calibrates();
-    assert_eq!(r.pending(), None);
+    for api in [46, 47, 48] {
+        let r = rig(Port::Usb, api);
+        r.m.with_link(|l| l.cli_exec("set gyro_lpf1_static_hz = 250"))
+            .unwrap();
+        assert_eq!(
+            r.pending(),
+            Some(UnsavedChangesReason::CliCommand),
+            "api {api}"
+        );
+        r.assert_calibrates();
+        assert_eq!(r.pending(), None, "api {api}");
+    }
 }
 
 /// After our `exit` a port drop without `Rebooting` is no proof: the link reboots over MSP

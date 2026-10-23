@@ -7,12 +7,26 @@ use super::msp::codes;
 
 /// CLI commands that only print, whatever their arguments (`dump all`, `diff hardware`,
 /// `get gyro`, ...).
-const CLI_READ_ONLY: &[&str] = &["diff", "dump", "get", "help", "status", "tasks", "version"];
+/// 2026.6 adds `env` (`[prefix]`), `lcd`, `options` and `sensor_hardware` (`[gyro|acc|...]`).
+const CLI_READ_ONLY: &[&str] = &[
+    "diff",
+    "dump",
+    "env",
+    "get",
+    "help",
+    "lcd",
+    "options",
+    "sensor_hardware",
+    "status",
+    "tasks",
+    "version",
+];
 
 /// CLI commands that only print when given no arguments (with arguments they set things).
 const CLI_LIST_WITHOUT_ARGS: &[&str] = &[
     "adjrange",
     "aux",
+    "battery_profile", // 2026.6
     "beacon",
     "beeper",
     "board_name",
@@ -70,6 +84,9 @@ const MSP_READS: &[u16] = &[
     0x300A, // MSP2_SENSOR_CONFIG_ACTIVE
     0x300C, // MSP2_MCU_INFO
     0x300D, // MSP2_GYRO_SENSOR_ACTIVE
+    0x300E, // MSP2_BATTERY_PROFILE (2026.6; optional profile index argument)
+    // 0x3010 MSP2_CLI_SETTING is a read *and* a write ("name = value" sets): not listed.
+    0x3011, // MSP2_CLI_SETTING_INFO (2026.6)
 ];
 
 /// True if `code` is a known read. `MSP_REBOOT` is handled separately by the connection
@@ -101,6 +118,13 @@ mod tests {
             "get rx_spi_protocol",
             "get displayport_msp_col_adjust",
             "get",
+            // 2026.6
+            "battery_profile",
+            "env",
+            "env FC_",
+            "options",
+            "sensor_hardware gyro",
+            "lcd",
         ] {
             assert!(cli_line_is_read_only(l), "{l:?} is read-only");
         }
@@ -118,6 +142,8 @@ mod tests {
             "aux 0 0 0 1700 2100 0 0",
             "resource MOTOR 1 B10",
             "profile 1",
+            "battery_profile 1",
+            "waypoint clear",
             "align_board_roll 90",
             "nonsense",
         ] {
@@ -146,6 +172,12 @@ mod tests {
             assert!(!msp_is_read_only(c), "{c} may write");
         }
         assert!(!msp_is_read_only(codes::MSP_REBOOT));
+        // 2026.6: MSP2_BATTERY_PROFILE / MSP2_CLI_SETTING_INFO read; MSP2_CLI_SETTING may set,
+        // MSP2_SET_BATTERY_PROFILE (0x300F) writes.
+        assert!(msp_is_read_only(0x300E));
+        assert!(msp_is_read_only(0x3011));
+        assert!(!msp_is_read_only(0x3010));
+        assert!(!msp_is_read_only(0x300F));
         assert!(!msp_is_read_only(codes::MSP_ACC_CALIBRATION));
     }
 }

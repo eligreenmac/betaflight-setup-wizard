@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Sensor status, accelerometer calibration and attitude (read-only MSP; no config writes).
 //!
-//! Payload layouts follow Betaflight `src/main/msp/msp.c` (4.4.3, 4.5.5, 2025.12.5) and
+//! Payload layouts follow Betaflight `src/main/msp/msp.c` (4.4.3, 4.5.5, 2025.12.5, 2026.6.2) and
 //! Configurator `MSPHelper.ts`; see ARCHITECTURE.md §4.3 for the behaviour and evidence.
 
 use crate::device::error::{DeviceError, Result};
@@ -77,7 +77,7 @@ pub fn parse_sensor_alignment(p: &[u8]) -> Result<u8> {
 
 // ------------------------------------------------------------------------ names
 
-/// `lookupTableAlignment` (settings.c), same in 4.4 - 2025.12.
+/// `lookupTableAlignment` (settings.c), same in 4.4 - 2026.6.
 const ALIGNMENT: &[&str] = &[
     "DEFAULT",
     "CW0",
@@ -98,8 +98,8 @@ pub fn alignment_name(v: u8) -> String {
         .unwrap_or_else(|| format!("UNKNOWN_{v}"))
 }
 
-/// Hardware lookup tables from settings.c, by firmware (MSP API minor: 45 = 4.4,
-/// 46 = 4.5, 47+ = 2025.12). Spellings are the firmware's (4.4 gyro "LSM6SDO" included).
+/// Hardware lookup tables from settings.c (2026.6: sensors/sensors.c), by firmware (MSP API
+/// minor: 45 = 4.4, 46 = 4.5, 47 = 2025.12, 48+ = 2026.6). Spellings are the firmware's (4.4 gyro "LSM6SDO" included).
 mod tables {
     pub const GYRO_44: &[&str] = &[
         "AUTO",
@@ -292,6 +292,103 @@ mod tables {
         "IIM42652",
         "VIRTUAL",
     ];
+    /// 2026.6.2 `sensors/sensors.c` `lookupTableGyroHardware` (`gyroHardware_e`: NONE = 0,
+    /// DEFAULT = 1; the gyro is the one table that starts with NONE).
+    pub const GYRO_2026: &[&str] = &[
+        "NONE",
+        "AUTO",
+        "MPU6050",
+        "L3GD20",
+        "MPU6000",
+        "MPU6500",
+        "MPU9250",
+        "ICM20601",
+        "ICM20602",
+        "ICM20608G",
+        "ICM20649",
+        "ICM20689",
+        "ICM42605",
+        "ICM42688P",
+        "BMI160",
+        "BMI270",
+        "LSM6DSO",
+        "LSM6DSV16X",
+        "IIM42653",
+        "ICM45605",
+        "ICM45686",
+        "ICM40609D",
+        "IIM42652",
+        "LSM6DSK320X",
+        "ICM42622P",
+        "ICM42686P",
+        "ICM56686",
+        "VIRTUAL",
+    ];
+    /// 2026.6.2 `lookupTableAccHardware`: adds LSM6DSK320X..ICM56686 before VIRTUAL.
+    pub const ACC_2026: &[&str] = &[
+        "AUTO",
+        "NONE",
+        "MPU6050",
+        "MPU6000",
+        "MPU6500",
+        "MPU9250",
+        "ICM20601",
+        "ICM20602",
+        "ICM20608G",
+        "ICM20649",
+        "ICM20689",
+        "ICM42605",
+        "ICM42688P",
+        "BMI160",
+        "BMI270",
+        "LSM6DSO",
+        "LSM6DSV16X",
+        "IIM42653",
+        "ICM45605",
+        "ICM45686",
+        "ICM40609D",
+        "IIM42652",
+        "LSM6DSK320X",
+        "ICM42622P",
+        "ICM42686P",
+        "ICM56686",
+        "VIRTUAL",
+    ];
+    /// 2026.6.2 `lookupTableBaroHardware`: BMP580/BMP581 insert at 11, VIRTUAL moves 11 -> 13.
+    pub const BARO_2026: &[&str] = &[
+        "AUTO",
+        "NONE",
+        "BMP085",
+        "MS5611",
+        "BMP280",
+        "LPS",
+        "QMP6988",
+        "BMP388",
+        "DPS310",
+        "2SMPB_02B",
+        "LPS22DF",
+        "BMP580",
+        "BMP581",
+        "VIRTUAL",
+        "SPA06_003",
+    ];
+    /// 2026.6.2 `lookupTableMagHardware`: QMC5883 is renamed QMC5883L; DRONECAN only with
+    /// `ENABLE_DRONECAN`.
+    pub const MAG_2026: &[&str] = &[
+        "AUTO",
+        "NONE",
+        "HMC5883",
+        "AK8975",
+        "AK8963",
+        "QMC5883L",
+        "LIS2MDL",
+        "LIS3MDL",
+        "MPU925X_AK8963",
+        "IST8310",
+        "MMC560X",
+        "QMC5883P",
+        "DRONECAN",
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,10 +409,14 @@ pub fn hardware_name(kind: SensorKind, api_minor: u8, id: u8) -> Option<String> 
         (SensorKind::Mag, ..=45) => MAG_44,
         (SensorKind::Gyro, 46) => GYRO_45,
         (SensorKind::Acc, 46) => ACC_45,
-        (SensorKind::Gyro, _) => GYRO_2025,
-        (SensorKind::Acc, _) => ACC_2025,
-        (SensorKind::Baro, _) => BARO_45,
-        (SensorKind::Mag, _) => MAG_45,
+        (SensorKind::Gyro, 47) => GYRO_2025,
+        (SensorKind::Acc, 47) => ACC_2025,
+        (SensorKind::Baro, 47) => BARO_45,
+        (SensorKind::Mag, 47) => MAG_45,
+        (SensorKind::Gyro, _) => GYRO_2026,
+        (SensorKind::Acc, _) => ACC_2026,
+        (SensorKind::Baro, _) => BARO_2026,
+        (SensorKind::Mag, _) => MAG_2026,
     };
     Some(
         t.get(id as usize)
@@ -852,6 +953,18 @@ mod tests {
         assert_eq!(n(Mag, 46, 6), "LIS2MDL");
         assert_eq!(n(Mag, 47, 1), "NONE");
         assert_eq!(n(Mag, 47, 99), "UNKNOWN_99");
+        // 2026.6 (API 1.48): new parts appended before VIRTUAL, which therefore moved.
+        assert_eq!(n(Gyro, 48, 15), "BMI270");
+        assert_eq!(n(Gyro, 48, 26), "ICM56686");
+        assert_eq!(n(Gyro, 48, 27), "VIRTUAL");
+        assert_eq!(n(Acc, 48, 25), "ICM56686");
+        assert_eq!(n(Acc, 48, 26), "VIRTUAL");
+        assert_eq!(n(Baro, 48, 13), "VIRTUAL");
+        assert_eq!(n(Baro, 48, 14), "SPA06_003");
+        assert_eq!(n(Mag, 48, 5), "QMC5883L");
+        assert_eq!(n(Mag, 48, 11), "QMC5883P");
+        assert_eq!(n(Mag, 48, 12), "DRONECAN");
+        assert_eq!(n(Mag, 49, 12), "DRONECAN"); // newer API: latest table
         assert_eq!(detected_name(Mag, 46, 1), None);
         assert_eq!(detected_name(Mag, 46, 0xFF), None);
         assert_eq!(alignment_name(3), "CW180");
