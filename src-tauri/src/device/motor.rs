@@ -819,6 +819,20 @@ pub(crate) mod fake {
         fn reboot(&mut self) {}
     }
 
+    /// What an [`MspHook`] answers.
+    pub enum HookReply {
+        /// A normal response with this payload.
+        Ok(Vec<u8>),
+        /// An MSP error frame (command unknown to / refused by the firmware).
+        Error,
+        /// No reply at all (the request times out).
+        Silent,
+    }
+
+    /// Extra MSP behaviour for one test: called with (code, payload) before the built-in
+    /// handlers; `None` falls through to them.
+    pub type MspHook = Box<dyn FnMut(u16, &[u8]) -> Option<HookReply> + Send>;
+
     #[derive(Clone)]
     pub struct FakeFc {
         pub armed: Arc<AtomicBool>,
@@ -859,6 +873,8 @@ pub(crate) mod fake {
         pub cli_backend: Arc<Mutex<Option<Box<dyn CliBackend>>>>,
         /// Reboots seen (`exit`, MSP_REBOOT, `bl`).
         pub reboots: Arc<std::sync::atomic::AtomicUsize>,
+        /// See [`MspHook`].
+        pub msp_hook: Arc<Mutex<Option<MspHook>>>,
     }
 
     impl Default for FakeFc {
@@ -884,6 +900,7 @@ pub(crate) mod fake {
                 api_minor: 46,
                 cli_backend: Arc::default(),
                 reboots: Arc::default(),
+                msp_hook: Arc::default(),
             }
         }
     }
@@ -1005,6 +1022,26 @@ pub(crate) mod fake {
                 }
                 for ev in parser.feed(w) {
                     let MspEvent::Frame(f) = ev else { continue };
+                    let hooked = me
+                        .msp_hook
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .and_then(|h| h(f.code, &f.payload));
+                    match hooked {
+                        Some(HookReply::Ok(p)) => {
+                            out.extend(MspFrame::response(f.version, f.code, &p).encode().unwrap());
+                            continue;
+                        }
+                        Some(HookReply::Error) => {
+                            let mut e = MspFrame::response(f.version, f.code, &[]);
+                            e.direction = crate::device::msp::Direction::Error;
+                            out.extend(e.encode().unwrap());
+                            continue;
+                        }
+                        Some(HookReply::Silent) => continue,
+                        None => {}
+                    }
                     let reply: Option<Vec<u8>> = match f.code {
                         codes::MSP_API_VERSION => Some(vec![0, 1, me.api_minor]),
                         codes::MSP_FC_VARIANT => Some(b"BTFL".to_vec()),

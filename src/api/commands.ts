@@ -5,9 +5,9 @@
 
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
-  AppInfo, ApplyResult, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
+  AccCalibrationResult, AppInfo, ApplyResult, Attitude, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
   FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
-  OsdLayout, OsdVideoSystem, VerifyReport,
+  OsdLayout, OsdVideoSystem, SensorStatus, VerifyReport,
 } from "../types/model";
 
 /** Map of command name -> [args, result]. Single source of truth on the TS side. */
@@ -28,6 +28,11 @@ export interface CommandMap {
   device_motor_test_stop: [Record<string, never>, void];
   device_rc_stream_start: [{ rateHz: number | null }, void];
   device_rc_stream_stop: [Record<string, never>, void];
+  device_sensors: [Record<string, never>, SensorStatus];
+  device_acc_calibrate: [Record<string, never>, AccCalibrationResult];
+  device_get_attitude: [Record<string, never>, Attitude];
+  device_attitude_stream_start: [{ rateHz: number | null }, void];
+  device_attitude_stream_stop: [Record<string, never>, void];
   // flasher
   flasher_list_targets: [Record<string, never>, BoardTarget[]];
   flasher_list_releases: [{ target: string }, FirmwareRelease[]];
@@ -99,6 +104,14 @@ export const api = {
     motorTestStop: () => call("device_motor_test_stop", none),
     rcStreamStart: (rateHz: number | null = null) => call("device_rc_stream_start", { rateHz }),
     rcStreamStop: () => call("device_rc_stream_stop", none),
+    /** Detected / enabled state of gyro, acc, baro, mag (+ hardware names, alignment readout). Read-only. */
+    sensors: () => call("device_sensors", none),
+    /** Board level and still. Resolves when done (FC saves by itself). BOARD_ARMED / ACC_NOT_AVAILABLE / BOARD_MOVING / ACC_CALIBRATION_FAILED. */
+    accCalibrate: () => call("device_acc_calibrate", none),
+    getAttitude: () => call("device_get_attitude", none),
+    /** Default 10 Hz, clamped 1..30. Exclusive with the motor test and the RC stream (PORT_BUSY). */
+    attitudeStreamStart: (rateHz: number | null = null) => call("device_attitude_stream_start", { rateHz }),
+    attitudeStreamStop: () => call("device_attitude_stream_stop", none),
   },
   flasher: {
     listTargets: () => call("flasher_list_targets", none),
@@ -144,4 +157,6 @@ export const EVENTS = {
   motorTestStopped: "device://motor-test-stopped",
   rcChannels: "device://rc-channels",
   rcStopped: "device://rc-stopped",
+  attitude: "device://attitude",
+  attitudeStopped: "device://attitude-stopped",
 } as const;

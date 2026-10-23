@@ -1,7 +1,8 @@
 //! Shared error type. Serialized to the UI as
 //! `{ "code": "...", "message": "...", "details"?: {...} }`.
 //! `details` is present only for codes that carry structured data (see
-//! docs/ARCHITECTURE.md §2.3): `PORT_BUSY` and `DRIVER_MISSING`.
+//! docs/ARCHITECTURE.md §2.3): `PORT_BUSY`, `DRIVER_MISSING`, `ACC_NOT_AVAILABLE` and
+//! `BOARD_MOVING`.
 
 use serde::Serialize;
 
@@ -82,6 +83,23 @@ pub enum AppError {
     /// Keepalive/stop without a running motor test (e.g. the watchdog already fired).
     #[error("motor test is not running")]
     MotorTestNotActive,
+    /// Accelerometer calibration impossible: no accelerometer detected, or it is disabled
+    /// (`acc_hardware = NONE`), or the firmware was built without one.
+    #[error("no usable accelerometer (present: {present}, enabled: {enabled})")]
+    AccNotAvailable { present: bool, enabled: bool },
+    /// The gyro shows rotation above `limit_dps` (deg/s): the board is being handled.
+    /// `during = false`: checked before calibrating, nothing was sent. `during = true`: the
+    /// board moved while the FC calibrated; the (bad) result is already stored, calibrate
+    /// again with the board still.
+    #[error("the board is moving ({max_rate_dps} deg/s > {limit_dps} deg/s); keep it level and still{}", if *during { " and calibrate again" } else { "" })]
+    BoardMoving {
+        max_rate_dps: u16,
+        limit_dps: u16,
+        during: bool,
+    },
+    /// The FC did not report a finished accelerometer calibration in time.
+    #[error("accelerometer calibration failed: {0}")]
+    AccCalibrationFailed(String),
     /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
@@ -113,6 +131,9 @@ impl AppError {
             AppError::MotorTestRefused(_) => "MOTOR_TEST_REFUSED",
             AppError::BoardArmed => "BOARD_ARMED",
             AppError::MotorTestNotActive => "MOTOR_TEST_NOT_ACTIVE",
+            AppError::AccNotAvailable { .. } => "ACC_NOT_AVAILABLE",
+            AppError::BoardMoving { .. } => "BOARD_MOVING",
+            AppError::AccCalibrationFailed(_) => "ACC_CALIBRATION_FAILED",
             AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Io(_) => "IO",
         }
@@ -132,6 +153,18 @@ impl AppError {
             AppError::DriverMissing { vid, pid, detail } => {
                 Some(serde_json::json!({ "vid": vid, "pid": pid, "detail": detail }))
             }
+            AppError::AccNotAvailable { present, enabled } => {
+                Some(serde_json::json!({ "present": present, "enabled": enabled }))
+            }
+            AppError::BoardMoving {
+                max_rate_dps,
+                limit_dps,
+                during,
+            } => Some(serde_json::json!({
+                "maxRateDps": max_rate_dps,
+                "limitDps": limit_dps,
+                "during": during,
+            })),
             _ => None,
         }
     }
@@ -198,6 +231,29 @@ mod tests {
         assert_eq!(v["details"], json!({ "port": "COM5", "heldBy": "APP" }));
     }
 
+    #[test]
+    fn sensor_errors_carry_details() {
+        let v = serde_json::to_value(AppError::AccNotAvailable {
+            present: true,
+            enabled: false,
+        })
+        .unwrap();
+        assert_eq!(v["code"], "ACC_NOT_AVAILABLE");
+        assert_eq!(v["details"], json!({ "present": true, "enabled": false }));
+        let v = serde_json::to_value(AppError::BoardMoving {
+            max_rate_dps: 42,
+            limit_dps: 8,
+            during: true,
+        })
+        .unwrap();
+        assert_eq!(v["code"], "BOARD_MOVING");
+        assert_eq!(
+            v["details"],
+            json!({ "maxRateDps": 42, "limitDps": 8, "during": true })
+        );
+        assert!(v["message"].as_str().unwrap().ends_with("calibrate again"));
+    }
+
     /// `src/types/model.ts` (`AppErrorCode`) is the TypeScript source of truth for codes;
     /// every Rust code must appear in it.
     #[test]
@@ -236,6 +292,16 @@ mod tests {
             AppError::MotorTestRefused(String::new()),
             AppError::BoardArmed,
             AppError::MotorTestNotActive,
+            AppError::AccNotAvailable {
+                present: false,
+                enabled: false,
+            },
+            AppError::BoardMoving {
+                max_rate_dps: 0,
+                limit_dps: 0,
+                during: false,
+            },
+            AppError::AccCalibrationFailed(String::new()),
             AppError::InvalidArgument(String::new()),
             AppError::Io(String::new()),
         ];

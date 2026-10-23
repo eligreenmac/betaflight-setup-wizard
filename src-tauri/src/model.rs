@@ -192,6 +192,102 @@ pub enum RcStopReason {
     Error,
 }
 
+/// One sensor in `SensorStatus` (`device_get_sensors`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorState {
+    /// Detected at boot and running (MSP_STATUS sensor bit). A sensor disabled in the
+    /// config is never initialised, so it is never present.
+    pub present: bool,
+    /// Not disabled in the config (`acc_hardware` / `baro_hardware` / `mag_hardware`
+    /// != NONE). Always true for the gyro (it cannot be disabled).
+    pub enabled: bool,
+    /// The configured hardware setting as the CLI spells it ("AUTO", "NONE", "BMI270", ...).
+    /// `null` for the gyro.
+    pub configured_hardware: Option<String>,
+    /// The chip the FC detected (MSP2_SENSOR_CONFIG_ACTIVE, Betaflight 4.5+), e.g. "BMI270".
+    /// `null` on 4.4, when nothing was detected, or when the build has no driver for it.
+    pub detected_hardware: Option<String>,
+}
+
+/// Board / sensor alignment as currently stored on the FC (read-only; writes belong to
+/// the config engine).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorAlignment {
+    /// `align_board_roll` / `_pitch` / `_yaw` in whole degrees (MSP_BOARD_ALIGNMENT_CONFIG).
+    pub board_roll_deg: i16,
+    pub board_pitch_deg: i16,
+    pub board_yaw_deg: i16,
+    /// `gyro_1_sensor_align` of the active gyro (MSP_SENSOR_ALIGNMENT): "DEFAULT", "CW0",
+    /// "CW90", "CW180", "CW270", "CW0FLIP", "CW90FLIP", "CW180FLIP", "CW270FLIP", "CUSTOM".
+    pub gyro_alignment: String,
+}
+
+/// Result of `device_get_sensors`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorStatus {
+    pub gyro: SensorState,
+    pub acc: SensorState,
+    pub baro: SensorState,
+    pub mag: SensorState,
+    /// `false` while Betaflight reports "accelerometer needs calibration"
+    /// (MSP_BOARD_INFO configuration problem bit 0); `null` if unknown or no acc.
+    pub acc_calibrated: Option<bool>,
+    /// `null` if the FC did not answer the alignment requests.
+    pub alignment: Option<SensorAlignment>,
+}
+
+/// How `device_acc_calibrate` saw the calibration finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AccCalibrationCompletion {
+    /// MSP_STATUS_EX arming-disable flag CALIBRATING was seen set and then clear.
+    CalibratingFlag,
+    /// The flag was not observable; finished after the fixed wait (2 s, as Betaflight
+    /// Configurator does).
+    FixedWait,
+}
+
+/// Result of `device_acc_calibrate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccCalibrationResult {
+    /// From sending MSP_ACC_CALIBRATION to completion.
+    pub duration_ms: u32,
+    pub completion: AccCalibrationCompletion,
+    /// Largest gyro rate seen (deg/s, any axis) while calibrating.
+    pub max_gyro_rate_dps: u16,
+}
+
+/// Emitted on `device://attitude` at the stream rate; also the result of
+/// `device_get_attitude` (with `seq` = 0, `timestampMs` = 0). Degrees, Betaflight signs:
+/// roll + = right side down, pitch + = nose down, yaw = heading (+ = nose right).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attitude {
+    pub seq: u64,
+    /// Milliseconds since the stream started.
+    pub timestamp_ms: u64,
+    /// Degrees, -180..180 (0.1° resolution). Signs are Betaflight's MSP_ATTITUDE values
+    /// unchanged; Configurator's 3D model rotates by (x, y, z) = (-pitch, -yaw, -roll).
+    pub roll: f32,
+    /// Degrees, -90..90 (0.1° resolution).
+    pub pitch: f32,
+    /// Heading in whole degrees, 0..359.
+    pub yaw: f32,
+}
+
+/// Emitted on `device://attitude-stopped` when the attitude stream ends (same reasons as
+/// the RC stream).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttitudeStopped {
+    pub reason: RcStopReason,
+    pub error: Option<serde_json::Value>,
+}
+
 // ---------------------------------------------------------------- flasher
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -587,10 +683,43 @@ pub struct Extras {
     pub beeper: Option<bool>,
     pub led_strip: Option<bool>,
     /// Name shown in OSD / Configurator (`set craft_name = ...`, all of 4.4 / 4.5 / 2025.12;
-    /// the old `name` command no longer exists). 1-16 printable ASCII characters;
+    /// the old `name` command no longer exists). See [`craft_name_valid`];
     /// `""` clears it (written as `-`, the firmware's empty value); null = keep.
     pub craft_name: Option<String>,
 }
+
+/// `extras.craftName` pattern in schemas/drone-model.schema.json (kept identical; a test
+/// compares them). Equivalent to [`craft_name_valid`].
+pub const CRAFT_NAME_PATTERN: &str = r"^(?:[\x21\x22\x24-\x2C\x2E-\x3E\x40-\x7E]|[\x21\x22\x24-\x3E\x40-\x7E][\x20-\x22\x24-\x3E\x40-\x7E]{0,14}[\x21\x22\x24-\x3E\x40-\x7E])?$";
+
+/// What Betaflight 4.4 / 4.5 / 2025.12 can store through `set craft_name = <name>`
+/// (craft_name is MODE_STRING 1..MAX_NAME_LENGTH = 16, cli/settings.c; parsing in cli.c):
+/// - processCharacter only buffers 0x20..=0x7E;
+/// - `#` starts a comment (the rest of the line is cut), `?` is tab-completion in the
+///   interactive CLI that MSP `#` entry opens (`cliEnter(port, true)`);
+/// - trailing spaces are stripped from the line, leading ones by `skipSpace`;
+/// - exactly `-` is the empty marker (strncmp against `emptyName`).
+///
+/// `""` (clear) is valid here; the generator writes it as `-`.
+pub fn craft_name_valid(name: &str) -> bool {
+    let printable = |c: char| matches!(c, ' '..='~') && c != '#' && c != '?';
+    name.is_empty()
+        || (name.len() <= MAX_CRAFT_NAME_LENGTH
+            && name.chars().all(printable)
+            && !name.starts_with(' ')
+            && !name.ends_with(' ')
+            && name != "-")
+}
+
+/// pg/pilot.h MAX_NAME_LENGTH.
+pub const MAX_CRAFT_NAME_LENGTH: usize = 16;
+
+/// Highest `vtx.power` the CLI accepts: `vtx_power` is 1-based (0 = unknown) with range
+/// 0..VTX_TABLE_MAX_POWER_LEVELS-1 = 0..7 in 4.4 / 4.5 / 2025.12 (cli/settings.c), so a
+/// table's 8th power level cannot be selected via the CLI. Band / channel are 1..=8.
+pub const VTX_POWER_MAX: u8 = 7;
+pub const VTX_BAND_MAX: u8 = 8;
+pub const VTX_CHANNEL_MAX: u8 = 8;
 
 // ---------------------------------------------------------------- drone model, batch 2
 
@@ -656,6 +785,8 @@ pub struct Beepers {
 
 /// true = `*_hardware = AUTO` (a specific chip already set on the FC is kept),
 /// false = `NONE`; null = keep. Gyro is always on.
+/// Device's `SensorState.configured_hardware` reads the same setting (`NONE` = false /
+/// disabled, anything else = true).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Sensors {
@@ -669,6 +800,7 @@ pub struct Sensors {
 
 /// Whole degrees, the firmware range -180..=360 on 4.4 / 4.5 / 2025.12 (cli/settings.c);
 /// the same values MSP_BOARD_ALIGNMENT_CONFIG reports (int16 each).
+/// `roll` / `pitch` / `yaw` = device `SensorAlignment.board_roll_deg` / `_pitch_deg` / `_yaw_deg`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BoardAlignment {
@@ -988,6 +1120,56 @@ pub struct AppInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The craft-name rule is one rule: the schema's pattern is CRAFT_NAME_PATTERN, and
+    /// `craft_name_valid` agrees with every shared case (tests/model-limits.test.ts runs the
+    /// same cases through the schema pattern in JS).
+    #[test]
+    fn craft_name_rule_matches_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/drone-model.schema.json")).unwrap();
+        let extras = &schema["properties"]["extras"]["properties"]["craftName"];
+        assert_eq!(extras["pattern"].as_str(), Some(CRAFT_NAME_PATTERN));
+        assert_eq!(
+            extras["maxLength"].as_u64(),
+            Some(MAX_CRAFT_NAME_LENGTH as u64)
+        );
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/fixtures/craft-name-cases.json"))
+                .unwrap();
+        for (key, want) in [("valid", true), ("invalid", false)] {
+            for c in cases[key].as_array().unwrap() {
+                let c = c.as_str().unwrap();
+                assert_eq!(craft_name_valid(c), want, "{c:?}");
+            }
+        }
+        // Exhaustive over single chars: only 0x21..=0x7E minus # ? - are valid alone.
+        for b in 0u8..=255 {
+            let c = (b as char).to_string();
+            let want = (0x21..=0x7e).contains(&b) && !b"#?-".contains(&b);
+            assert_eq!(craft_name_valid(&c), want, "{b:#x}");
+        }
+    }
+
+    /// vtx band/channel/power maxima in the schema = firmware (drivers/vtx_table.h).
+    #[test]
+    fn vtx_limits_match_schema_and_firmware() {
+        use crate::config::vtx_table;
+        assert_eq!(usize::from(VTX_POWER_MAX), vtx_table::MAX_POWER_LEVELS - 1);
+        assert_eq!(usize::from(VTX_BAND_MAX), vtx_table::MAX_BANDS);
+        assert_eq!(usize::from(VTX_CHANNEL_MAX), vtx_table::MAX_CHANNELS);
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/drone-model.schema.json")).unwrap();
+        let vtx = &schema["properties"]["vtx"]["properties"];
+        for (k, max) in [
+            ("band", VTX_BAND_MAX),
+            ("channel", VTX_CHANNEL_MAX),
+            ("power", VTX_POWER_MAX),
+        ] {
+            assert_eq!(vtx[k]["minimum"].as_u64(), Some(1), "{k}");
+            assert_eq!(vtx[k]["maximum"].as_u64(), Some(u64::from(max)), "{k}");
+        }
+    }
 
     /// Every example in the JSON schema must deserialize into the Rust mirror.
     #[test]

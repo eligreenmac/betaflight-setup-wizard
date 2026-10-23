@@ -51,6 +51,11 @@ pub fn run() {
             device::commands::device_motor_test_stop,
             device::commands::device_rc_stream_start,
             device::commands::device_rc_stream_stop,
+            device::commands::device_sensors,
+            device::commands::device_acc_calibrate,
+            device::commands::device_get_attitude,
+            device::commands::device_attitude_stream_start,
+            device::commands::device_attitude_stream_stop,
             // flasher
             flasher::commands::flasher_list_targets,
             flasher::commands::flasher_list_releases,
