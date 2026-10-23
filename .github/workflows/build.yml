@@ -41,8 +41,21 @@ jobs:
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --locked
+      - name: Check app version
+        id: version
+        run: node .github/scripts/check-release-version.mjs
+      - name: NSIS template is Tauri's + the version change
+        run: node src-tauri/windows/nsis-template.mjs --check
       - name: tauri build (NSIS + MSI)
         run: npm run tauri build
+      # VERSIONINFO numbers must follow the app version like the MSI (X.Y.Z-N -> X.Y.Z.N):
+      # the NSIS template sets the installer's, beforeBundleCommand patches the app exe.
+      - name: Check numeric Windows versions (setup.exe, app exe)
+        shell: pwsh
+        run: >-
+          ./.github/scripts/check-windows-versions.ps1 -Expected '${{ steps.version.outputs.windows_version }}'
+          -Path (Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe).FullName,
+          src-tauri/target/release/betaflight-setup-wizard.exe
       - name: Check WinUSB helper is inside the NSIS installer
         shell: pwsh
         run: |

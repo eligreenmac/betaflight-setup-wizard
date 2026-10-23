@@ -10,10 +10,12 @@
 // 3. On a tag build, the tag is exactly "v" + version.
 //
 // Usage: node check-release-version.mjs [repo-root] [tag]   (tag defaults to
-// $GITHUB_REF_NAME when $GITHUB_REF is a tag). Writes version= and prerelease= to
-// $GITHUB_OUTPUT when set. Exit code 1 with a message on any problem.
+// $GITHUB_REF_NAME when $GITHUB_REF is a tag). Writes version=, prerelease= and
+// windows_version= (numeric VERSIONINFO version of the NSIS installer and app exe,
+// X.Y.Z-N -> X.Y.Z.N, X.Y.Z -> X.Y.Z.0) to $GITHUB_OUTPUT when set. Exit code 1 with a message on any problem.
 import { readFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { windowsNumericVersion } from "../../src-tauri/windows/version.mjs";
 
 const root = process.argv[2] ?? ".";
 const tag =
@@ -57,7 +59,13 @@ if (errors.length) {
   process.exit(1);
 }
 const prerelease = version.includes("-");
-console.log(`version ${version} OK${tag ? ` (tag ${tag})` : ""}; prerelease=${prerelease}`);
+const windowsVersion = windowsNumericVersion(version);
+console.log(
+  `version ${version} OK${tag ? ` (tag ${tag})` : ""}; prerelease=${prerelease}; windows_version=${windowsVersion}`,
+);
 if (process.env.GITHUB_OUTPUT) {
-  appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\nprerelease=${prerelease}\n`);
+  appendFileSync(
+    process.env.GITHUB_OUTPUT,
+    `version=${version}\nprerelease=${prerelease}\nwindows_version=${windowsVersion}\n`,
+  );
 }
