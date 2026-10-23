@@ -86,10 +86,8 @@ fn rig_ex(port: Port, api_minor: u8, exit_reboots: bool) -> Rig {
     let (mut fc, sim) = sim::fake(Sim::default());
     fc.api_minor = api_minor;
     fc.exit_reboots = exit_reboots;
-    // API 1.48 (2026.6) uses the 2025.12 dump for the CLI side. TODO(config#32): use a
-    // 2026.6 dump once `tests/fixtures/2026.6/` exists.
     let fw = match api_minor {
-        48.. => "2025.12",
+        48.. => "2026.6",
         46 | 47 => "4.5",
         _ => "4.4",
     };

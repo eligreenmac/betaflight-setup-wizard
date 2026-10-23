@@ -279,7 +279,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_attitude_stream_start` | `rateHz: number\|null` (10, clamped 1–30) | – (events) | device |
 | `device_attitude_stream_stop` | – | – | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
-| `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
+| `flasher_list_releases` | `target` | `FirmwareRelease[]`: hides withdrawn releases and any outside `config::firmware::SUPPORTED_LINES` (e.g. 2026.12.0-alpha) | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
 | `flasher_fetch_firmware` | `request: FirmwareRequest` | `FirmwareImage` (`droppedOptions`: board options the release does not offer; §6 "Build options") | flasher |
 | `flasher_required_options` | `requirements: FirmwareRequirements, release: string\|null` | `string[]` (Build API option values for `FirmwareRequest.requiredOptions`; read-only, no FC/USB I/O; with a release: `REQUIRED_OPTION_UNSUPPORTED` / `BUILD_OPTIONS_UNAVAILABLE`) | flasher |
