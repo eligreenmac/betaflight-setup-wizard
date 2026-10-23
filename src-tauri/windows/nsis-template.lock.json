@@ -1,0 +1,6 @@
+{
+  "tauriCli": "2.12.4",
+  "tauriBundler": "2.10.4",
+  "url": "https://raw.githubusercontent.com/tauri-apps/tauri/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi",
+  "sha256": "d00089d3b1a2c4a30d7b6e098079100cb8f25e980f84d4515aca4597b95e967d"
+}

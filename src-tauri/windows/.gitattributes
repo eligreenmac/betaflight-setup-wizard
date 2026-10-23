@@ -1,0 +1,3 @@
+# Vendored upstream Tauri NSIS template: keep byte-exact (no EOL conversion);
+# its SHA-256 is pinned in nsis-template.lock.json.
+upstream/installer.nsi -text
