@@ -17,6 +17,8 @@ const fc = (firmwareVersion = "4.5.1"): FcInfo => ({
   mcu: "STM32F405",
   uid: null,
   buildOptions: [],
+  serialPorts: [],
+  rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] },
 });
 const PORTS: FcSerialPort[] = [
   { name: "VCP", identifier: 20, functionMask: FN.MSP, isConnectionPort: true },
