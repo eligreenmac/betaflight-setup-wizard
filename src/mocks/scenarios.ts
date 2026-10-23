@@ -31,7 +31,7 @@ import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
 import { availableBeepers, beeperName } from "../wizard/beepers";
-import { reportedAttitude, type Euler } from "../wizard/orientation";
+import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
 export const SCENARIOS = [
@@ -102,6 +102,9 @@ interface MockDevice {
   accCalibrations: number;
   /** How the board is mounted on the frame (the truth the alignment check should find). */
   mount: BoardAlignment;
+  /** align_board_* currently stored on the FC (reported by device_sensors). */
+  alignment: BoardAlignment;
+  accCalibrated: boolean;
   /** Simulated frame tilt; null = automatic demo cycle. */
   tilt: Euler | null;
   attitudeTimer: ReturnType<typeof setInterval> | null;
@@ -153,11 +156,15 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     backups: [],
     sensors:
       scenario === "no-sensors"
-        ? { gyro: { present: true }, acc: { present: false, enabled: false }, baro: { present: false, enabled: false }, mag: { present: false, enabled: false } }
-        : { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: true, enabled: false }, mag: { present: false, enabled: false } },
+        ? // Set to AUTO but nothing found.
+          { gyro: { present: true }, acc: { present: false, enabled: true }, baro: { present: false, enabled: true }, mag: { present: false, enabled: true } }
+        : // A disabled sensor is never initialised, so never present (#63 §4.3).
+          { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: false, enabled: false }, mag: { present: false, enabled: true } },
     accCalFailuresLeft: scenario === "calib-fail" ? 1 : 0,
     accCalibrations: 0,
     mount: scenario === "mounted-yaw90" ? { roll: 0, pitch: 0, yaw: 90 } : { roll: 0, pitch: 0, yaw: 0 },
+    alignment: { roll: 0, pitch: 0, yaw: 0 },
+    accCalibrated: false,
     tilt: null,
     attitudeTimer: null,
   };
@@ -445,37 +452,54 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const pendingHandlers: Record<PendingCommandName, (args: never) => unknown> = {
     device_sensors: () => {
       legacy("device_sensors");
-      // Extra keys are allowed by the contract; the UI must ignore them.
-      return { ...JSON.parse(JSON.stringify(device.sensors)), rangefinder: { present: false, enabled: false } };
+      // SensorStatus (#63). Extra keys are allowed; the UI must ignore them.
+      const hw = (s: { present: boolean; enabled: boolean }, chip: string) => ({ ...s, configuredHardware: s.enabled ? "AUTO" : "NONE", detectedHardware: s.present ? chip : null });
+      const s = device.sensors;
+      return {
+        gyro: { present: s.gyro.present, enabled: true, configuredHardware: null, detectedHardware: "BMI270" },
+        acc: hw(s.acc, "BMI270"),
+        baro: hw(s.baro, "DPS310"),
+        mag: hw(s.mag, "QMC5883"),
+        accCalibrated: s.acc.present ? device.accCalibrated : null,
+        alignment: { boardRollDeg: device.alignment.roll, boardPitchDeg: device.alignment.pitch, boardYawDeg: device.alignment.yaw, gyroAlignment: "CW270" },
+        rangefinder: { present: false, enabled: false },
+      };
     },
     device_acc_calibrate: async () => {
       legacy("device_acc_calibrate");
       if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
-      if (!device.sensors.acc.present || !device.sensors.acc.enabled) throw err("ACC_NOT_AVAILABLE", "accelerometer missing or disabled");
+      const acc = device.sensors.acc;
+      if (!acc.present || !acc.enabled) throw { ...err("ACC_NOT_AVAILABLE", "no usable accelerometer"), details: { present: acc.present, enabled: acc.enabled } };
       await sleep(stepMs * 3);
       if (device.accCalFailuresLeft > 0) {
         device.accCalFailuresLeft--;
-        throw err("MSP_BAD_RESPONSE", "accelerometer calibration did not finish (board moved?)");
+        throw { ...err("BOARD_MOVING", "the board is moving (23 deg/s > 8 deg/s); keep it level and still and calibrate again"), details: { maxRateDps: 23, limitDps: 8, during: true } };
       }
       device.accCalibrations++;
+      device.accCalibrated = true;
+      return { durationMs: stepMs * 3, completion: "CALIBRATING_FLAG", maxGyroRateDps: 0.6 };
     },
     device_attitude_stream_start: ({ rateHz }: { rateHz: number | null }) => {
       legacy("device_attitude_stream_start");
       if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
       if (device.attitudeTimer) clearInterval(device.attitudeTimer);
-      const hz = Math.min(50, Math.max(1, rateHz ?? 20));
+      const hz = Math.min(30, Math.max(1, rateHz ?? 10));
       let seq = 0;
       device.attitudeTimer = setInterval(() => {
         seq++;
         const ms = Math.round((seq / hz) * 1000);
-        const a = reportedAttitude(device.tilt ?? autoTilt(ms), device.mount);
-        events.emit("device://attitude", { seq, timestampMs: ms, ...a });
+        const a = reportedWithAlignment(device.tilt ?? autoTilt(ms), device.mount, device.alignment);
+        // MSP_ATTITUDE signs: pitch + = nose DOWN.
+        events.emit("device://attitude", { seq, timestampMs: ms, roll: a.roll, pitch: a.pitch === 0 ? 0 : -a.pitch, yaw: a.yaw });
       }, 1000 / hz);
     },
     device_attitude_stream_stop: () => {
       legacy("device_attitude_stream_stop");
-      if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      if (device.attitudeTimer) {
+        clearInterval(device.attitudeTimer);
+        events.emit("device://attitude-stopped", { reason: "REQUESTED", error: null });
+      }
       device.attitudeTimer = null;
     },
   };

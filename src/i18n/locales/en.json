@@ -401,7 +401,8 @@
       "baroHint": "Measures air pressure to estimate height. Needed for altitude hold.",
       "alwaysOn": "Always on",
       "missing": "Not on this board",
-      "keepHint": "If you do not change anything here, the board keeps its current sensor settings."
+      "keepHint": "If you do not change anything here, the board keeps its current sensor settings.",
+      "offHint": "Turned off in the board's settings. Turn it on if your board has one; the board looks for it after the settings are applied."
     },
     "warnAngleNoAcc": "Angle mode is on a switch, but the accelerometer is off. Angle mode will not work without it.",
     "warnGpsNoAcc": "The GPS is on, but the accelerometer is off. Some GPS features, like GPS Rescue, need it.",
@@ -416,7 +417,8 @@
       "done": "Done. The accelerometer is calibrated.",
       "failedHint": "Make sure the quad is level and not moving, then try again.",
       "accOff": "Turn the accelerometer on to calibrate it.",
-      "optional": "Recommended if you use Angle or Horizon mode. You can continue without it."
+      "optional": "Recommended if you use Angle or Horizon mode. You can continue without it.",
+      "needed": "The board says its accelerometer has not been calibrated yet."
     },
     "orientation": {
       "title": "Is the board mounted the right way?",
@@ -939,10 +941,34 @@
       "step2": "To just explore the wizard, close the app, start it without a board connected and choose “Try the demo”."
     },
     "ACC_NOT_AVAILABLE": {
-      "title": "The accelerometer is not available",
-      "body": "The board has no accelerometer, or it is turned off, so it cannot be calibrated.",
-      "step1": "If you just turned the accelerometer on, apply the settings first, then calibrate.",
-      "step2": "If your board has no accelerometer, skip the calibration. Angle and Horizon modes will not work."
+      "title": "No accelerometer found",
+      "body": "The board did not find an accelerometer, so there is nothing to calibrate.",
+      "step1": "Some small or racing boards have no accelerometer. That is fine for Acro flying.",
+      "step2": "Skip the calibration. Angle and Horizon modes will not work without it."
+    },
+    "ACC_NOT_AVAILABLE_OFF": {
+      "title": "The accelerometer is turned off",
+      "body": "The accelerometer is turned off in the board's settings, so it cannot be calibrated now.",
+      "step1": "Turn the accelerometer on above and apply the settings.",
+      "step2": "Then come back and calibrate it."
+    },
+    "BOARD_MOVING": {
+      "title": "The quad is moving",
+      "body": "The quad must be completely still to calibrate. Nothing was changed.",
+      "step1": "Put the quad down on a flat, level surface and let go of it and the cable.",
+      "step2": "Try again."
+    },
+    "BOARD_MOVING_DURING": {
+      "title": "The quad moved while calibrating",
+      "body": "The quad moved during the calibration, so the result is not good.",
+      "step1": "Put the quad down on a flat, level surface and do not touch it or the cable.",
+      "step2": "Calibrate again."
+    },
+    "ACC_CALIBRATION_FAILED": {
+      "title": "The calibration did not finish",
+      "body": "The board did not finish calibrating the accelerometer.",
+      "step1": "Keep the quad level and still, and try again.",
+      "step2": "If it fails again, unplug the board, plug it back in and try once more."
     }
   },
   "driverReplace": {

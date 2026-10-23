@@ -9,10 +9,11 @@
  * align_board_* = how the board is turned relative to the frame, e.g. yaw 90 = board
  * arrow points to the right; roll 180 = mounted upside down.
  *
- * The board reports the attitude of its own (sensor) frame: R_reported = R_body · A,
- * where A is the mounting rotation. Previewing alignment A gives R_body = R_reported · Aᵀ.
- * ASSUMPTION (TODO(shared)): the stream reports attitude with the FC's current alignment
- * at 0/0/0 (a fresh board); a preset is then the absolute value to save.
+ * The board's sensors see S = R_body · M (M = how it is physically mounted). The FC
+ * reports R_reported = S · Cᵀ, C = the alignment it currently has (device_sensors
+ * `alignment`, 0/0/0 if not reported). Previewing alignment A gives
+ * R_preview = S · Aᵀ = R_reported · C · Aᵀ, so a preset is the absolute value to save.
+ * MSP_ATTITUDE has pitch + = nose DOWN: convert with api/pending `attitudeToEuler` first.
  */
 import type { BoardAlignment } from "./modelExt";
 
@@ -60,9 +61,14 @@ export function reportedAttitude(body: Euler, mount: BoardAlignment): Euler {
   return toEuler(mul(toMatrix(body), toMatrix(mount)));
 }
 
-/** Preview: the frame's attitude if the board's alignment were `align`. */
-export function alignedAttitude(reported: Euler, align: BoardAlignment): Euler {
-  return toEuler(mul(toMatrix(reported), transpose(toMatrix(align))));
+/** Preview: the frame's attitude if the board's alignment were `align` (the FC currently has `current`). */
+export function alignedAttitude(reported: Euler, align: BoardAlignment, current: BoardAlignment = { roll: 0, pitch: 0, yaw: 0 }): Euler {
+  return toEuler(mul(mul(toMatrix(reported), toMatrix(current)), transpose(toMatrix(align))));
+}
+
+/** What the FC reports with alignment `current` set, the frame at `body`, the board mounted `mount`. */
+export function reportedWithAlignment(body: Euler, mount: BoardAlignment, current: BoardAlignment): Euler {
+  return toEuler(mul(mul(toMatrix(body), toMatrix(mount)), transpose(toMatrix(current))));
 }
 
 export interface AlignmentPreset {

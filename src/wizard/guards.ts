@@ -86,7 +86,7 @@ export function validateSwitches(s: WizardState): Issue[] {
 /** Non-blocking warnings on the Calibration step (shown there and on Review). */
 export function calibrationWarnings(s: WizardState): Issue[] {
   const out: Issue[] = [];
-  const accOn = s.ext.sensors ? s.ext.sensors.acc : s.ui.sensors ? s.ui.sensors.acc.enabled : true;
+  const accOn = s.ext.sensors ? s.ext.sensors.acc : s.ui.sensors ? s.ui.sensors.acc.present && s.ui.sensors.acc.enabled : true;
   const self = s.model.switches.filter((m) => m.mode === MODES.angle);
   if (!accOn && self.length) out.push({ key: "calibration.warnAngleNoAcc" });
   if (!accOn && s.model.gps.enabled) out.push({ key: "calibration.warnGpsNoAcc" });

@@ -4,14 +4,14 @@
 // Uses the pending Device commands (api/pending.ts, TODO(shared)). There is no live
 // board-alignment command: the preview rotates the reported attitude here, and the
 // chosen alignment is written by the config script (ext.boardAlignment, null = keep).
-// Assumption until Device confirms: the attitude stream reports with the board's
-// CURRENT alignment, and that alignment is 0/0/0 (the default).
+// The attitude stream reports with the FC's CURRENT alignment applied (#63 §4.3); the
+// preview undoes it using device_sensors `alignment` (0/0/0 if not reported).
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { sourceMismatch } from "../../api/fallback";
-import { ATTITUDE_START_COMMAND, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude } from "../../api/pending";
+import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
 import { calibrationWarnings } from "../guards";
@@ -76,8 +76,11 @@ const liveError = ref<UiError | null>(null);
 const reported = ref<Euler | null>(null);
 let offs: Unlisten[] = [];
 const attitudeSimulated = computed(() => sourceMismatch(ATTITUDE_START_COMMAND));
-const preview = computed<BoardAlignment>(() => wizard.ext.boardAlignment ?? { roll: 0, pitch: 0, yaw: 0 });
-const shown = computed(() => (reported.value ? alignedAttitude(reported.value, preview.value) : null));
+// Keep (null) = the alignment the FC already has.
+const current = computed<BoardAlignment>(() => wizard.ui.sensors?.alignment ?? { roll: 0, pitch: 0, yaw: 0 });
+const preview = computed<BoardAlignment>(() => wizard.ext.boardAlignment ?? current.value);
+// The FC applies its current alignment before reporting; undo it for the preview (0/0/0 if unknown).
+const shown = computed(() => (reported.value ? alignedAttitude(reported.value, preview.value, current.value) : null));
 const direction = computed(() => (shown.value ? tiltDirection(shown.value) : null));
 
 async function startAttitude(): Promise<void> {
@@ -127,7 +130,15 @@ onMounted(async () => {
     live.value = "unavailable";
     return;
   }
-  offs.push(await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => (reported.value = { roll: a.roll, pitch: a.pitch, yaw: a.yaw })));
+  offs.push(await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => (reported.value = attitudeToEuler(a))));
+  offs.push(
+    await onEvent(PENDING_EVENTS.attitudeStopped, (s: AttitudeStopped) => {
+      if (s.reason === "REQUESTED" || live.value !== "on") return;
+      reported.value = null;
+      liveError.value = s.error ? toUiError(s.error) : null;
+      live.value = "error";
+    }),
+  );
   await loadSensors();
   await startAttitude();
 });
@@ -161,7 +172,7 @@ onBeforeUnmount(() => {
             <small class="hint">{{ t("calibration.sensors.gyroHint") }}</small>
           </li>
           <li data-sensor="acc">
-            <label v-if="sensors.acc.present" class="choice">
+            <label v-if="sensors.acc.present || !sensors.acc.enabled" class="choice">
               <input type="checkbox" data-test="acc-toggle" :checked="accOn" @change="setSensor('acc', ($event.target as HTMLInputElement).checked)" />
               <strong>{{ t("calibration.sensors.acc") }}</strong>
             </label>
@@ -170,13 +181,15 @@ onBeforeUnmount(() => {
               <span class="badge">{{ t("calibration.sensors.missing") }}</span>
             </template>
             <small class="hint">{{ t("calibration.sensors.accHint") }}</small>
+            <small v-if="!sensors.acc.present && !sensors.acc.enabled" class="hint" data-test="acc-off">{{ t("calibration.sensors.offHint") }}</small>
           </li>
-          <li v-if="sensors.baro.present" data-sensor="baro">
+          <li v-if="sensors.baro.present || !sensors.baro.enabled" data-sensor="baro">
             <label class="choice">
               <input type="checkbox" data-test="baro-toggle" :checked="baroOn" @change="setSensor('baro', ($event.target as HTMLInputElement).checked)" />
               <strong>{{ t("calibration.sensors.baro") }}</strong>
             </label>
             <small class="hint">{{ t("calibration.sensors.baroHint") }}</small>
+            <small v-if="!sensors.baro.present && !sensors.baro.enabled" class="hint">{{ t("calibration.sensors.offHint") }}</small>
           </li>
         </ul>
         <p v-if="wizard.ext.sensors === null" class="hint">{{ t("calibration.sensors.keepHint") }}</p>
@@ -204,6 +217,9 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <p v-if="!accOn" class="hint">{{ t("calibration.acc.accOff") }}</p>
+      <p v-if="sensors?.accCalibrated === false && wizard.ui.accCalibration !== 'done'" class="callout callout--warn" data-test="needs-calibration">
+        {{ t("calibration.acc.needed") }}
+      </p>
       <p v-if="wizard.ui.accCalibration === 'running'" class="callout busy-row" role="status" data-test="calibrating">
         <span class="spinner" aria-hidden="true" />
         {{ t("calibration.acc.running") }}

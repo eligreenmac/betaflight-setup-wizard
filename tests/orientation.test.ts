@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Board alignment preset math (client-side preview; no live alignment command).
 import { describe, expect, it } from "vitest";
-import { ALIGNMENT_PRESETS, alignedAttitude, reportedAttitude, sameAlignment, tiltDirection, toEuler, toMatrix, type Euler } from "../src/wizard/orientation";
+import { ALIGNMENT_PRESETS, alignedAttitude, reportedAttitude, reportedWithAlignment, sameAlignment, tiltDirection, toEuler, toMatrix, type Euler } from "../src/wizard/orientation";
 
 const close = (a: Euler, b: Euler) => {
   const d = (x: number, y: number) => Math.abs(((x - y + 540) % 360) - 180);
@@ -58,5 +58,15 @@ describe("orientation math", () => {
   it("sameAlignment", () => {
     expect(sameAlignment(null, { roll: 0, pitch: 0, yaw: 0 })).toBe(false);
     expect(sameAlignment({ roll: 0, pitch: 0, yaw: 90 }, { roll: 0, pitch: 0, yaw: 90 })).toBe(true);
+  });
+
+  it("undoes the FC's current alignment: the preview of preset A is right whatever is stored", () => {
+    const mount = { roll: 0, pitch: 0, yaw: 90 };
+    const body = { roll: 0, pitch: -30, yaw: 0 };
+    for (const current of [{ roll: 0, pitch: 0, yaw: 0 }, { roll: 0, pitch: 0, yaw: 90 }, { roll: 180, pitch: 0, yaw: 270 }]) {
+      const rep = reportedWithAlignment(body, mount, current);
+      close(alignedAttitude(rep, mount, current), body);
+      close(alignedAttitude(rep, current, current), rep); // keep = what the FC shows now
+    }
   });
 });

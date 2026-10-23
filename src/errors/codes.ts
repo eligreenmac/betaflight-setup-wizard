@@ -68,9 +68,11 @@ export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 /**
  * Backend codes agreed for commands that are not in the shared contract yet
  * (api/pending.ts). TODO(shared): move into error.rs / ARCHITECTURE §2.3 with Device's PR.
- * ACC_NOT_AVAILABLE: device_acc_calibrate with the accelerometer missing or disabled.
+ * device_acc_calibrate (#63 §2.3): ACC_NOT_AVAILABLE {present, enabled} = accelerometer
+ * missing or disabled; BOARD_MOVING {maxRateDps, limitDps, during} = not still (during:
+ * the bad result is already stored); ACC_CALIBRATION_FAILED = the FC never finished.
  */
-export const PENDING_ERROR_CODES = { ACC_NOT_AVAILABLE: "Device" } as const satisfies Record<string, ErrorCategory>;
+export const PENDING_ERROR_CODES = { ACC_NOT_AVAILABLE: "Device", BOARD_MOVING: "Device", ACC_CALIBRATION_FAILED: "Device" } as const satisfies Record<string, ErrorCategory>;
 export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
 export type ErrorCode = DesignErrorCode | UiOnlyCode | PendingErrorCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES, ...(Object.keys(PENDING_ERROR_CODES) as PendingErrorCode[])];

@@ -6,7 +6,9 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { demoState, installFallback, resetDemoState } from "../src/api/fallback";
-import { parseSensors, pendingApi } from "../src/api/pending";
+import { attitudeToEuler, parseSensors, pendingApi } from "../src/api/pending";
+import { toUiError } from "../src/errors/codes";
+import { guidanceFor } from "../src/errors/guidance";
 import { i18n, setLocale } from "../src/i18n";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { createScenarioMock, type Scenario, type ScenarioMock } from "../src/mocks/scenarios";
@@ -53,10 +55,37 @@ const waitFor = async (pred: () => boolean, ms = 1500) => {
 };
 
 describe("sensors", () => {
-  it("parseSensors ignores unknown keys and treats missing sensors as absent", () => {
-    const s = parseSensors({ gyro: { present: true }, acc: { present: true, enabled: true }, rangefinder: { present: true }, future: 1 });
-    expect(s).toEqual({ gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: false, enabled: false }, mag: { present: false, enabled: false } });
-    expect(parseSensors(null).gyro.present).toBe(false);
+  it("parseSensors reads SensorStatus (#63), ignores unknown keys, missing sensors = not found", () => {
+    const s = parseSensors({
+      gyro: { present: true, enabled: true, configuredHardware: null, detectedHardware: "BMI270" },
+      acc: { present: true, enabled: true, configuredHardware: "AUTO", detectedHardware: "BMI270" },
+      baro: { present: false, enabled: false, configuredHardware: "NONE", detectedHardware: null },
+      accCalibrated: false,
+      alignment: { boardRollDeg: 0, boardPitchDeg: 0, boardYawDeg: 90, gyroAlignment: "CW270" },
+      rangefinder: { present: true },
+      future: 1,
+    });
+    expect(s).toEqual({
+      gyro: { present: true },
+      acc: { present: true, enabled: true },
+      baro: { present: false, enabled: false }, // turned off in the config
+      mag: { present: false, enabled: true }, // missing = not found (no toggle)
+      accCalibrated: false,
+      alignment: { roll: 0, pitch: 0, yaw: 90 },
+    });
+    const empty = parseSensors(null);
+    expect(empty.gyro.present).toBe(false);
+    expect([empty.accCalibrated, empty.alignment]).toEqual([null, null]);
+    expect(parseSensors({ alignment: { boardRollDeg: 0 } }).alignment).toBeNull();
+  });
+
+  it("a sensor turned off in the config can be turned on; one not found cannot", async () => {
+    await open();
+    expect(wizard.ui.sensors?.baro).toEqual({ present: false, enabled: false });
+    expect(w!.find('[data-test="baro-toggle"]').exists()).toBe(true);
+    expect((w!.get('[data-test="baro-toggle"]').element as HTMLInputElement).checked).toBe(false);
+    expect(w!.find('[data-sensor="baro"]').text()).toContain("Turned off in the board's settings");
+    expect(w!.find('[data-test="needs-calibration"]').exists()).toBe(true);
   });
 
   it("shows the detected sensors; gyro always on; baro only when present", async () => {
@@ -113,7 +142,8 @@ describe("accelerometer calibration", () => {
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "failed");
     expect(w!.find('[data-test="calibration-failed"]').exists()).toBe(true);
-    expect(w!.find("[data-error-code]").exists()).toBe(true);
+    expect(w!.find('[data-error-code="BOARD_MOVING"]').exists()).toBe(true);
+    expect(w!.text()).toContain("The quad moved while calibrating");
     expect(w!.get('[data-test="calibrate"]').text()).toBe("Try again");
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "done");
@@ -131,7 +161,17 @@ describe("accelerometer calibration", () => {
     mock.device.sensors.acc.enabled = false;
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => !!w!.find('[data-error-code="ACC_NOT_AVAILABLE"]').exists());
-    expect(w!.text()).toContain("The accelerometer is not available");
+    expect(w!.text()).toContain("The accelerometer is turned off"); // details.enabled = false
+    mock.device.sensors.acc = { present: false, enabled: true };
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => w!.text().includes("No accelerometer found"));
+  });
+
+  it("BOARD_MOVING (during) says calibrate again; ACC_CALIBRATION_FAILED has its own text", () => {
+    expect(guidanceFor({ code: "BOARD_MOVING", message: "", details: { maxRateDps: 20, limitDps: 8, during: true } } as never).titleKey).toBe("errors.BOARD_MOVING_DURING.title");
+    expect(guidanceFor({ code: "BOARD_MOVING", message: "", details: { maxRateDps: 20, limitDps: 8, during: false } } as never).titleKey).toBe("errors.BOARD_MOVING.title");
+    expect(guidanceFor("ACC_CALIBRATION_FAILED").titleKey).toBe("errors.ACC_CALIBRATION_FAILED.title");
+    expect(toUiError({ code: "ACC_CALIBRATION_FAILED", message: "x" }).code).toBe("ACC_CALIBRATION_FAILED");
   });
 
   it("refused with MIXED_BACKEND when the board is real but calibration would be simulated", async () => {
@@ -163,6 +203,35 @@ describe("orientation", () => {
     await waitFor(() => w!.get('[data-test="attitude-view"]').attributes("data-direction") === "noseDown");
     expect(mock.device.attitudeTimer).not.toBeNull();
     expect(mock.device.rcTimer).toBeNull();
+  });
+
+  it("attitude arrives with MSP signs (pitch + = nose down) and is converted", () => {
+    expect(attitudeToEuler({ roll: 10, pitch: 30, yaw: 5 })).toEqual({ roll: 10, pitch: -30, yaw: 5 });
+  });
+
+  it("the FC's current alignment is undone for the preview", async () => {
+    await open("mounted-yaw90");
+    // The board already has yaw 90 stored: the reported attitude is right, and keeping it previews correctly.
+    mock.device.alignment = { roll: 0, pitch: 0, yaw: 90 };
+    nav.currentId = "beepers";
+    await settle();
+    nav.currentId = "calibration";
+    await settle();
+    expect(wizard.ui.sensors?.alignment).toEqual({ roll: 0, pitch: 0, yaw: 90 });
+    mock.device.tilt = { roll: 0, pitch: -30, yaw: 0 };
+    const dir = () => w!.get('[data-test="attitude-view"]').attributes("data-direction");
+    await waitFor(() => dir() === "noseDown");
+    await w!.get('[data-orientation="no"]').setValue(true);
+    await w!.get('[data-preset="default"]').trigger("click");
+    await waitFor(() => dir() !== "noseDown" && dir() !== "");
+  });
+
+  it("an unexpected attitude-stopped (ERROR) shows the error with a retry", async () => {
+    await open();
+    await waitFor(() => mock.device.attitudeTimer !== null);
+    mock.events.emit("device://attitude-stopped", { reason: "ERROR", error: { code: "DISCONNECTED", message: "port lost" } });
+    await settle();
+    expect(w!.find('[data-test="attitude-retry"]').exists()).toBe(true);
   });
 
   it("mounted 90° yawed: nose down looks like a roll until the yaw 90 preset is chosen", async () => {
