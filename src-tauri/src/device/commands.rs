@@ -61,6 +61,16 @@ pub async fn device_cli_exec(app: AppHandle, line: String) -> AppResult<String> 
     blocking(app, move |m, _| m.cli_exec(&line)).await
 }
 
+/// "Reboot board": reboot the connected FC (plain `exit` if our CLI is open, never `save`;
+/// else MSP_REBOOT `[0]`), wait for it to come back, re-verify API version + UID. Resolves
+/// once the reboot is confirmed and clears `PENDING_UNSAVED_CHANGES` (ARCHITECTURE §4.1).
+/// Not confirmed: `PENDING_UNSAVED_CHANGES` (RAM still dirty) or `MSP`; did not come back /
+/// another board: `SERIAL`.
+#[tauri::command]
+pub async fn device_reboot(app: AppHandle) -> AppResult<()> {
+    blocking(app, |m, _| m.reboot()).await
+}
+
 /// Reboot the connected FC into its ROM DFU bootloader (MSP_REBOOT, CLI `bl rom` fallback).
 /// The connection is closed afterwards.
 #[tauri::command]

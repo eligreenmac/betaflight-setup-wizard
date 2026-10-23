@@ -395,7 +395,7 @@ export type AppErrorCode =
   | "DRIVER" | "IO" | "INVALID_ARGUMENT" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
   | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
   | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE"
-  | "ACC_NOT_AVAILABLE" | "BOARD_MOVING" | "ACC_CALIBRATION_FAILED";
+  | "ACC_NOT_AVAILABLE" | "BOARD_MOVING" | "ACC_CALIBRATION_FAILED" | "PENDING_UNSAVED_CHANGES";
 /** `details` of PORT_BUSY. */
 export interface PortBusyDetails { port: string; heldBy: "APP" | "EXTERNAL" }
 /** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
@@ -404,13 +404,17 @@ export interface DriverMissingDetails { vid: number; pid: number; detail: string
 export interface AccNotAvailableDetails { present: boolean; enabled: boolean }
 /** `details` of BOARD_MOVING. `during`: the board moved while calibrating; the stored result is bad, calibrate again. */
 export interface BoardMovingDetails { maxRateDps: number; limitDps: number; during: boolean }
+/** Why the FC may hold unsaved changes in RAM (ARCHITECTURE §4.1). */
+export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE";
+/** `details` of PENDING_UNSAVED_CHANGES: offer "Reboot board" (`device_reboot`), then retry. A plain reconnect does not clear it. */
+export interface PendingUnsavedChangesDetails { reason: UnsavedChangesReason }
 
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
- * ACC_NOT_AVAILABLE / BOARD_MOVING. */
+ * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES. */
 export interface AppError {
   code: string;
   message: string;
-  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails;
+  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails | PendingUnsavedChangesDetails;
 }
 
 export function emptyDroneModel(): DroneModel {
