@@ -9,7 +9,8 @@ import type { CliScript } from "../../types/model";
 import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
-import { osdChoice, withOsd } from "../osd";
+import { isHdOsdPlanError, osdChoice, withOsd } from "../osd";
+import { toUiError, uiError } from "../../errors/codes";
 import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
 import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
 import { calibrationWarnings } from "../guards";
@@ -43,12 +44,26 @@ async function load(): Promise<void> {
       wizard.ui.planUnavailable = true;
     }
   } catch (e) {
-    error.value = e;
+    const ue = toUiError(e);
+    // HD OSD on firmware without MSP DisplayPort: plain words and a way back to the OSD step.
+    error.value = isHdOsdPlanError(ue) ? { ...uiError("OSD_HD_UNSUPPORTED", ue.message) } : e;
   } finally {
     loading.value = false;
   }
 }
 onMounted(load);
+
+/** "Back to OSD settings": HD is off for this board until it is identified again. */
+function backToOsd(): void {
+  wizard.osd.hdRejected = true;
+  if (wizard.osd.askedSystem === "HD") wizard.osd.askedSystem = null;
+  goTo("osd");
+}
+function onError(id: string): void {
+  if (id === "editComponents") goTo("components");
+  else if (id === "backToOsd") backToOsd();
+  else void load();
+}
 
 const rows = computed(() => {
   const r: [string, string][] = [
@@ -92,7 +107,7 @@ const osdUnplanned = computed(() => !previewOnly.value && !!plan.value && !!osdC
     <h2>{{ t("steps.review.title") }}</h2>
     <p class="lead">{{ t("steps.review.description") }}</p>
     <p v-if="loading" class="hint">{{ t("review.loading") }}</p>
-    <ErrorPanel v-if="error" :error="error" @action="(id) => (id === 'editComponents' ? goTo('components') : load())" />
+    <ErrorPanel v-if="error" :error="error" @action="onError" />
 
     <div v-if="previewOnly" class="callout callout--danger" data-test="plan-unavailable">
       <strong>{{ t("review.planUnavailableTitle") }}</strong>

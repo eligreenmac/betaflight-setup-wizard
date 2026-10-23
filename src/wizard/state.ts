@@ -143,6 +143,9 @@ export function markDirty(s: WizardState = wizard): void {
 /** A (possibly different) board was identified: copy identity and refresh the port list. */
 export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path: string | null): void {
   const changed = s.fc !== null && s.fc.boardName !== fc.boardName;
+  // A plan's "no HD OSD" was for the firmware then on the board; after any (re)identify
+  // (e.g. flashed with the HD OSD option) ask the board again.
+  s.osd.hdRejected = false;
   s.fc = fc;
   s.ports = ports;
   s.connectedPath = path;

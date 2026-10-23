@@ -13,9 +13,11 @@ import { installMock, uninstallMock } from "../src/mocks/install";
 import { generateCli, mockFirmwareCatalog, mockOsdLayout, osdPosValue, type Scenario } from "../src/mocks/scenarios";
 import { guards } from "../src/wizard/guards";
 import { nav, resetNav } from "../src/wizard/nav";
-import { analogOnDigital, clampPos, effectiveSystem, emptyOsdState, hdOsdSupport, offeredElements, OSD_ELEMENTS, osdChoice, recommendedEnabled, systemFromVtx, withOsd } from "../src/wizard/osd";
+import { analogOnDigital, clampPos, effectiveSystem, emptyOsdState, hdOsdSupport, isHdOsdPlanError, offeredElements, OSD_ELEMENTS, osdChoice, recommendedEnabled, systemFromVtx, withOsd } from "../src/wizard/osd";
 import { resetCatalog } from "../src/api/catalog";
-import { createWizardState, resetWizard, wizard } from "../src/wizard/state";
+import { createWizardState, resetWizard, setBoard, wizard } from "../src/wizard/state";
+import en from "../src/i18n/locales/en.json";
+import he from "../src/i18n/locales/he.json";
 import { settle } from "./walk";
 
 let w: VueWrapper | null = null;
@@ -55,6 +57,8 @@ async function choose(): Promise<void> {
   await w!.get('[data-osd-mode="choose"]').setValue(true);
   await settle();
 }
+// TODO(shared): FcInfo.hdOsdSupported is not in src/types/model.ts yet.
+const fcHd = () => (wizard.fc as { hdOsdSupported?: boolean | null } | null)?.hdOsdSupported;
 const previewNames = () => w!.findAll("[data-preview]").map((e) => e.attributes("data-preview"));
 
 describe("video system", () => {
@@ -106,7 +110,7 @@ describe("video system", () => {
   });
 });
 
-describe("HD gating (firmware build options)", () => {
+describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
   it("hdOsdSupport: HD option = yes; OSD options without HD = no; nothing about the OSD = unknown", () => {
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD", "USE_OSD_SD"] })).toBe(true);
     expect(hdOsdSupport({ buildOptions: ["use_msp_displayport"] })).toBe(true);
@@ -116,10 +120,77 @@ describe("HD gating (firmware build options)", () => {
     expect(hdOsdSupport(null)).toBeNull();
   });
 
-  it("unknown support allows HD", async () => {
+  it("hdOsdSupport: FcInfo.hdOsdSupported (TODO(shared)) wins when it is a boolean; null / missing / junk = build options", () => {
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD"], hdOsdSupported: true })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD"], hdOsdSupported: false })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: [], hdOsdSupported: null })).toBeNull();
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD"], hdOsdSupported: null })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: ["CRSF"] })).toBeNull();
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD"], hdOsdSupported: "yes" } as never)).toBe(true);
+    expect(hdOsdSupport({ buildOptions: null } as never)).toBeNull();
+  });
+
+  it("supported (true): HD detected and used, no note", async () => {
     await open(DJI);
+    expect(fcHd()).toBe(true);
     expect(w!.get('[data-test="osd-detected"]').text()).toContain("digital HD");
     expect(wizard.osd.layout?.videoSystem).toBe("HD");
+    expect(w!.find('[data-test="osd-hd-unknown"]').exists()).toBe(false);
+    expect(w!.find('[data-test="osd-hd-unsupported"]').exists()).toBe(false);
+  });
+
+  it("unknown (null): HD allowed, with a soft note", async () => {
+    await open(DJI, "osd-hd-unknown");
+    expect(fcHd()).toBeNull();
+    expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBe("HD");
+    expect(wizard.osd.layout?.videoSystem).toBe("HD");
+    const note = w!.get('[data-test="osd-hd-unknown"]');
+    expect(note.classes()).not.toContain("callout--warn");
+    expect(note.text()).toContain("couldn't confirm");
+    await w!.get('[data-test="osd-change-system"]').trigger("click");
+    await settle();
+    expect(w!.get('[data-osd-system="HD"]').attributes("disabled")).toBeUndefined();
+    await choose();
+    expect(guards.osd.validate(wizard)).toEqual([]);
+  });
+
+  it("unsupported (false): HD disabled with a plain explanation; analog is not affected", async () => {
+    await open(ANALOG, "osd-hd-unsupported");
+    expect(fcHd()).toBe(false);
+    expect(w!.find('[data-test="osd-hd-blocked"]').exists()).toBe(false);
+    await w!.get('[data-test="osd-change-system"]').trigger("click");
+    await settle();
+    expect(w!.get('[data-osd-system="HD"]').attributes("disabled")).toBeDefined();
+    expect(w!.get('[data-test="osd-hd-unsupported"]').text()).toBe(en.osd.system.hdUnsupported);
+    await w!.get('[data-osd-system="HD"]').setValue(true);
+    await settle();
+    expect(wizard.osd.askedSystem).not.toBe("HD");
+    expect(w!.find('[data-test="osd-hd-unknown"]').exists()).toBe(false);
+  });
+
+  it("unsupported + detected HD VTX: a clear warning and a choice (flash / keep current / analog)", async () => {
+    await open(DJI, "osd-hd-unsupported");
+    expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBeNull();
+    const box = w!.get('[data-test="osd-hd-blocked"]');
+    expect(box.attributes("role")).toBe("alert");
+    expect(box.text()).toContain(en.osd.system.hdBlocked);
+    expect(box.text()).toContain(en.osd.system.hdChoices);
+    expect(guards.osd.validate(wizard).map((i) => i.key)).toEqual(["validation.osdSystem"]);
+    // Keep the board's current OSD: valid without a video system, nothing OSD-related is sent.
+    await w!.get('[data-test="osd-hd-keep"]').trigger("click");
+    await settle();
+    expect(wizard.osd.mode).toBe("keep");
+    expect(w!.get('[data-test="osd-kept"]').text()).toBe(en.osd.system.kept);
+    expect(guards.osd.validate(wizard)).toEqual([]);
+    expect(osdChoice(wizard.osd, false)).toBeNull();
+    // Or pick analog.
+    await w!.get('[data-osd-system="AUTO"]').setValue(true);
+    await settle();
+    expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBe("AUTO");
+    // Or flash firmware with the HD OSD.
+    await w!.get('[data-test="osd-hd-flash"]').trigger("click");
+    await settle();
+    expect(nav.currentId).toBe("firmware");
   });
 
   it("firmware without HD OSD: HD disabled with an explanation; a detected HD VTX is asked instead", async () => {
@@ -132,6 +203,78 @@ describe("HD gating (firmware build options)", () => {
     // An HD choice kept from before (e.g. another board) blocks the step with the reason.
     wizard.osd.askedSystem = "HD";
     expect(guards.osd.validate(wizard).map((i) => i.key)).toEqual(["validation.osdHdUnsupported"]);
+  });
+});
+
+describe("Review: config_plan refuses the HD OSD", () => {
+  const RUST = "configuration error: HD OSD needs MSP DisplayPort, which this firmware build does not have";
+
+  it("isHdOsdPlanError matches #67's CONFIG error only", () => {
+    expect(isHdOsdPlanError({ code: "CONFIG", message: RUST })).toBe(true);
+    expect(isHdOsdPlanError({ code: "CONFIG_UNSUPPORTED", message: RUST })).toBe(true);
+    expect(isHdOsdPlanError({ code: "CONFIG", message: "no onboard SPI receiver (resource RX_SPI_CS not assigned)" })).toBe(false);
+    expect(isHdOsdPlanError({ code: "SERIAL", message: RUST })).toBe(false);
+  });
+
+  async function toReview(): Promise<void> {
+    await open(DJI, "osd-hd-plan-error");
+    expect(w!.find('[data-test="osd-hd-unknown"]').exists()).toBe(true);
+    await choose();
+    expect(guards.osd.validate(wizard)).toEqual([]);
+    nav.currentId = "review";
+    await settle();
+  }
+
+  it("shows the error plainly with Back to OSD settings; back disables HD with the reason", async () => {
+    await toReview();
+    const panel = w!.get('[data-error-code="OSD_HD_UNSUPPORTED"]');
+    expect(panel.text()).toContain(en.errors.OSD_HD_UNSUPPORTED.title);
+    expect(panel.text()).toContain(en.errors.OSD_HD_UNSUPPORTED.body);
+    const btn = panel.findAll("button").find((b) => b.text() === en.actions.backToOsd);
+    expect(btn).toBeDefined();
+    await btn!.trigger("click");
+    await settle();
+    expect(nav.currentId).toBe("osd");
+    expect(wizard.osd.hdRejected).toBe(true);
+    expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBeNull();
+    expect(w!.get('[data-test="osd-hd-blocked"]').text()).toContain(en.osd.system.hdRejected);
+    expect(w!.get('[data-osd-system="HD"]').attributes("disabled")).toBeDefined();
+    // Analog plans fine.
+    await w!.get('[data-osd-system="AUTO"]').setValue(true);
+    await settle();
+    await choose();
+    nav.currentId = "review";
+    await settle();
+    expect(w!.find('[data-error-code="OSD_HD_UNSUPPORTED"]').exists()).toBe(false);
+  });
+
+  it("in Hebrew", async () => {
+    await toReview();
+    setLocale("he");
+    await settle();
+    const panel = w!.get('[data-error-code="OSD_HD_UNSUPPORTED"]');
+    expect(panel.text()).toContain(he.errors.OSD_HD_UNSUPPORTED.title);
+    expect(panel.text()).toContain(he.errors.OSD_HD_UNSUPPORTED.step1);
+    expect(panel.findAll("button").some((b) => b.text() === "חזרה להגדרות ה-OSD")).toBe(true);
+  });
+
+  it("a new identify asks the board again (e.g. after flashing HD OSD)", () => {
+    const s = createWizardState();
+    s.osd.hdRejected = true;
+    setBoard(s, { ...(wizard.fc ?? {}), boardName: "X", uid: "1", buildOptions: [], hdOsdSupported: true } as never, [], null);
+    expect(s.osd.hdRejected).toBe(false);
+  });
+
+  it("he/en: the new texts exist in both, and differ", () => {
+    const keys = ["hdUnsupported", "hdBlocked", "hdRejected", "hdChoices", "keepCurrent", "kept", "hdUnknown"] as const;
+    for (const k of keys) {
+      expect(en.osd.system[k]).toBeTruthy();
+      expect(he.osd.system[k]).toBeTruthy();
+      expect(he.osd.system[k]).not.toBe(en.osd.system[k]);
+    }
+    for (const k of ["title", "body", "step1", "step2"] as const) expect(he.errors.OSD_HD_UNSUPPORTED[k]).toBeTruthy();
+    expect(he.actions.backToOsd).toBeTruthy();
+    expect(he.validation.osdHdUnsupported).toBeTruthy();
   });
 });
 

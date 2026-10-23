@@ -744,7 +744,8 @@
     "technicalDetails": "Technical details",
     "editComponents": "Change components",
     "rebootBoard": "Reboot board",
-    "goConnect": "Go to Connect"
+    "goConnect": "Go to Connect",
+    "backToOsd": "Back to OSD settings"
   },
   "validation": {
     "noBoard": "Connect a flight controller first.",
@@ -787,7 +788,7 @@
     "osdSystem": "Choose your video system.",
     "osdChoose": "Choose whether to set up the OSD or keep the current one.",
     "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD.",
-    "osdHdUnsupported": "This board's firmware can't show an HD OSD. Pick an analog option, flash firmware with the \"OSD (HD)\" option, or keep the current OSD."
+    "osdHdUnsupported": "The firmware on this board can't show the OSD in digital goggles. Pick an analog option, keep the board's current OSD, or flash firmware with the \"OSD (HD)\" option."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -1050,6 +1051,12 @@
       "body": "This board still had unsaved changes, so it is restarted when you connect, but we couldn't confirm the restart. Try connecting again. If it keeps failing, check the USB cable and that the board is powered.",
       "step1": "Select Try again. It is safe to try more than once.",
       "step2": "If it keeps failing, check the USB cable and that the board is powered."
+    },
+    "OSD_HD_UNSUPPORTED": {
+      "title": "The firmware on this board can't show the OSD in digital goggles",
+      "body": "You chose the digital HD OSD, but the firmware on this board was built without it, so the setup plan couldn't be made. Nothing was changed on the board.",
+      "step1": "Select Back to OSD settings, then pick an analog option or keep the board's current OSD.",
+      "step2": "To use the OSD in digital goggles, flash firmware built with the \"OSD (HD)\" option, then come back to Review."
     }
   },
   "driverReplace": {
@@ -1082,9 +1089,14 @@
       "PALHint": "Only if your camera is set to PAL. It gives a few more lines of text.",
       "NTSC": "Analog, NTSC",
       "NTSCHint": "Only if your camera is set to NTSC.",
-      "hdUnsupported": "Not available: this board's firmware was built without the HD OSD. To use it, flash firmware with the \"OSD (HD)\" option.",
-      "hdBlocked": "Your video transmitter is digital HD, but this board's firmware was built without the HD OSD. Flash firmware with the \"OSD (HD)\" option, or pick another option below.",
-      "analogOnDigital": "Your video transmitter is digital, but the OSD is set to analog. The text may not show in your goggles. Pick Digital HD unless you're sure."
+      "hdUnsupported": "Not available: the firmware on this board can't show the OSD in digital goggles. To fix it, flash firmware built with the \"OSD (HD)\" option.",
+      "hdBlocked": "Your video transmitter is digital HD, but the firmware on this board can't show the OSD in digital goggles (it was built without the HD OSD).",
+      "analogOnDigital": "Your video transmitter is digital, but the OSD is set to analog. The text may not show in your goggles. Pick Digital HD unless you're sure.",
+      "hdRejected": "The setup plan found that the firmware on this board can't show the OSD in digital goggles (it was built without the HD OSD).",
+      "hdChoices": "You can flash firmware built with the \"OSD (HD)\" option, keep the OSD that is on the board now, or pick an analog option below if your goggles show analog video.",
+      "keepCurrent": "Keep the board's current OSD",
+      "kept": "The board's current OSD stays as it is. Nothing about the OSD will be changed.",
+      "hdUnknown": "We couldn't confirm that the firmware on this board can show the OSD in digital goggles. You can still pick HD. If the Review step says it's missing, flash firmware built with the \"OSD (HD)\" option."
     },
     "choose": "Set up the OSD now",
     "chooseHint": "Start from a recommended layout and adjust it.",
