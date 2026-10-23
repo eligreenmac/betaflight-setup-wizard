@@ -46,6 +46,10 @@
       "title": "Receiver",
       "description": "The receiver gets the commands from your radio."
     },
+    "binding": {
+      "title": "Binding",
+      "description": "Pair the receiver with your transmitter."
+    },
     "vtx": {
       "title": "Video transmitter",
       "description": "Lets the flight controller change video channel and power from your radio or goggles."
@@ -213,6 +217,36 @@
       "FRSKY_X": "FrSky X",
       "FRSKY_X_LBT": "FrSky X LBT"
     }
+  },
+  "binding": {
+    "familyQuestion": "Which radio system is this receiver?",
+    "familyElrs": "ExpressLRS (ELRS)",
+    "familyCrossfire": "TBS Crossfire or Tracer",
+    "crossfireNote": "Crossfire and Tracer receivers are bound from the transmitter's TBS menu (or TBS Agent). There is nothing to set here.",
+    "whatTitle": "What is a binding phrase?",
+    "what": "ExpressLRS pairs the receiver with your transmitter using a binding phrase: a word or sentence you choose, a bit like a Wi-Fi password.",
+    "mustMatch": "It must be exactly the same as the phrase on your transmitter: same letters, capitals and spaces. Otherwise they will not connect.",
+    "whereToFind": "You set it when the transmitter's ExpressLRS module was flashed (for example in ExpressLRS Configurator). If you don't know it, choose the bind button instead.",
+    "howQuestion": "How do you want to bind?",
+    "usePhrase": "Enter my binding phrase",
+    "useButton": "Skip the phrase and bind with the button",
+    "phraseLabel": "Binding phrase (same as on your transmitter)",
+    "showPhrase": "Show the phrase",
+    "spacesWarning": "The phrase starts or ends with a space. That is allowed, but it must be the same on the transmitter.",
+    "notSaved": "The phrase is not saved anywhere. The app turns it into a short code for the receiver and then forgets it.",
+    "apply": "Use this phrase",
+    "phraseSet": "Binding phrase set. It will be written to the flight controller when you apply the settings. The phrase itself was not saved.",
+    "change": "Use a different phrase",
+    "uartPhrase": "This receiver is connected with wires and keeps its own binding phrase. The flight controller cannot change it, so set the same phrase on the receiver itself:",
+    "uartPhrase1": "In ExpressLRS Configurator, enter the phrase when you flash the receiver, or",
+    "uartPhrase2": "Turn on the receiver's Wi-Fi (ExpressLRS Lua script on the transmitter: WiFi Connectivity → Enable Rx WiFi) and enter the phrase on its web page.",
+    "buttonTitle": "Binding with the button",
+    "buttonSpi1": "Put the flight controller's receiver in bind mode: press its bind button (see the board's manual; it is not the BOOT button), or use Bind on the Receiver tab of the Betaflight app.",
+    "buttonUart1": "Put the receiver in bind mode: plug the quad in and unplug it three times in a row (each time less than a second), or press the button on the receiver. Its light blinks twice quickly.",
+    "button2": "On the transmitter, open the ExpressLRS Lua script and choose Bind.",
+    "button3": "When the light on the receiver stays on, it is bound.",
+    "buttonSpiKeep": "The wizard keeps the board's current binding. You can bind after applying the settings.",
+    "buttonLater": "You can do this any time after the wizard is finished."
   },
   "vtx": {
     "protocol": "Control protocol",
@@ -483,7 +517,10 @@
     "auxInvalid": "The switch channel for {mode} is not valid.",
     "notGenerated": "Wait for the preview to finish.",
     "notApplied": "Apply the settings and wait for the check to finish.",
-    "planUnavailable": "This app version cannot apply settings yet. Update the app."
+    "planUnavailable": "This app version cannot apply settings yet. Update the app.",
+    "crsfFamilyRequired": "Choose which radio system the receiver uses.",
+    "bindingRequired": "Choose how to bind the receiver.",
+    "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
