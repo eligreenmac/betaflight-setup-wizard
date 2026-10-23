@@ -192,6 +192,102 @@ pub enum RcStopReason {
     Error,
 }
 
+/// One sensor in `SensorStatus` (`device_get_sensors`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorState {
+    /// Detected at boot and running (MSP_STATUS sensor bit). A sensor disabled in the
+    /// config is never initialised, so it is never present.
+    pub present: bool,
+    /// Not disabled in the config (`acc_hardware` / `baro_hardware` / `mag_hardware`
+    /// != NONE). Always true for the gyro (it cannot be disabled).
+    pub enabled: bool,
+    /// The configured hardware setting as the CLI spells it ("AUTO", "NONE", "BMI270", ...).
+    /// `null` for the gyro.
+    pub configured_hardware: Option<String>,
+    /// The chip the FC detected (MSP2_SENSOR_CONFIG_ACTIVE, Betaflight 4.5+), e.g. "BMI270".
+    /// `null` on 4.4, when nothing was detected, or when the build has no driver for it.
+    pub detected_hardware: Option<String>,
+}
+
+/// Board / sensor alignment as currently stored on the FC (read-only; writes belong to
+/// the config engine).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorAlignment {
+    /// `align_board_roll` / `_pitch` / `_yaw` in whole degrees (MSP_BOARD_ALIGNMENT_CONFIG).
+    pub board_roll_deg: i16,
+    pub board_pitch_deg: i16,
+    pub board_yaw_deg: i16,
+    /// `gyro_1_sensor_align` of the active gyro (MSP_SENSOR_ALIGNMENT): "DEFAULT", "CW0",
+    /// "CW90", "CW180", "CW270", "CW0FLIP", "CW90FLIP", "CW180FLIP", "CW270FLIP", "CUSTOM".
+    pub gyro_alignment: String,
+}
+
+/// Result of `device_get_sensors`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorStatus {
+    pub gyro: SensorState,
+    pub acc: SensorState,
+    pub baro: SensorState,
+    pub mag: SensorState,
+    /// `false` while Betaflight reports "accelerometer needs calibration"
+    /// (MSP_BOARD_INFO configuration problem bit 0); `null` if unknown or no acc.
+    pub acc_calibrated: Option<bool>,
+    /// `null` if the FC did not answer the alignment requests.
+    pub alignment: Option<SensorAlignment>,
+}
+
+/// How `device_acc_calibrate` saw the calibration finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AccCalibrationCompletion {
+    /// MSP_STATUS_EX arming-disable flag CALIBRATING was seen set and then clear.
+    CalibratingFlag,
+    /// The flag was not observable; finished after the fixed wait (2 s, as Betaflight
+    /// Configurator does).
+    FixedWait,
+}
+
+/// Result of `device_acc_calibrate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccCalibrationResult {
+    /// From sending MSP_ACC_CALIBRATION to completion.
+    pub duration_ms: u32,
+    pub completion: AccCalibrationCompletion,
+    /// Largest gyro rate seen (deg/s, any axis) while calibrating.
+    pub max_gyro_rate_dps: u16,
+}
+
+/// Emitted on `device://attitude` at the stream rate; also the result of
+/// `device_get_attitude` (with `seq` = 0, `timestampMs` = 0). Degrees, Betaflight signs:
+/// roll + = right side down, pitch + = nose down, yaw = heading (+ = nose right).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attitude {
+    pub seq: u64,
+    /// Milliseconds since the stream started.
+    pub timestamp_ms: u64,
+    /// Degrees, -180..180 (0.1° resolution). Signs are Betaflight's MSP_ATTITUDE values
+    /// unchanged; Configurator's 3D model rotates by (x, y, z) = (-pitch, -yaw, -roll).
+    pub roll: f32,
+    /// Degrees, -90..90 (0.1° resolution).
+    pub pitch: f32,
+    /// Heading in whole degrees, 0..359.
+    pub yaw: f32,
+}
+
+/// Emitted on `device://attitude-stopped` when the attitude stream ends (same reasons as
+/// the RC stream).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttitudeStopped {
+    pub reason: RcStopReason,
+    pub error: Option<serde_json::Value>,
+}
+
 // ---------------------------------------------------------------- flasher
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
