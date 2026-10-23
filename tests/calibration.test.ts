@@ -244,6 +244,46 @@ describe("accelerometer calibration", () => {
     expect(toUiError({ code: "ACC_CALIBRATION_FAILED", message: "x" }).code).toBe("ACC_CALIBRATION_FAILED");
   });
 
+  it("PENDING_UNSAVED_CHANGES (TODO(shared) string code) maps to its own guidance with Reconnect", () => {
+    const e = toUiError({ code: "PENDING_UNSAVED_CHANGES", message: "x", details: { reason: "apply" } });
+    expect(e.code).toBe("PENDING_UNSAVED_CHANGES");
+    expect(e.category).toBe("Safety");
+    const g = guidanceFor(e);
+    expect(g.titleKey).toBe("errors.PENDING_UNSAVED_CHANGES.title");
+    expect(g.actions.map((a) => a.id)).toEqual(["reconnect", "retry"]);
+  });
+
+  it("unsaved changes in RAM: plain guidance, Reconnect clears it, then calibration succeeds", async () => {
+    await open("unsaved-ram");
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    const panel = w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]');
+    expect(panel.text()).toContain("The board has unsaved changes. Reconnect (or restart) the board, then try calibrating again.");
+    expect(w!.find('[data-test="calibration-failed"]').exists()).toBe(false); // not the "keep it still" hint
+    expect(mock.device.accCalibrations).toBe(0);
+    // Retrying without reconnecting is refused again.
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    expect(mock.device.unsavedRam).toBe(true);
+    const reconnect = w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((b) => b.text() === "Reconnect")!;
+    await reconnect.trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "idle");
+    expect(mock.device.unsavedRam).toBe(false);
+    expect(wizard.connectedPath).toBe("COM5");
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done");
+    expect(mock.device.accCalibrations).toBe(1);
+  });
+
+  it("unsaved changes guidance in Hebrew", async () => {
+    await open("unsaved-ram");
+    setLocale("he");
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    expect(w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').text()).toContain("יש בלוח שינויים שלא נשמרו");
+    expect(w!.text()).toContain("התחברות מחדש");
+  });
+
   it("refused with MIXED_BACKEND when the board is real but calibration would be simulated", async () => {
     const real = createScenarioMock({ scenario: "happy", latencyMs: 0, stepMs: 0 });
     const sim = createScenarioMock({ scenario: "happy", latencyMs: 0, stepMs: 0 });

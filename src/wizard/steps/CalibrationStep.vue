@@ -14,6 +14,7 @@ import { sourceMismatch } from "../../api/fallback";
 import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
+import type { GuidanceActionId } from "../../errors/guidance";
 import { accModeSwitches, calibrationWarnings, mayHaveUnsavedChanges, sensorIssues } from "../guards";
 import type { BoardAlignment } from "../modelExt";
 import { motorTest } from "../motorTest";
@@ -88,6 +89,42 @@ async function calibrate(): Promise<void> {
     wizard.ui.accCalibration = "failed";
   }
   if (wasLive) await startAttitude();
+}
+
+/**
+ * PENDING_UNSAVED_CHANGES (TODO(shared), errors/codes.ts): an earlier apply left unsaved
+ * changes in the FC's RAM, and calibrating would save them too. Device clears it after a
+ * confirmed reboot or reconnect: offer to reconnect to the same port right here.
+ */
+const reconnecting = ref(false);
+async function reconnectBoard(): Promise<void> {
+  const path = wizard.connectedPath;
+  if (!path || reconnecting.value) return;
+  reconnecting.value = true;
+  const wasLive = live.value === "on";
+  if (wasLive) await stopAttitude();
+  try {
+    try {
+      await api.device.disconnect();
+    } catch {
+      /* already gone */
+    }
+    await api.device.connect(path);
+    await api.device.identify();
+    calError.value = null;
+    wizard.ui.accCalibration = "idle";
+    await loadSensors();
+  } catch (e) {
+    calError.value = toUiError(e);
+    wizard.ui.accCalibration = "failed";
+  } finally {
+    reconnecting.value = false;
+  }
+  if (wasLive) await startAttitude();
+}
+function onCalAction(id: GuidanceActionId): void {
+  if (id === "reconnect") void reconnectBoard();
+  else void calibrate();
 }
 
 // ---- live attitude
@@ -269,8 +306,9 @@ onBeforeUnmount(() => {
       </p>
       <p v-else-if="wizard.ui.accCalibration === 'done'" class="callout callout--ok" role="status" data-test="calibrated">{{ t("calibration.acc.done") }}</p>
       <template v-else-if="wizard.ui.accCalibration === 'failed' && calError">
-        <ErrorPanel :error="calError" @action="calibrate" />
-        <p class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
+        <ErrorPanel :error="calError" :busy="reconnecting" @action="onCalAction" />
+        <p v-if="reconnecting" class="hint" role="status" data-test="reconnecting">{{ t("calibration.acc.reconnecting") }}</p>
+        <p v-if="calError.code !== 'PENDING_UNSAVED_CHANGES'" class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
       </template>
       <p class="hint">{{ t("calibration.acc.optional") }}</p>
     </section>

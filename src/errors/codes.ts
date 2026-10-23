@@ -66,13 +66,21 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
 export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "UNKNOWN"] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 /**
- * Backend codes agreed for commands that are not in the shared contract yet
- * (api/pending.ts). TODO(shared): move into error.rs / ARCHITECTURE §2.3 with Device's PR.
- * device_acc_calibrate (#63 §2.3): ACC_NOT_AVAILABLE {present, enabled} = accelerometer
- * missing or disabled; BOARD_MOVING {maxRateDps, limitDps, during} = not still (during:
- * the bad result is already stored); ACC_CALIBRATION_FAILED = the FC never finished.
+ * Backend codes outside the DESIGN.md §6 table.
+ * device_acc_calibrate (#63 §2.3, in AppErrorCode): ACC_NOT_AVAILABLE {present, enabled} =
+ * accelerometer missing or disabled; BOARD_MOVING {maxRateDps, limitDps, during} = not still
+ * (during: the bad result is already stored); ACC_CALIBRATION_FAILED = the FC never finished.
+ * TODO(shared): PENDING_UNSAVED_CHANGES {reason} is new from Device and not in AppErrorCode
+ * (src/types/model.ts) yet; handled here as a UI-side string code. device_acc_calibrate
+ * rejects with it when an earlier config apply left unsaved changes in the FC's RAM and no
+ * confirmed reboot / reconnect happened since (the calibration would save them too).
  */
-export const PENDING_ERROR_CODES = { ACC_NOT_AVAILABLE: "Device", BOARD_MOVING: "Device", ACC_CALIBRATION_FAILED: "Device" } as const satisfies Record<string, ErrorCategory>;
+export const PENDING_ERROR_CODES = {
+  ACC_NOT_AVAILABLE: "Device",
+  BOARD_MOVING: "Device",
+  ACC_CALIBRATION_FAILED: "Device",
+  PENDING_UNSAVED_CHANGES: "Safety",
+} as const satisfies Record<string, ErrorCategory>;
 export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
 export type ErrorCode = DesignErrorCode | UiOnlyCode | PendingErrorCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES, ...(Object.keys(PENDING_ERROR_CODES) as PendingErrorCode[])];

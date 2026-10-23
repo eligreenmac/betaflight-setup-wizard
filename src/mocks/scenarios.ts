@@ -14,7 +14,9 @@
  *
  * Sensors / calibration / attitude (Device #63, api/pending.ts adapter): gyro, acc
  * and baro present (baro disabled), no mag. `no-sensors`: no acc and no baro.
- * `calib-fail`: the first accelerometer calibration fails. `mounted-yaw90`: the board is
+ * `calib-fail`: the first accelerometer calibration fails. `unsaved-ram`: an earlier apply
+ * left unsaved changes in RAM, so device_acc_calibrate answers PENDING_UNSAVED_CHANGES
+ * until the board is reconnected (device_disconnect + device_connect). `mounted-yaw90`: the board is
  * mounted turned 90° to the right, so tilting the nose down shows as a roll until the
  * user picks the "arrow points right" (yaw 90) alignment. The attitude stream follows
  * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
@@ -55,6 +57,7 @@ export const SCENARIOS = [
   "no-sensors",
   "calib-fail",
   "mounted-yaw90",
+  "unsaved-ram",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -100,6 +103,10 @@ interface MockDevice {
   backups: { backup: Backup; ports: FcSerialPort[] }[];
   sensors: { gyro: { present: boolean }; acc: { present: boolean; enabled: boolean }; baro: { present: boolean; enabled: boolean }; mag: { present: boolean; enabled: boolean } };
   accCalFailuresLeft: number;
+  /** An earlier apply left unsaved changes in RAM; cleared by a reconnect (disconnect + connect). */
+  unsavedRam: boolean;
+  /** Disconnected since the last connect (for the reconnect rule). */
+  disconnected: boolean;
   /** Successful device_acc_calibrate calls (tests). */
   accCalibrations: number;
   /** How the board is mounted on the frame (the truth the alignment check should find). */
@@ -163,6 +170,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         : // A disabled sensor is never initialised, so never present (#63 §4.3).
           { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: false, enabled: false }, mag: { present: false, enabled: true } },
     accCalFailuresLeft: scenario === "calib-fail" ? 1 : 0,
+    unsavedRam: scenario === "unsaved-ram",
+    disconnected: false,
     accCalibrations: 0,
     mount: scenario === "mounted-yaw90" ? { roll: 0, pitch: 0, yaw: 90 } : { roll: 0, pitch: 0, yaw: 0 },
     alignment: { roll: 0, pitch: 0, yaw: 0 },
@@ -227,8 +236,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_connect: ({ path }) => {
       if (scenario === "port-busy") throw portBusy(path, "EXTERNAL", `${path}: Access is denied. (os error 5)`);
       if (path !== "COM5") throw err("SERIAL_ERROR", `${path}: no MSP response`);
+      // A confirmed reconnect drops what an earlier apply left unsaved in RAM (Device rule).
+      if (device.disconnected) device.unsavedRam = false;
+      device.disconnected = false;
     },
-    device_disconnect: () => undefined,
+    device_disconnect: () => {
+      device.disconnected = true;
+    },
     device_identify: () => fcInfo(),
     device_cli_exec: ({ line }) => `# ${line}\n`,
     device_reboot_to_bootloader: () => {
@@ -472,6 +486,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
       const acc = device.sensors.acc;
       if (!acc.present || !acc.enabled) throw { ...err("ACC_NOT_AVAILABLE", "no usable accelerometer"), details: { present: acc.present, enabled: acc.enabled } };
+      // Calibration saves everything in RAM to EEPROM: refused while an earlier apply left unsaved changes.
+      if (device.unsavedRam)
+        throw { ...err("PENDING_UNSAVED_CHANGES", "unsaved changes in RAM from an earlier apply; reconnect or reboot first"), details: { reason: "config apply did not save" } };
       await sleep(stepMs * 3);
       if (device.accCalFailuresLeft > 0) {
         device.accCalFailuresLeft--;

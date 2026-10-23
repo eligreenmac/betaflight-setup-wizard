@@ -432,7 +432,8 @@
       "optional": "Recommended if you use Angle or Horizon mode. You can continue without it.",
       "needed": "The board says its accelerometer has not been calibrated yet.",
       "savesNow": "The calibration is saved on the board right away, before you apply the other settings.",
-      "unsaved": "The last apply did not finish, so the board may hold unsaved changes. Unplug the board, plug it back in and reconnect before you calibrate."
+      "unsaved": "The last apply did not finish, so the board may hold unsaved changes. Unplug the board, plug it back in and reconnect before you calibrate.",
+      "reconnecting": "Reconnecting…"
     },
     "orientation": {
       "title": "Is the board mounted the right way?",
@@ -1007,6 +1008,12 @@
       "body": "The board did not finish calibrating the accelerometer.",
       "step1": "Keep the quad level and still, and try again.",
       "step2": "If it fails again, unplug the board, plug it back in and try once more."
+    },
+    "PENDING_UNSAVED_CHANGES": {
+      "title": "The board has unsaved changes",
+      "body": "The board has unsaved changes. Reconnect (or restart) the board, then try calibrating again.",
+      "step1": "Click Reconnect, or unplug the board and plug it back in. Nothing was calibrated or saved.",
+      "step2": "Then calibrate again."
     }
   },
   "driverReplace": {

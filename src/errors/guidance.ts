@@ -98,6 +98,7 @@ const TABLE: Record<ErrorCode, Entry> = {
   ACC_NOT_AVAILABLE: { steps: 2, actions: [], warning: true },
   BOARD_MOVING: { steps: 2, actions: [retry] },
   ACC_CALIBRATION_FAILED: { steps: 2, actions: [retry] },
+  PENDING_UNSAVED_CHANGES: { steps: 2, actions: [reconnect, retry2] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */
