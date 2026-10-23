@@ -148,6 +148,10 @@ th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
 .attitude { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
 .attitude figure { margin: 0; text-align: center; }
 .attitude svg g { transition: transform 0.1s linear; }
+@media (prefers-reduced-motion: reduce) { .attitude svg g { transition: none; } }
+.attitude3d { inline-size: min(100%, 26rem); aspect-ratio: 4 / 3; border-radius: 0.5rem; background: radial-gradient(ellipse at 50% 35%, var(--surface), var(--surface-2)); border: 1px solid var(--border); }
+.attitude3d canvas { display: block; inline-size: 100%; block-size: 100%; }
+.attitude3d__heading { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; justify-content: center; }
 .attitude__horizon { stroke: var(--surface-2); stroke-width: 1; stroke-dasharray: 3 3; }
 .attitude__frame { fill: var(--text, #222); }
 .attitude__nose { fill: var(--accent); }

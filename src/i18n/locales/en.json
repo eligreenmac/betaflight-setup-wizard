@@ -455,7 +455,7 @@
     },
     "orientation": {
       "title": "Is the board mounted the right way?",
-      "instructions": "Hold the quad level. Tilt the nose down, then tilt the right side down, and watch the pictures.",
+      "instructions": "Hold the quad level. Tilt the nose down, then tilt the right side down, and watch the drone on the screen.",
       "sideView": "From the side (nose on the right)",
       "rearView": "From behind",
       "waiting": "Waiting for the board…",
@@ -491,7 +491,10 @@
       "currentCustom": "This is not one of the choices below.",
       "afterApply": "The board itself changes only after you apply the settings. The picture shows the result already.",
       "stoppedDisconnected": "The live view stopped: the board was disconnected. Check the USB cable, then try again.",
-      "stoppedError": "The live view stopped: the board stopped answering. Try again."
+      "stoppedError": "The live view stopped: the board stopped answering. Try again.",
+      "view3d": "Your drone on the screen, seen from behind. The arrow and the coloured propellers mark the front.",
+      "resetHeading": "Face forward again",
+      "resetHeadingHint": "If the drone on the screen is turned sideways, point your quad away from you and press"
     },
     "warnAltholdNoBaro": "Altitude hold is on a switch, but the barometer is turned off. Without it, altitude hold is much less accurate."
   },
