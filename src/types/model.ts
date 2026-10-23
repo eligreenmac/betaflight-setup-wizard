@@ -409,12 +409,18 @@ export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE"
 /** `details` of PENDING_UNSAVED_CHANGES: offer "Reboot board" (`device_reboot`), then retry. A plain reconnect does not clear it. */
 export interface PendingUnsavedChangesDetails { reason: UnsavedChangesReason }
 
+/** Machine-readable reason on some CONFIG errors (ARCHITECTURE §2.3). OSD_HD_NO_DISPLAYPORT: the model
+ * asks for an HD OSD but the FC's firmware build has no MSP DisplayPort. */
+export type ConfigErrorReason = "OSD_HD_NO_DISPLAYPORT";
+/** `details` of a CONFIG error that has a reason (other CONFIG errors have no details). */
+export interface ConfigErrorDetails { reason: ConfigErrorReason }
+
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
- * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES. */
+ * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES, and CONFIG with a reason. */
 export interface AppError {
   code: string;
   message: string;
-  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails | PendingUnsavedChangesDetails;
+  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails | PendingUnsavedChangesDetails | ConfigErrorDetails;
 }
 
 export function emptyDroneModel(): DroneModel {
