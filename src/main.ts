@@ -21,7 +21,7 @@ if (import.meta.env.VITE_MOCK_BACKEND === "1" || !isTauriRuntime()) {
   forceDemo();
 } else {
   const mock = createScenarioMock({ scenario, latencyMs: 150, stepMs: 400 });
-  installFallback({ backend: mock.backend, deviceBackend: mock.deviceBackend, events: mock.events.on });
+  installFallback({ backend: mock.backend, events: mock.events.on });
 }
 
 applyDirection(i18n.global.locale.value);

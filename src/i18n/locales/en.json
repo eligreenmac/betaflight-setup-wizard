@@ -669,6 +669,12 @@
       "body": "The flight controller does not support something you chose, most often the receiver type.",
       "step1": "Go back to Components and choose a different receiver, for example one wired to a UART.",
       "step2": "If the board has a built-in receiver and you still see this, report the problem and include the details below."
+    },
+    "MIXED_BACKEND": {
+      "title": "Blocked: simulated and real data were mixed",
+      "body": "Part of this step was prepared by the simulation (demo mode) while your flight controller is real, or the other way round. Writing it could put made-up settings or firmware on a real board, so the app stopped. Nothing was written to the board.",
+      "step1": "To finish on your real flight controller, update the app to a version that can do every step for real, then start again.",
+      "step2": "To just explore the wizard, close the app, start it without a board connected and choose “Try the demo”."
     }
   }
 }

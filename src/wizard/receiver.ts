@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /** Receiver options offered by the wizard (MVP). */
-import { device, type DeviceFcInfo } from "../api/device";
+import { api } from "../api/commands";
 import type { FcInfo, RxProtocol } from "../types/model";
 import { compareVersions } from "./version";
 
@@ -21,10 +21,10 @@ export const ONBOARD_ELRS_BUILD_OPTIONS = ["USE_RX_EXPRESSLRS", "USE_RX_SPI_EXPR
  * decides when known; before the probe (`present: null`) fall back to the ELRS pins
  * and build-option hints. config_plan still refuses non-ExpressLRS SPI protocols.
  */
-export function hasOnboardElrs(fc: DeviceFcInfo | null): boolean {
+export function hasOnboardElrs(fc: FcInfo | null): boolean {
   if (!fc) return false;
-  if (fc.rxSpi && fc.rxSpi.present !== null) return fc.rxSpi.present;
-  return !!fc.rxSpi?.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
+  if (fc.rxSpi.present !== null) return fc.rxSpi.present;
+  return fc.rxSpi.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
 }
 
 /** device_probe_board leaves the CLI without a reboot only on 4.5+ (on 4.4 the FC reboots). */
@@ -35,7 +35,7 @@ export const PROBE_WITHOUT_REBOOT_SINCE = "4.5.0";
  * Skipped before 4.5 and on non-Betaflight firmware; any failure (e.g. NOT_IMPLEMENTED
  * on an older backend) keeps the identify result.
  */
-export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<DeviceFcInfo> = () => device.probeBoard()): Promise<DeviceFcInfo> {
+export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<FcInfo> = () => api.device.probeBoard()): Promise<FcInfo> {
   if (info.fcVariant !== "BTFL" || compareVersions(info.firmwareVersion, PROBE_WITHOUT_REBOOT_SINCE) < 0) return info;
   try {
     return await probe();
