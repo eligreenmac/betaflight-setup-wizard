@@ -6,3 +6,6 @@ src-tauri/gen/
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# WinUSB helper is built in CI (see .github/actions/build-wdi-simple)
+src-tauri/drivers/*.exe
