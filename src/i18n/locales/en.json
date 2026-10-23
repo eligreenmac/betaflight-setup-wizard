@@ -7,8 +7,7 @@
     "back": "Back",
     "language": "Language",
     "phase2": "Coming later",
-    "propsOffWarning": "Remove all propellers before connecting the battery.",
-    "notImplemented": "This step is not implemented yet."
+    "propsOffWarning": "Remove all propellers before connecting the battery."
   },
   "shell": {
     "language": "Language",
