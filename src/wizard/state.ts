@@ -23,6 +23,10 @@ import { MODES, normalizeModeNames, SWITCH_POSITIONS } from "./switches";
 import { defaultTelemetry } from "./receiver";
 
 export type FirmwareDecision = "keep" | "update" | null;
+/** CRSF on a UART can be ExpressLRS or TBS Crossfire; only ExpressLRS has a binding phrase. */
+export type CrsfFamily = "ELRS" | "CROSSFIRE" | null;
+/** ExpressLRS binding: "phrase" = binding phrase (SPI: hashed to receiver.elrsUid); "button" = bind mode. */
+export type ElrsBinding = "phrase" | "button" | null;
 export type ApplyStatus = "idle" | "generating" | "applying" | "verifying" | "verified" | "mismatch" | "failed";
 
 export interface UiState extends RoleOptions {
@@ -46,6 +50,10 @@ export interface UiState extends RoleOptions {
   applyStatus: ApplyStatus;
   applyResult: ApplyResult | null;
   verify: VerifyReport | null;
+  /** Receiver protocol CRSF: which radio system (asked on the Binding step). */
+  crsfFamily: CrsfFamily;
+  /** ExpressLRS binding choice (Binding step). The phrase itself is never stored. */
+  elrsBinding: ElrsBinding;
   /** Backups created in this session (fallback list when config_list_backups is missing). */
   sessionBackups: Backup[];
 }
@@ -75,6 +83,8 @@ function emptyUi(): UiState {
     applyResult: null,
     verify: null,
     sessionBackups: [],
+    crsfFamily: null,
+    elrsBinding: null,
   };
 }
 
@@ -131,6 +141,7 @@ export function setReceiverKind(s: WizardState, kind: ReceiverKind): void {
     s.model.receiver.protocol = kind === "SERIAL" ? "CRSF" : kind === "SPI" ? "EXPRESSLRS" : null;
     // No receiver: keep the shared model default (telemetry true); the engine ignores it.
     s.model.receiver.telemetry = s.model.receiver.protocol ? defaultTelemetry(s.model.receiver.protocol) : true;
+    resetBinding(s);
   }
   afterComponentsChange(s);
 }
@@ -139,8 +150,16 @@ export function setReceiverProtocol(s: WizardState, protocol: RxProtocol): void 
   if (s.model.receiver.protocol !== protocol) {
     s.model.receiver.protocol = protocol;
     s.model.receiver.telemetry = defaultTelemetry(protocol);
+    resetBinding(s);
   }
   markDirty(s);
+}
+
+/** A different receiver: forget the binding answers and any UID derived from a phrase. */
+function resetBinding(s: WizardState): void {
+  s.ui.crsfFamily = null;
+  s.ui.elrsBinding = null;
+  s.model.receiver.elrsUid = null;
 }
 
 export function setVtxProtocol(s: WizardState, protocol: VtxProtocol): void {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Per-call demo fallback (api/fallback.ts) and the persistent "Demo mode" banner.
-import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { api, type Backend } from "../src/api/commands";
@@ -12,9 +12,9 @@ import { uninstallMock } from "../src/mocks/install";
 import { createScenarioMock, type ScenarioMock } from "../src/mocks/scenarios";
 import { uiError } from "../src/errors/codes";
 import { motorTest } from "../src/wizard/motorTest";
-import { guardFor } from "../src/wizard/guards";
 import { nav, resetNav } from "../src/wizard/nav";
 import { resetWizard, wizard } from "../src/wizard/state";
+import { click, settle, walkToDone } from "./walk";
 
 /** Today's Phase 0 app: only system_app_info is real; the rest are stubs or not registered. */
 function phase0(overrides: Record<string, (args: unknown) => unknown> = {}) {
@@ -32,9 +32,6 @@ function phase0(overrides: Record<string, (args: unknown) => unknown> = {}) {
 
 let mock: ScenarioMock;
 let w: VueWrapper | null = null;
-const settle = async () => {
-  for (let i = 0; i < 12; i++) await flushPromises();
-};
 function setup(real = phase0()) {
   mock = createScenarioMock({ latencyMs: 0, stepMs: 0 });
   installFallback({ backend: mock.backend, deviceBackend: mock.deviceBackend, events: mock.events.on }, real);
@@ -82,47 +79,8 @@ describe("per-call mock fallback", () => {
   });
 });
 
-async function next(): Promise<void> {
-  await w!.get('[data-test="next"]').trigger("click");
-  await settle();
-}
-async function click(sel: string): Promise<void> {
-  await w!.get(`[data-test="${sel}"]`).trigger("click");
-  await settle();
-}
-
-/** Walk every step to Done; `firmware` picks the keep or the update path. */
-async function walkToDone(firmware: "keep" | "update"): Promise<string[]> {
-  const seen: string[] = [];
-  for (let guard = 0; guard < 30 && nav.currentId !== "done"; guard++) {
-    const id = nav.currentId;
-    seen.push(id);
-    if (id === "connect" && !wizard.fc) await click("connect");
-    if (id === "firmware" && wizard.ui.firmwareDecision === null) {
-      if (firmware === "update") {
-        await click("update");
-        await settle();
-      } else await click("keep");
-    }
-    if (id === "components" && wizard.model.receiver.kind === "NONE") {
-      // Pick something for every optional screen so all of them are visited.
-      await w!.get('[data-rx-kind="SERIAL"]').setValue(true);
-      await w!.get('[data-vtx-kind="ANALOG"]').setValue(true);
-      await w!.get('[data-test="gps"]').setValue(true);
-      await settle();
-    }
-    for (const sel of w!.findAll("select[data-role]")) {
-      const el = sel.element as HTMLSelectElement;
-      const first = [...el.options].find((o) => o.value !== "");
-      if (el.value === "" && first) await sel.setValue(first.value);
-    }
-    await settle();
-    if (id === "apply" && wizard.ui.applyStatus !== "verified") await click("apply");
-    await next();
-    if (nav.currentId === id) throw new Error(`stuck on ${id}: ${JSON.stringify(guardFor(id).validate(wizard))}`);
-  }
-  return seen;
-}
+const next = () => click(w!, "next");
+const walk = (fw: "keep" | "update") => walkToDone(w!, fw);
 
 describe("demo mode end to end (no board connected)", () => {
   for (const path of ["keep", "update"] as const) {
@@ -130,9 +88,9 @@ describe("demo mode end to end (no board connected)", () => {
       setup();
       w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
       await settle();
-      const seen = await walkToDone(path);
+      const seen = await walk(path);
       expect(nav.currentId).toBe("done");
-      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "vtx", "gps", "esc", "switches", "review", "apply"]);
+      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "binding", "vtx", "gps", "esc", "switches", "review", "apply"]);
       const banner = w.get('[data-test="demo-banner"]');
       expect(banner.text()).toContain("Demo mode.");
       expect(banner.text()).toContain("Some features are simulated");
@@ -145,13 +103,13 @@ describe("demo mode end to end (no board connected)", () => {
     w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     await settle();
     await next();
-    await click("connect");
+    await click(w!, "connect");
     expect(wizard.fc).toBeNull();
     expect(w.find('[data-test="demo-banner"]').exists()).toBe(false); // nothing simulated yet
-    await click("use-demo");
+    await click(w!, "use-demo");
     expect(wizard.fc).not.toBeNull();
     expect(w.get('[data-test="demo-banner"]').text()).toContain("Everything runs on a simulated flight controller");
-    await walkToDone("keep");
+    await walk("keep");
     expect(nav.currentId).toBe("done");
   });
 
@@ -161,7 +119,7 @@ describe("demo mode end to end (no board connected)", () => {
     w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     await settle();
     await next();
-    await click("connect");
+    await click(w!, "connect");
     expect(w.get('[data-test="demo-banner"]').text()).toContain("מצב הדגמה");
   });
 });
