@@ -151,10 +151,15 @@ fn model() -> DroneModel {
     serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap()
 }
 
-fn store(tag: &str) -> BackupStore {
-    let dir = std::env::temp_dir().join(format!("bfsw-dirty-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    BackupStore::new(dir)
+/// A backup store in a fresh temp dir. Keep the returned `TempDir` alive for as long as the
+/// store is used; dropping it removes the directory (also when the test panics).
+fn store(tag: &str) -> (tempfile::TempDir, BackupStore) {
+    let dir = tempfile::Builder::new()
+        .prefix(&format!("bfsw-dirty-{tag}-"))
+        .tempdir()
+        .unwrap();
+    let store = BackupStore::new(dir.path());
+    (dir, store)
 }
 
 impl Rig {
@@ -175,7 +180,7 @@ impl Rig {
         if reject {
             *self.fail.lock().unwrap() = Some(script.commands[0].clone());
         }
-        let store = store(tag);
+        let (_dir, store) = store(tag);
         let r = self
             .m
             .with_link(|l| session::apply(l, &script, &store, "UID", &mut |_| {}));

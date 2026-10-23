@@ -9,6 +9,8 @@ import type { CliScript } from "../../types/model";
 import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
+import { isHdOsdPlanError, osdChoice, withOsd } from "../osd";
+import { toUiError, uiError } from "../../errors/codes";
 import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
 import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
 import { calibrationWarnings } from "../guards";
@@ -30,7 +32,7 @@ async function load(): Promise<void> {
   wizard.ui.planUnavailable = false;
   plan.value = null;
   try {
-    const r = await fetchPlan(toPlanModel(wizard.model, wizard.ext), wizard.ports);
+    const r = await fetchPlan(withOsd(toPlanModel(wizard.model, wizard.ext), wizard.osd), wizard.ports);
     if (r.status === "ready") {
       plan.value = r.script;
       previewOnly.value = false;
@@ -42,12 +44,26 @@ async function load(): Promise<void> {
       wizard.ui.planUnavailable = true;
     }
   } catch (e) {
-    error.value = e;
+    const ue = toUiError(e);
+    // HD OSD on firmware without MSP DisplayPort: plain words and a way back to the OSD step.
+    error.value = isHdOsdPlanError(ue) ? { ...uiError("OSD_HD_UNSUPPORTED", ue.message) } : e;
   } finally {
     loading.value = false;
   }
 }
 onMounted(load);
+
+/** "Back to OSD settings": HD is off for this board until it is identified again. */
+function backToOsd(): void {
+  wizard.osd.hdRejected = true;
+  if (wizard.osd.askedSystem === "HD") wizard.osd.askedSystem = null;
+  goTo("osd");
+}
+function onError(id: string): void {
+  if (id === "editComponents") goTo("components");
+  else if (id === "backToOsd") backToOsd();
+  else void load();
+}
 
 const rows = computed(() => {
   const r: [string, string][] = [
@@ -59,6 +75,9 @@ const rows = computed(() => {
   ];
   for (const role of neededRoles(wizard.model, wizard.ui)) r.push([t(`roles.${role}`), getRolePort(wizard.model, role) ?? "—"]);
   r.push([t("review.switches"), m.value.switches.map((s) => `${modeKeyOf(s.mode) ? t(`switches.modes.${modeKeyOf(s.mode)}`) : s.mode} AUX${s.auxChannel + 1}`).join(", ")]);
+  const osd = osdChoice(wizard.osd, m.value.gps.enabled);
+  if (m.value.vtx.kind !== "NONE")
+    r.push([t("review.osd"), osd ? t("review.osdChosen", { n: osd.elements.filter((e) => e.enabled).length, system: t(`osd.system.${osd.videoSystem}`) }) : t("review.osdKeep")]);
   const x = wizard.ext;
   const skip = new Set(simulatedFields());
   const keep = t("review.keep");
@@ -79,6 +98,8 @@ const rows = computed(() => {
 });
 const unplanned = computed(() => (previewOnly.value ? [] : unplannedChoices(wizard.ext, plan.value)));
 const warnings = computed(() => calibrationWarnings(wizard));
+/** The OSD was set up, but this version's plan does not write it (engine without `osd`). */
+const osdUnplanned = computed(() => !previewOnly.value && !!plan.value && !!osdChoice(wizard.osd, m.value.gps.enabled) && !plan.value.commands.some((c) => /^set osd_\w+_pos\b/.test(c)));
 </script>
 
 <template>
@@ -86,7 +107,7 @@ const warnings = computed(() => calibrationWarnings(wizard));
     <h2>{{ t("steps.review.title") }}</h2>
     <p class="lead">{{ t("steps.review.description") }}</p>
     <p v-if="loading" class="hint">{{ t("review.loading") }}</p>
-    <ErrorPanel v-if="error" :error="error" @action="(id) => (id === 'editComponents' ? goTo('components') : load())" />
+    <ErrorPanel v-if="error" :error="error" @action="onError" />
 
     <div v-if="previewOnly" class="callout callout--danger" data-test="plan-unavailable">
       <strong>{{ t("review.planUnavailableTitle") }}</strong>
@@ -110,6 +131,11 @@ const warnings = computed(() => calibrationWarnings(wizard));
       <dl class="kv">
         <template v-for="[k, v] in rows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
       </dl>
+
+      <div v-if="osdUnplanned" class="callout callout--warn" data-test="osd-unplanned">
+        <strong>{{ t("review.osdUnplannedTitle") }}</strong>
+        <p>{{ t("review.osdUnplannedBody") }}</p>
+      </div>
 
       <div v-for="w in warnings" :key="w.key" class="callout callout--warn" :data-warning="w.key">{{ t(w.key) }}</div>
 

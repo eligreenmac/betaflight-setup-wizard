@@ -216,11 +216,28 @@ so `0.1.0-1` came out as `0.1.0.0` (v0.1.0-1's setup.exe and app exe). Two piece
   `!searchparse`.
   - `installerHooks` can't do it: hooks are `!include`d before `VERSIONWITHBUILD` is
     defined and before `VIProductVersion` is set, and NSIS rejects redefining either.
-  - The file is generated, not hand-edited: after updating `@tauri-apps/cli`, run
-    `node src-tauri/windows/nsis-template.mjs --write`.
-  - CI (`--check` in `build.yml`) fails if the file differs from that version's upstream
-    template plus the change. So a CLI bump can't silently pair a stale template with a
-    newer bundler.
+  - The file is generated, not hand-edited, from a **vendored, pinned** copy of the
+    upstream template:
+    - `src-tauri/windows/upstream/installer.nsi` is Tauri's template byte-for-byte
+      (`-text` in `src-tauri/windows/.gitattributes`, so no EOL conversion).
+    - `src-tauri/windows/nsis-template.lock.json` pins the `@tauri-apps/cli` version
+      (tag `tauri-cli-vX.Y.Z`), the `tauri-bundler` version that ships the template,
+      the source URL and the file's SHA-256.
+  - CI (`node src-tauri/windows/nsis-template.mjs --check` in `build.yml`) is
+    **offline**; it never downloads anything. It fails if:
+    - the pin's CLI version differs from `@tauri-apps/cli` in `package-lock.json`, so a
+      CLI bump can't silently pair a stale template with a newer bundler;
+    - the vendored copy's SHA-256 differs from the pin, so the copy was edited;
+    - `installer.nsi` differs from the vendored copy plus the change (header +
+      `VIProductVersion`/`VIFileVersion`).
+  - After bumping `@tauri-apps/cli` (opt-in, needs network), run
+    `node src-tauri/windows/nsis-template.mjs --refresh`. It downloads the template for
+    the locked CLI version and rewrites the vendored copy, the pin and `installer.nsi`.
+    Review the upstream diff (`git diff src-tauri/windows/upstream/`) before committing;
+    Tauri may have changed the installer in ways that matter here.
+  - Other modes: `--write` regenerates `installer.nsi` from the vendored copy (offline,
+    e.g. after changing the replacement in the script). `--verify-upstream` (network,
+    read-only) re-downloads the pinned URL and checks it still matches the pinned hash.
 - **App exe**: `build.beforeBundleCommand` runs `src-tauri/windows/set-exe-version.mjs`.
   It runs after `cargo build` and before bundling and signing. It overwrites the 16
   version bytes of the exe's `VS_FIXEDFILEINFO` in place: same size, idempotent, and it
