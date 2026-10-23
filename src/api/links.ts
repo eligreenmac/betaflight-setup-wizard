@@ -15,6 +15,11 @@ export const ALLOWED_URL_PREFIXES = [
   "https://betaflight.com/",
   "https://github.com/betaflight/",
   "https://github.com/eligreenmac/betaflight-setup-wizard/",
+  // USB-serial (CP210x / CH34x) driver downloads, DriverStatus.guidance.
+  "https://silabs.com/",
+  "https://www.silabs.com/",
+  "https://wch-ic.com/",
+  "https://www.wch-ic.com/",
 ] as const;
 
 export function isAllowedUrl(url: string): boolean {
