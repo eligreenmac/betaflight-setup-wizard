@@ -233,8 +233,12 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   returns once sent; the caller then calls `reconnect(timeout)`, which waits for the port to drop
   and come back (same VID/PID/serial number), reopens it and re-verifies MSP_API_VERSION and
   MSP_UID. Likewise after `exit` on 4.4 (reboots). `exit_cli(false)` uses `exit noreboot` on 4.5+.
-- **`FcInfo.uid`**: MSP_UID (160) = 3 × u32 LE, each `toString(16)` without padding,
-  concatenated (same as Betaflight Configurator) → backup folder `<boardUid>`.
+- **`FcInfo.uid`**: exactly the CLI `mcu_id` string: 24 lowercase hex chars, the three
+  MSP_UID (160) words `U_ID_0, U_ID_1, U_ID_2` (each u32 little-endian on the wire), each
+  zero-padded to 8 digits, in that order (`cli.c`: `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`).
+  Example: payload `2b 00 33 00 0b 51 38 31 33 37 38 32` → `0033002b3138510b32383733`.
+  Fixed width, so it is unambiguous as a key (Configurator's unpadded `toString(16)` form is
+  not; it is not used). → backup folder `<boardUid>`; reconnect compares the raw words.
 - **Serial port list** (`FcInfo.serialPorts`): read by `device_identify` with
   `MSP2_COMMON_SERIAL_CONFIG` (0x1009), falling back to `MSP_CF_SERIAL_CONFIG` (54).
   `identifier` is exactly what the board sent (never remapped); `name` is derived from the
@@ -316,7 +320,9 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
-  for the UI's "open backups folder" action.
+  for the UI's "open backups folder" action. `<boardUid>` is `FcInfo.uid`, i.e. the 24-char
+  `mcu_id` hex (e.g. `backups/0033002b3138510b32383733/`), so the folder matches what
+  `mcu_id` prints in the CLI; `unknown` if MSP_UID failed.
 - **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
   → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
   `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.

@@ -20,6 +20,8 @@ export interface FcInfo {
   boardName: string;
   manufacturerId: string | null;
   mcu: string | null;
+  /** MCU unique id exactly as CLI `mcu_id` prints it: 24 lowercase hex chars
+   * (`%08x%08x%08x` of U_ID_0..2). Backup folder name. null only if MSP_UID failed. */
   uid: string | null;
   buildOptions: string[];
   /** Serial ports exactly as the board reports them (raw identifiers). Empty if unknown. */
@@ -132,6 +134,7 @@ export interface CliScript { commands: string[]; warnings: string[]; dialect: st
 export interface Backup {
   id: string;
   path: string;
+  /** FcInfo.uid (24-char mcu_id hex) or "unknown". */
   boardUid: string;
   boardName: string;
   firmwareVersion: string;

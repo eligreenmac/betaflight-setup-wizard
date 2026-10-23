@@ -53,9 +53,9 @@ pub struct FcInfo {
     pub manufacturer_id: Option<String>,
     /// MCU type, e.g. "STM32F405"
     pub mcu: Option<String>,
-    /// MCU unique id from MSP_UID (160): three little-endian u32, each formatted as
-    /// lowercase hex without padding and concatenated (Betaflight Configurator's
-    /// `deviceIdentifier`). Used as the backup folder name. `None` only if MSP_UID fails.
+    /// MCU unique id, identical to the CLI `mcu_id` output: the three MSP_UID (160) words
+    /// (u32 little-endian) as `%08x%08x%08x` in order U_ID_0, U_ID_1, U_ID_2 — always 24
+    /// lowercase hex chars. Used as the backup folder name. `None` only if MSP_UID fails.
     pub uid: Option<String>,
     /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
     pub build_options: Vec<String>,
@@ -571,7 +571,7 @@ pub struct Backup {
     /// Absolute path of the saved `diff all` text file:
     /// `<app_data_dir>/backups/<boardUid>/<timestamp>.txt` (kept forever).
     pub path: String,
-    /// MCU unique id (hex, FcInfo.uid); "unknown" if unavailable.
+    /// MCU unique id (FcInfo.uid: 24-char `mcu_id` hex); "unknown" if unavailable.
     #[serde(default)]
     pub board_uid: String,
     pub board_name: String,
