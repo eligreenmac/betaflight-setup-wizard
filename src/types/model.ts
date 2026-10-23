@@ -20,8 +20,21 @@ export interface FcInfo {
   boardName: string;
   manufacturerId: string | null;
   mcu: string | null;
+  /** MCU unique id exactly as CLI `mcu_id` prints it: 24 lowercase hex chars
+   * (`%08x%08x%08x` of U_ID_0..2). Backup folder name. null only if MSP_UID failed. */
   uid: string | null;
   buildOptions: string[];
+  /** Serial ports exactly as the board reports them (raw identifiers). Empty if unknown. */
+  serialPorts: FcSerialPort[];
+  rxSpi: RxSpiInfo;
+}
+/** Onboard SPI receiver detection. `present` is null until device_probe_board ran. */
+export interface RxSpiInfo {
+  present: boolean | null;
+  expresslrsPins: boolean;
+  protocol: string | null;
+  featureEnabled: boolean | null;
+  resources: string[];
 }
 export interface FcSerialPort {
   /** "UART1".."UART15", "LPUART1", "SOFTSERIAL1", "SOFTSERIAL2", "VCP" */
@@ -121,6 +134,7 @@ export interface CliScript { commands: string[]; warnings: string[]; dialect: st
 export interface Backup {
   id: string;
   path: string;
+  /** FcInfo.uid (24-char mcu_id hex) or "unknown". */
   boardUid: string;
   boardName: string;
   firmwareVersion: string;
@@ -139,6 +153,29 @@ export type ConfigStage = "BACKUP" | "SENDING" | "SAVING" | "REBOOTING" | "RECON
 export interface ConfigProgress { stage: ConfigStage; fraction: number; message: string | null }
 export interface Mismatch { setting: string; expected: string; actual: string }
 export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
+
+// ---- device: motor test + RC stream
+/** Clamped by the backend: maxThrottle <= 1250, watchdogMs 100..2000. Defaults 1150 / 500. */
+export interface MotorTestLimits { maxThrottle: number; watchdogMs: number }
+export interface MotorOutputConfig {
+  /** motor_pwm_protocol name, e.g. "DSHOT600", "PWM", "DISABLED". */
+  protocol: string;
+  digital: boolean;
+  feature3d: boolean;
+  mincommand: number;
+  motorCount: number;
+  /** 1000 for DShot/ProShot, else mincommand. */
+  stopValue: number;
+}
+export interface MotorTestSession { outputConfig: MotorOutputConfig; limits: MotorTestLimits }
+export type MotorTestStopReason = "REQUESTED" | "WATCHDOG" | "ARMED" | "DISCONNECTED" | "APP_CLOSING" | "ERROR";
+/** `device://motor-test-stopped` */
+export interface MotorTestStopped { reason: MotorTestStopReason; error: AppError | null }
+/** `device://rc-channels`: raw MSP_RC values (usually 1000..2000), firmware channel order. */
+export interface RcChannels { seq: number; timestampMs: number; channels: number[] }
+export type RcStopReason = "REQUESTED" | "DISCONNECTED" | "ERROR";
+/** `device://rc-stopped` */
+export interface RcStopped { reason: RcStopReason; error: AppError | null }
 
 // ---- system
 /** See src-tauri/src/model.rs `DriverStatus` for semantics. */
@@ -178,8 +215,23 @@ export interface DriverGuidance {
 }
 export interface AppInfo { version: string; os: string; cacheDir: string }
 
-/** Error shape returned by every failing command. */
-export interface AppError { code: string; message: string }
+/** Error codes (src-tauri/src/error.rs). The UI maps them to i18n keys `errors.<code>`. */
+export type AppErrorCode =
+  | "NOT_IMPLEMENTED" | "NOT_CONNECTED" | "SERIAL" | "MSP" | "CLI" | "USB" | "FIRMWARE" | "CONFIG"
+  | "DRIVER" | "IO" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
+  | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
+  | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE";
+/** `details` of PORT_BUSY. */
+export interface PortBusyDetails { port: string; heldBy: "APP" | "EXTERNAL" }
+/** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
+export interface DriverMissingDetails { vid: number; pid: number; detail: string }
+
+/** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING. */
+export interface AppError {
+  code: string;
+  message: string;
+  details?: PortBusyDetails | DriverMissingDetails;
+}
 
 export function emptyDroneModel(): DroneModel {
   return {

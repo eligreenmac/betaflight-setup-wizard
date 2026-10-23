@@ -14,6 +14,12 @@ export const defaultMockHandlers: Handlers = {
   device_identify: () => ({
     fcVariant: "BTFL", firmwareVersion: "4.5.2", apiVersion: "1.46", boardName: "SPEEDYBEEF405V4",
     manufacturerId: "SPBE", mcu: "STM32F405", uid: null, buildOptions: [],
+    serialPorts: [
+      { name: "VCP", identifier: 20, functionMask: 1, isConnectionPort: true },
+      { name: "UART1", identifier: 0, functionMask: 0, isConnectionPort: false },
+      { name: "UART2", identifier: 1, functionMask: 64, isConnectionPort: false },
+    ],
+    rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] },
   }),
   config_read_ports: () => [
     { name: "VCP", identifier: 20, functionMask: 1, isConnectionPort: true },
