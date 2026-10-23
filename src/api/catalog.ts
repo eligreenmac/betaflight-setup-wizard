@@ -3,9 +3,9 @@
  * Config's read-only `config_firmware_catalog(firmwareVersion)` (shared #66,
  * `api.config.firmwareCatalog`, type `FirmwareCatalog` in types/model.ts): what this
  * firmware line has (beeper conditions, DShot beacon events, OSD elements, mode names).
- * The UI uses it instead of hard-coded lists. While the Rust command is still a stub
- * (NOT_IMPLEMENTED), the demo fallback (api/fallback.ts) answers it from the mock
- * (mocks/scenarios.ts mockFirmwareCatalog), like any other unimplemented command.
+ * The UI uses it instead of hard-coded lists. Always answered by the real backend (config
+ * engine, #67). The mock (mocks/scenarios.ts mockFirmwareCatalog) answers only in demo
+ * mode, or for an older backend that returns NOT_IMPLEMENTED (api/fallback.ts).
  *
  * The result is parsed tolerantly: `{name}` objects are accepted, duplicates and unknown
  * keys dropped, so a newer backend never breaks the steps.

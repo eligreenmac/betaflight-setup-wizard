@@ -22,6 +22,7 @@ import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./po
 import { MAX_AUX, MODES, modeKeyOf, modeName, normalizeModeNames, SWITCH_POSITIONS, type ModeKey } from "./switches";
 import type { Airmode, OptionalMode } from "./modelExt";
 import { defaultTelemetry } from "./receiver";
+import { emptyOsdState, type OsdState } from "./osd";
 import { emptyExt, type ModelExt } from "./modelExt";
 import type { SensorsInfo } from "../api/pending";
 
@@ -80,6 +81,8 @@ export interface WizardState {
   ports: FcSerialPort[];
   connectedPath: string | null;
   ui: UiState;
+  /** OSD step (wizard/osd.ts); `osd` is sent only when the user sets it up (null = keep). */
+  osd: OsdState;
   /** Proposed DroneModel fields (wizard/modelExt.ts); null = keep the board's value. */
   ext: ModelExt;
 }
@@ -119,7 +122,7 @@ export function initialModel(): DroneModel {
 }
 
 export function createWizardState(): WizardState {
-  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi(), ext: emptyExt() };
+  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi(), osd: emptyOsdState(), ext: emptyExt() };
 }
 
 export const wizard = reactive<WizardState>(createWizardState());
@@ -153,6 +156,11 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
     s.model.esc.telemetryPort = null;
     s.ui.motorOrderOk = false;
     s.ui.motorDirectionOk = false;
+    // The OSD grid depends on the board: reload the layout for the new one.
+    s.osd.layout = null;
+    s.osd.layoutKey = null;
+    s.osd.catalog = [];
+    s.osd.moved = {};
     // Sensors, calibration and mounting belong to the other board.
     s.ui.sensors = null;
     s.ui.accCalibration = "idle";
