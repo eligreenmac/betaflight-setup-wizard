@@ -7,12 +7,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { demoState, installFallback, resetDemoState } from "../src/api/fallback";
 import { attitudeToEuler, parseSensors, pendingApi } from "../src/api/pending";
-import { toUiError } from "../src/errors/codes";
+import { categoryOf, toUiError } from "../src/errors/codes";
 import { guidanceFor } from "../src/errors/guidance";
 import { i18n, setLocale } from "../src/i18n";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { createScenarioMock, type Scenario, type ScenarioMock } from "../src/mocks/scenarios";
-import { calibrationWarnings, guards, sensorIssues } from "../src/wizard/guards";
+import { calibrationBlock, calibrationWarnings, guards, sensorIssues } from "../src/wizard/guards";
 import { generateCli } from "../src/mocks/scenarios";
 import { isWriteCommand } from "../src/api/fallback";
 import { ALL_STEPS } from "../src/wizard/engine";
@@ -37,8 +37,8 @@ afterEach(async () => {
   uninstallMock();
 });
 
-async function open(scenario: Scenario = "happy", setup?: (d: ScenarioMock["device"]) => void): Promise<VueWrapper> {
-  mock = installMock({ scenario, latencyMs: 0, stepMs: 0 });
+async function open(scenario: Scenario = "happy", setup?: (d: ScenarioMock["device"]) => void, stepMs = 0): Promise<VueWrapper> {
+  mock = installMock({ scenario, latencyMs: 0, stepMs });
   setup?.(mock.device);
   w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
   await settle();
@@ -244,44 +244,92 @@ describe("accelerometer calibration", () => {
     expect(toUiError({ code: "ACC_CALIBRATION_FAILED", message: "x" }).code).toBe("ACC_CALIBRATION_FAILED");
   });
 
-  it("PENDING_UNSAVED_CHANGES (TODO(shared) string code) maps to its own guidance with Reconnect", () => {
-    const e = toUiError({ code: "PENDING_UNSAVED_CHANGES", message: "x", details: { reason: "apply" } });
-    expect(e.code).toBe("PENDING_UNSAVED_CHANGES");
-    expect(e.category).toBe("Safety");
+  it("PENDING_UNSAVED_CHANGES {reason} (TODO(shared) string code): Reboot board + Try again; REBOOT_NOT_CONFIRMED: Go to Connect", () => {
+    const e = toUiError({ code: "PENDING_UNSAVED_CHANGES", message: "x", details: { reason: "EXIT_NOREBOOT" } });
+    expect(e).toMatchObject({ code: "PENDING_UNSAVED_CHANGES", category: "Safety", details: { reason: "EXIT_NOREBOOT" } });
     const g = guidanceFor(e);
     expect(g.titleKey).toBe("errors.PENDING_UNSAVED_CHANGES.title");
-    expect(g.actions.map((a) => a.id)).toEqual(["reconnect", "retry"]);
+    expect(g.actions.map((x) => [x.id, x.labelKey])).toEqual([["rebootBoard", "actions.rebootBoard"], ["retry", "actions.tryAgain"]]);
+    const r = guidanceFor("REBOOT_NOT_CONFIRMED");
+    expect(categoryOf("REBOOT_NOT_CONFIRMED")).toBe("Connection");
+    expect(r.actions.map((x) => x.id)).toEqual(["goConnect", "retry"]);
   });
 
-  it("unsaved changes in RAM: plain guidance, Reconnect clears it, then calibration succeeds", async () => {
-    await open("unsaved-ram");
+  it("unsaved changes: refused first (even armed), a plain reconnect does not clear it, Reboot board does", async () => {
+    await open("unsaved-ram", (d) => (d.armed = true), 40);
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "failed");
-    const panel = w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]');
-    expect(panel.text()).toContain("The board has unsaved changes. Reconnect (or restart) the board, then try calibrating again.");
+    const panel = () => w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]');
+    expect(panel().text()).toContain("The board has changes that were never saved, and calibrating now would save them too.");
+    expect(panel().text()).toContain("it will restart and nothing unsaved will be kept");
     expect(w!.find('[data-test="calibration-failed"]').exists()).toBe(false); // not the "keep it still" hint
-    expect(mock.device.accCalibrations).toBe(0);
-    // Retrying without reconnecting is refused again.
-    await w!.get('[data-test="calibrate"]').trigger("click");
-    await waitFor(() => wizard.ui.accCalibration === "failed");
+    // A reconnect alone keeps the flag (Device: only a confirmed reboot clears it).
+    await mock.backend("device_disconnect", {});
+    await mock.backend("device_connect", { path: "COM5" });
     expect(mock.device.unsavedRam).toBe(true);
-    const reconnect = w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((b) => b.text() === "Reconnect")!;
-    await reconnect.trigger("click");
+    mock.device.armed = false;
+    await waitFor(() => mock.device.attitudeTimer !== null);
+    const reboot = panel().findAll("button").find((x) => x.text() === "Reboot board")!;
+    await reboot.trigger("click");
+    await waitFor(() => w!.find('[data-test="rebooting"]').exists());
+    expect(w!.get('[data-test="rebooting"]').text()).toBe("Restarting the board…");
+    expect(mock.device.attitudeTimer).toBeNull(); // live view paused during the reboot
     await waitFor(() => wizard.ui.accCalibration === "idle");
+    expect(mock.device.reboots).toBe(1);
     expect(mock.device.unsavedRam).toBe(false);
-    expect(wizard.connectedPath).toBe("COM5");
+    await waitFor(() => mock.device.attitudeTimer !== null); // and resumed
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "done");
     expect(mock.device.accCalibrations).toBe(1);
   });
 
-  it("unsaved changes guidance in Hebrew", async () => {
-    await open("unsaved-ram");
+  it("reboot not confirmed: power-cycle guidance, Try again reboots again, Go to Connect", async () => {
+    await open("unsaved-ram-reboot-fail");
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    await w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
+    await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
+    const panel = () => w!.get('[data-error-code="REBOOT_NOT_CONFIRMED"]');
+    expect(panel().text()).toContain("We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.");
+    expect(mock.device.unsavedRam).toBe(true);
+    await panel().findAll("button").find((x) => x.text() === "Try again")!.trigger("click");
+    await waitFor(() => !w!.find('[data-test="rebooting"]').exists() && w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
+    expect(mock.device.accCalibrations).toBe(0);
+    await panel().findAll("button").find((x) => x.text() === "Go to Connect")!.trigger("click");
+    await waitFor(() => nav.currentId === "connect");
+    expect(wizard.fc).toBeNull();
+    expect(wizard.connectedPath).toBeNull();
+  });
+
+  it("Connect step: PENDING_UNSAVED_CHANGES from device_connect = power-cycle guidance, then connect again", async () => {
+    mock = installMock({ scenario: "unsaved-ram", latencyMs: 0, stepMs: 0 });
+    mock.device.connectUnsavedFails = true;
+    w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
+    await settle();
+    await w.get('[data-test="next"]').trigger("click");
+    await w.get('[data-test="connect"]').trigger("click");
+    await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
+    const panel = w.get('[data-error-code="REBOOT_NOT_CONFIRMED"]');
+    expect(panel.text()).toContain("We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.");
+    const labels = panel.findAll("button").map((x) => x.text());
+    expect(labels).toEqual(["Try again"]); // no "Go to Connect" on the Connect step
+    expect(wizard.fc).toBeNull();
+    mock.device.connectUnsavedFails = false; // unplugged and plugged back in
+    await panel.findAll("button")[0]!.trigger("click");
+    await waitFor(() => wizard.fc !== null);
+  });
+
+  it("unsaved changes and reboot failure guidance in Hebrew", async () => {
+    await open("unsaved-ram-reboot-fail");
     setLocale("he");
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "failed");
-    expect(w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').text()).toContain("יש בלוח שינויים שלא נשמרו");
-    expect(w!.text()).toContain("התחברות מחדש");
+    const p = w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]');
+    expect(p.text()).toContain("יש בלוח שינויים שמעולם לא נשמרו, וכיול עכשיו ישמור גם אותם.");
+    await p.findAll("button").find((x) => x.text() === "הפעלה מחדש של הלוח")!.trigger("click");
+    await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
+    expect(w!.text()).toContain("לא הצלחנו לוודא שהלוח הופעל מחדש. נתקו את כבל ה-USB ואת הסוללה");
+    expect(w!.text()).toContain("מעבר לשלב החיבור");
   });
 
   it("refused with MIXED_BACKEND when the board is real but calibration would be simulated", async () => {
@@ -303,6 +351,57 @@ describe("accelerometer calibration", () => {
     const s = createWizardState();
     s.ext.sensors = { acc: false, baro: false, mag: null };
     expect("sensors" in toPlanModel(s.model, s.ext)).toBe(false);
+  });
+});
+
+describe("config rule: calibrate only before config_plan or after config_apply", () => {
+  it("calibrationBlock: plan pending / applying / after apply returned", () => {
+    const s = createWizardState();
+    expect(calibrationBlock(s)).toBeNull();
+    s.ui.script = { commands: ["save"], cleared: [], warnings: [] } as never;
+    expect(calibrationBlock(s)).toBe("planPending");
+    s.ui.applyStatus = "applying";
+    expect(calibrationBlock(s)).toBe("applying");
+    for (const st of ["verifying", "verified", "mismatch", "failed"] as const) {
+      s.ui.applyStatus = st;
+      expect(calibrationBlock(s)).toBeNull();
+    }
+  });
+
+  it("while config_apply runs, Calibrate is disabled with an explanation", async () => {
+    await open();
+    wizard.ui.script = { commands: ["save"], cleared: [], warnings: [] } as never;
+    wizard.ui.applyStatus = "applying";
+    await settle();
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeDefined();
+    expect(w!.get('[data-test="calibration-blocked-applying"]').text()).toContain("Settings are being written to the board");
+    wizard.ui.applyStatus = "verified"; // config_apply returned
+    await settle();
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeUndefined();
+    expect(wizard.ui.script).not.toBeNull(); // an applied plan is kept
+  });
+
+  it("a plan made while on the step blocks Calibrate (safety net)", async () => {
+    await open();
+    wizard.ui.script = { commands: ["save"], cleared: [], warnings: [] } as never;
+    await settle();
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeDefined();
+    expect(w!.find('[data-test="calibration-blocked-plan"]').exists()).toBe(true);
+  });
+
+  it("back from Review to Calibration drops the unapplied plan; Review plans again", async () => {
+    await open();
+    nav.currentId = "review";
+    await waitFor(() => wizard.ui.script !== null);
+    nav.currentId = "calibration";
+    await settle();
+    expect(wizard.ui.script).toBeNull();
+    expect(w!.get('[data-test="plan-dropped"]').text()).toContain("so that plan was dropped");
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeUndefined();
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done");
+    nav.currentId = "review";
+    await waitFor(() => wizard.ui.script !== null);
   });
 });
 

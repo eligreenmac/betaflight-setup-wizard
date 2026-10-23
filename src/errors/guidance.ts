@@ -11,6 +11,8 @@ export { isNotImplemented, toUiError, type UiError } from "./codes";
 export type GuidanceActionId =
   | "retry"
   | "reconnect"
+  | "rebootBoard"
+  | "goConnect"
   | "retryFlash"
   | "retryFullErase"
   | "installDriver"
@@ -46,6 +48,8 @@ export const HELP_LINKS = {
 const retry: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain", primary: true };
 const retry2: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain" };
 const reconnect: GuidanceAction = { id: "reconnect", labelKey: "actions.reconnect", primary: true };
+const rebootBoard: GuidanceAction = { id: "rebootBoard", labelKey: "actions.rebootBoard", primary: true };
+const goConnect: GuidanceAction = { id: "goConnect", labelKey: "actions.goConnect", primary: true };
 const retryFlash: GuidanceAction = { id: "retryFlash", labelKey: "actions.retryFlash", primary: true };
 const installDriver: GuidanceAction = { id: "installDriver", labelKey: "actions.installDriver", primary: true };
 const goFirmware: GuidanceAction = { id: "goFirmware", labelKey: "actions.goFirmware", primary: true };
@@ -98,7 +102,9 @@ const TABLE: Record<ErrorCode, Entry> = {
   ACC_NOT_AVAILABLE: { steps: 2, actions: [], warning: true },
   BOARD_MOVING: { steps: 2, actions: [retry] },
   ACC_CALIBRATION_FAILED: { steps: 2, actions: [retry] },
-  PENDING_UNSAVED_CHANGES: { steps: 2, actions: [reconnect, retry2] },
+  PENDING_UNSAVED_CHANGES: { steps: 2, actions: [rebootBoard, retry2] },
+  // Calibration step: go back to Connect after the power cycle. The Connect step hides goConnect.
+  REBOOT_NOT_CONFIRMED: { steps: 2, actions: [goConnect, retry2] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */

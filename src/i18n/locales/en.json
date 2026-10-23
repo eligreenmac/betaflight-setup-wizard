@@ -433,7 +433,10 @@
       "needed": "The board says its accelerometer has not been calibrated yet.",
       "savesNow": "The calibration is saved on the board right away, before you apply the other settings.",
       "unsaved": "The last apply did not finish, so the board may hold unsaved changes. Unplug the board, plug it back in and reconnect before you calibrate.",
-      "reconnecting": "Reconnecting…"
+      "rebooting": "Restarting the board…",
+      "blockedApplying": "Settings are being written to the board. Calibrate after that finishes.",
+      "blockedPlan": "A setup plan is ready but not applied yet. Apply it first, then calibrate.",
+      "planDiscarded": "You came back after reviewing the plan, so that plan was dropped. Calibrate if you need to; the plan will be made again on the Review step."
     },
     "orientation": {
       "title": "Is the board mounted the right way?",
@@ -730,7 +733,9 @@
     "openFirmwareHelp": "Firmware help",
     "reportIssue": "Report a problem",
     "technicalDetails": "Technical details",
-    "editComponents": "Change components"
+    "editComponents": "Change components",
+    "rebootBoard": "Reboot board",
+    "goConnect": "Go to Connect"
   },
   "validation": {
     "noBoard": "Connect a flight controller first.",
@@ -1011,9 +1016,15 @@
     },
     "PENDING_UNSAVED_CHANGES": {
       "title": "The board has unsaved changes",
-      "body": "The board has unsaved changes. Reconnect (or restart) the board, then try calibrating again.",
-      "step1": "Click Reconnect, or unplug the board and plug it back in. Nothing was calibrated or saved.",
-      "step2": "Then calibrate again."
+      "body": "The board has changes that were never saved, and calibrating now would save them too. Restart the board first: it will restart and nothing unsaved will be kept.",
+      "step1": "Click Reboot board. Your saved settings stay as they are; only the unsaved changes are dropped. Nothing was calibrated.",
+      "step2": "When the board is back, calibrate again."
+    },
+    "REBOOT_NOT_CONFIRMED": {
+      "title": "We couldn't confirm the board restarted",
+      "body": "We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.",
+      "step1": "Unplug the USB cable and the battery.",
+      "step2": "Wait a few seconds, plug them back in, and connect again."
     }
   },
   "driverReplace": {

@@ -107,9 +107,24 @@ export function sensorIssues(s: WizardState): Issue[] {
 /**
  * The flight controller may hold unsaved RAM changes after an apply that failed half-way.
  * Acc calibration saves to EEPROM (with any pending RAM changes), so it waits until the
- * board was reconnected (reconnecting resets applyStatus).
+ * board was reconnected (reconnecting resets applyStatus). A running apply is
+ * calibrationBlock's "applying".
  */
-export const mayHaveUnsavedChanges = (s: WizardState): boolean => s.ui.applyStatus === "applying" || s.ui.applyStatus === "failed";
+export const mayHaveUnsavedChanges = (s: WizardState): boolean => s.ui.applyStatus === "failed";
+
+/**
+ * Config rule: acc calibration only BEFORE config_plan or AFTER config_apply returned, never
+ * in between (the plan was made against the board as it was; calibrating saves the board's
+ * RAM config). "planPending" = Review made a plan that was not applied yet; "applying" =
+ * config_apply is running. The Calibration step drops a pending plan when it is entered
+ * (Review makes a new one on its next visit), so "planPending" is a safety net.
+ */
+export type CalibrationBlock = "planPending" | "applying" | null;
+export function calibrationBlock(s: WizardState): CalibrationBlock {
+  if (s.ui.applyStatus === "applying" || s.ui.applyStatus === "generating") return "applying";
+  if (s.ui.script !== null && s.ui.applyStatus === "idle") return "planPending";
+  return null;
+}
 
 /** Non-blocking warnings on the Calibration step (shown there and on Review). */
 export function calibrationWarnings(s: WizardState): Issue[] {

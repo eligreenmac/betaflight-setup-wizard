@@ -11,13 +11,14 @@ import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { sourceMismatch } from "../../api/fallback";
-import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
+import { ATTITUDE_START_COMMAND, attitudeToEuler, deviceRebootApi, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
 import ErrorPanel from "../../components/ErrorPanel.vue";
-import { toUiError, type UiError } from "../../errors/codes";
+import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
-import { accModeSwitches, calibrationWarnings, mayHaveUnsavedChanges, sensorIssues } from "../guards";
+import { accModeSwitches, calibrationBlock, calibrationWarnings, mayHaveUnsavedChanges, sensorIssues } from "../guards";
 import type { BoardAlignment } from "../modelExt";
 import { motorTest } from "../motorTest";
+import { goTo } from "../nav";
 import { ALIGNMENT_PRESETS, alignedAttitude, sameAlignment, tiltDirection, type Euler } from "../orientation";
 import { markDirty, wizard } from "../state";
 import { modeKeyOf } from "../switches";
@@ -38,6 +39,15 @@ const sensorsSimulated = computed(() => sourceMismatch(SENSORS_COMMAND));
 const warnings = computed(() => calibrationWarnings(wizard));
 const errors = computed(() => sensorIssues(wizard));
 const unsaved = computed(() => mayHaveUnsavedChanges(wizard));
+/** Config rule: calibrate only before config_plan or after config_apply returned (guards.ts). */
+const block = computed(() => calibrationBlock(wizard));
+// Back from Review with a plan that was not applied: drop it (Review plans again next time),
+// so calibrating never happens between config_plan and config_apply.
+const planDropped = ref(false);
+if (calibrationBlock(wizard) === "planPending") {
+  markDirty();
+  planDropped.value = true;
+}
 
 /** Only the touched sensor gets a value; the others stay null (= keep). */
 function setSensor(which: SensorKey, on: boolean): void {
@@ -75,7 +85,7 @@ async function loadSensors(): Promise<void> {
 const calError = ref<UiError | null>(null);
 async function calibrate(): Promise<void> {
   // Calibration saves to EEPROM together with any pending RAM change: never with unsaved changes.
-  if (wizard.ui.accCalibration === "running" || unsaved.value) return;
+  if (wizard.ui.accCalibration === "running" || unsaved.value || block.value !== null || rebooting.value) return;
   calError.value = null;
   wizard.ui.accCalibration = "running";
   const wasLive = live.value === "on";
@@ -92,38 +102,52 @@ async function calibrate(): Promise<void> {
 }
 
 /**
- * PENDING_UNSAVED_CHANGES (TODO(shared), errors/codes.ts): an earlier apply left unsaved
- * changes in the FC's RAM, and calibrating would save them too. Device clears it after a
- * confirmed reboot or reconnect: offer to reconnect to the same port right here.
+ * PENDING_UNSAVED_CHANGES (TODO(shared), errors/codes.ts): the FC's RAM may hold unsaved
+ * changes and calibrating would save them too. Only a confirmed reboot clears it (Device):
+ * "Reboot board" calls device_reboot (api/pending.ts wrapper). If the restart cannot be
+ * confirmed, the user has to power-cycle the board and connect again (REBOOT_NOT_CONFIRMED).
  */
-const reconnecting = ref(false);
-async function reconnectBoard(): Promise<void> {
-  const path = wizard.connectedPath;
-  if (!path || reconnecting.value) return;
-  reconnecting.value = true;
+const rebooting = ref(false);
+async function rebootBoard(): Promise<void> {
+  if (rebooting.value || wizard.ui.accCalibration === "running") return;
+  rebooting.value = true;
   const wasLive = live.value === "on";
+  // The reboot drops the port for a moment: pause the live view meanwhile.
   if (wasLive) await stopAttitude();
+  let ok = false;
   try {
-    try {
-      await api.device.disconnect();
-    } catch {
-      /* already gone */
-    }
-    await api.device.connect(path);
-    await api.device.identify();
+    await deviceRebootApi.reboot();
+    ok = true;
     calError.value = null;
     wizard.ui.accCalibration = "idle";
     await loadSensors();
   } catch (e) {
-    calError.value = toUiError(e);
+    const ue = toUiError(e);
+    calError.value = uiError("REBOOT_NOT_CONFIRMED", `device_reboot: ${ue.code}: ${ue.message}`);
     wizard.ui.accCalibration = "failed";
   } finally {
-    reconnecting.value = false;
+    rebooting.value = false;
   }
-  if (wasLive) await startAttitude();
+  // Not after a failed reboot: the board is in an unknown state until it is power-cycled.
+  if (wasLive && ok) await startAttitude();
+}
+/** After a power cycle the connection is gone: forget the board and go back to Connect. */
+async function goConnect(): Promise<void> {
+  if (live.value === "on") await stopAttitude();
+  try {
+    await api.device.disconnect();
+  } catch {
+    /* already gone */
+  }
+  wizard.fc = null;
+  wizard.ports = [];
+  wizard.connectedPath = null;
+  goTo("connect");
 }
 function onCalAction(id: GuidanceActionId): void {
-  if (id === "reconnect") void reconnectBoard();
+  if (id === "rebootBoard") void rebootBoard();
+  else if (id === "goConnect") void goConnect();
+  else if (calError.value?.code === "REBOOT_NOT_CONFIRMED") void rebootBoard();
   else void calibrate();
 }
 
@@ -288,7 +312,7 @@ onBeforeUnmount(() => {
           type="button"
           class="btn btn--primary"
           data-test="calibrate"
-          :disabled="wizard.ui.accCalibration === 'running' || !accOn || unsaved"
+          :disabled="wizard.ui.accCalibration === 'running' || !accOn || unsaved || block !== null || rebooting"
           @click="calibrate"
         >
           {{ wizard.ui.accCalibration === "failed" ? t("calibration.acc.retry") : t("calibration.acc.calibrate") }}
@@ -297,6 +321,9 @@ onBeforeUnmount(() => {
       <p class="hint" data-test="saves-now">{{ t("calibration.acc.savesNow") }}</p>
       <p v-if="!accOn" class="hint">{{ t("calibration.acc.accOff") }}</p>
       <p v-if="unsaved" class="callout callout--warn" data-test="unsaved-changes">{{ t("calibration.acc.unsaved") }}</p>
+      <p v-else-if="block === 'applying'" class="callout callout--warn" data-test="calibration-blocked-applying">{{ t("calibration.acc.blockedApplying") }}</p>
+      <p v-else-if="block === 'planPending'" class="callout callout--warn" data-test="calibration-blocked-plan">{{ t("calibration.acc.blockedPlan") }}</p>
+      <p v-if="planDropped && !block" class="hint" data-test="plan-dropped">{{ t("calibration.acc.planDiscarded") }}</p>
       <p v-if="sensors?.accCalibrated === false && wizard.ui.accCalibration !== 'done'" class="callout callout--warn" data-test="needs-calibration">
         {{ t("calibration.acc.needed") }}
       </p>
@@ -306,9 +333,12 @@ onBeforeUnmount(() => {
       </p>
       <p v-else-if="wizard.ui.accCalibration === 'done'" class="callout callout--ok" role="status" data-test="calibrated">{{ t("calibration.acc.done") }}</p>
       <template v-else-if="wizard.ui.accCalibration === 'failed' && calError">
-        <ErrorPanel :error="calError" :busy="reconnecting" @action="onCalAction" />
-        <p v-if="reconnecting" class="hint" role="status" data-test="reconnecting">{{ t("calibration.acc.reconnecting") }}</p>
-        <p v-if="calError.code !== 'PENDING_UNSAVED_CHANGES'" class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
+        <ErrorPanel :error="calError" :busy="rebooting" @action="onCalAction" />
+        <p v-if="rebooting" class="callout busy-row" role="status" data-test="rebooting">
+          <span class="spinner" aria-hidden="true" />
+          {{ t("calibration.acc.rebooting") }}
+        </p>
+        <p v-if="!['PENDING_UNSAVED_CHANGES', 'REBOOT_NOT_CONFIRMED'].includes(calError.code)" class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
       </template>
       <p class="hint">{{ t("calibration.acc.optional") }}</p>
     </section>

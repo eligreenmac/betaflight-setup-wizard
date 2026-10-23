@@ -61,19 +61,23 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
  * of the setup, in the MVP mostly the receiver (an SPI protocol other than ExpressLRS,
  * or no onboard SPI receiver, ARCHITECTURE §5.1). MIXED_BACKEND is the demo-fallback
  * safety stop: a write would combine simulated and real data (api/fallback.ts), so
- * nothing was sent. UNKNOWN is the catch-all.
+ * nothing was sent. REBOOT_NOT_CONFIRMED: the board was asked to restart to drop unsaved
+ * changes (device_reboot, or device_connect's own reboot answering PENDING_UNSAVED_CHANGES)
+ * and the restart could not be confirmed; the user must power-cycle it. UNKNOWN is the catch-all.
  */
-export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "UNKNOWN"] as const;
+export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "REBOOT_NOT_CONFIRMED", "UNKNOWN"] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 /**
  * Backend codes outside the DESIGN.md §6 table.
  * device_acc_calibrate (#63 §2.3, in AppErrorCode): ACC_NOT_AVAILABLE {present, enabled} =
  * accelerometer missing or disabled; BOARD_MOVING {maxRateDps, limitDps, during} = not still
  * (during: the bad result is already stored); ACC_CALIBRATION_FAILED = the FC never finished.
- * TODO(shared): PENDING_UNSAVED_CHANGES {reason} is new from Device and not in AppErrorCode
- * (src/types/model.ts) yet; handled here as a UI-side string code. device_acc_calibrate
- * rejects with it when an earlier config apply left unsaved changes in the FC's RAM and no
- * confirmed reboot / reconnect happened since (the calibration would save them too).
+ * TODO(shared): PENDING_UNSAVED_CHANGES {reason} (shared #68, Device #69) is not on main
+ * (AppErrorCode in src/types/model.ts) yet; handled here as a UI-side string code with the
+ * #68 details mirrored below. device_acc_calibrate rejects with it (checked first) while the
+ * FC's RAM may hold unsaved changes, because calibrating saves the whole RAM config. Only a
+ * confirmed reboot clears it (device_reboot, api/pending.ts). device_connect may surface it
+ * too when the board could not be restarted.
  */
 export const PENDING_ERROR_CODES = {
   ACC_NOT_AVAILABLE: "Device",
@@ -82,6 +86,11 @@ export const PENDING_ERROR_CODES = {
   PENDING_UNSAVED_CHANGES: "Safety",
 } as const satisfies Record<string, ErrorCategory>;
 export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
+/** TODO(shared): mirror of #68's UnsavedChangesReason / PendingUnsavedChangesDetails (src/types/model.ts). */
+export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE";
+export interface PendingUnsavedChangesDetails {
+  reason: UnsavedChangesReason;
+}
 export type ErrorCode = DesignErrorCode | UiOnlyCode | PendingErrorCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES, ...(Object.keys(PENDING_ERROR_CODES) as PendingErrorCode[])];
 
@@ -105,7 +114,7 @@ export interface UiError {
   category: ErrorCategory;
   message: string;
   /** Structured extras from AppError (#38): PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail}. */
-  details?: PortBusyDetails | DriverMissingDetails;
+  details?: PortBusyDetails | DriverMissingDetails | PendingUnsavedChangesDetails;
 }
 
 export const isPortBusyDetails = (d: unknown): d is PortBusyDetails =>
@@ -117,6 +126,7 @@ export function isErrorCode(code: string): code is ErrorCode {
 
 export function categoryOf(code: ErrorCode): ErrorCategory {
   if (code === "MIXED_BACKEND") return "Safety";
+  if (code === "REBOOT_NOT_CONFIRMED") return "Connection";
   if (code in PENDING_ERROR_CODES) return PENDING_ERROR_CODES[code as PendingErrorCode];
   return code in ERROR_CODE_CATEGORY ? ERROR_CODE_CATEGORY[code as DesignErrorCode] : "Operation";
 }
