@@ -1,0 +1,142 @@
+# Packaging, drivers and CI (workstream `packaging`)
+
+Owner: `feat/packaging`. Code: `src-tauri/src/system/**`, `src-tauri/drivers/`,
+`src-tauri/tauri.conf.json`, `.github/**`.
+
+## 1. WinUSB for DFU (issue #26)
+
+Flashing over USB DFU needs the **WinUSB** driver bound to the MCU ROM bootloader.
+Windows binds nothing to these IDs by itself:
+
+| MCU | DFU VID:PID |
+|---|---|
+| STM32 (MVP) | `0483:DF11` |
+| AT32F435 (MVP) | `2E3C:DF11` |
+| APM32 | `314B:0106` |
+| GD32 | `28E9:0189` |
+| X32 | `3797:DF11` |
+
+(Source: Betaflight App `src/js/protocols/devices.ts`; table in
+`src-tauri/src/system/usb_drivers.rs`.)
+
+### Chosen approach: libwdi `wdi-simple`, built in CI, started elevated on demand
+
+- **Detect first, unelevated** (`system_driver_status`): SetupAPI lists present
+  `USB\VID_xxxx&PID_yyyy` device nodes with their bound service (`SPDRP_SERVICE`) and
+  Device Manager problem code. A DFU device is OK only if bound to `WinUSB` with no
+  problem. Another driver (e.g. ST's DfuSe `STTub30`, libusb0) or none →
+  `action = INSTALL_DFU_DRIVER`; with another driver bound, `replacesDriver = true`
+  (WinUSB will replace it, so the UI warns first).
+- **Install only when needed** (`system_install_dfu_driver`): one
+  `ShellExecuteExW("runas")` of Windows PowerShell (`<System32>\WindowsPowerShell\v1.0\
+  powershell.exe`, found via `GetSystemDirectoryW`) → **one UAC prompt** for all DFU
+  VID:PIDs that need it. The elevated script (`src-tauri/src/system/install_script.rs`):
+  1. creates a fresh `%ProgramData%\BFSW-WinUSB-<run id>` with a protected DACL
+     `O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` (SYSTEM + Administrators only), and
+     refuses to continue if it already existed, is a reparse point, its owner/ACL is
+     anything else, or it is not empty;
+  2. copies `<resources>/drivers/bfsw-wdi-simple.exe` into it and runs it from there,
+     once per VID:PID with `--dest <dir>\<vid>_<pid>` (stops at the first failure);
+  3. always deletes the folder (only if it created and verified it).
+  Driver files are therefore never extracted to the user-writable `%TEMP%`, where
+  unelevated code could swap the `.inf/.cat`/co-installer between extraction and
+  install. The main app never runs elevated. Afterwards the status is re-read; the
+  command fails with `DRIVER` if a device is still not on WinUSB, the user declined
+  UAC, the folder checks failed, or libwdi returned an error (message includes the
+  libwdi error text). Note: the UAC prompt shows "Windows PowerShell" (Microsoft)
+  rather than the unsigned helper.
+- **Helper** = libwdi's unmodified `wdi-simple` example, v1.5.1 (commit pinned), built
+  by `.github/actions/build-wdi-simple` on `windows-latest` with MSVC exactly like
+  libwdi's own VS2022 CI (WDK 8.0 redistributable for the WinUSB co-installers),
+  WinUSB-only (libusb-win32/libusbK payloads disabled) and x86/x64-only (ARM64 installer
+  disabled: hosted runners lack the v143 ARM64 tools and the app ships x64 only). The
+  result is cached by commit. The WDK redist MSI is pinned by SHA256
+  (`wdk-redist-sha256` input,
+  `29314207814ce9d5d73695f7e9239539cf37c79e750b9d5ea5a5ef5487a583d6`, Authenticode
+  "Microsoft Corporation" 2012); the build fails hard on a mismatch. Nothing is
+  downloaded at runtime: the co-installers are embedded in the helper at build time.
+  Command line: `--vid 0x0483 --pid 0xDF11 --type 0 --name "... (Betaflight Setup
+  Wizard)" --inf bfsw_0483_df11.inf --dest %ProgramData%\BFSW-WinUSB-<id>\0483_df11
+  --silent --timeout 120000`.
+- The exe is **not committed**; `src-tauri/drivers/*` is bundled as Tauri resources,
+  and CI fails if the NSIS installer does not contain it.
+
+Why not the alternatives:
+- *Pre-signed driver package (INF + CAT)*: on x64 Windows a catalog must be signed by
+  a certificate chained to a trusted root; an INF referencing inbox `winusb.inf` still
+  needs a signed catalog. That needs an EV certificate + Microsoft attestation signing
+  (not available yet; revisit with code signing in phase 3).
+- *libwdi as a Rust FFI dependency inside the app*: would make the main exe a combined
+  LGPL work and require relinking provisions; a separate helper exe is simpler and
+  keeps the app unelevated.
+- *Bundling Zadig / ImpulseRC Driver Fixer*: UI tools, not scriptable/silent; the
+  latter is closed source.
+
+What libwdi does on the user's PC: generates an `.inf/.cat` for the device, creates a
+self-signed certificate, adds it to the machine's Trusted Root/Trusted Publisher stores
+(private key discarded), and installs the driver package (same as Zadig).
+
+### LGPL-3.0 obligations for the helper
+
+`wdi-simple` and libwdi are LGPL-3.0-or-later. We distribute the helper as a separate
+program, so:
+
+1. Ship the license texts and a notice with it → `src-tauri/drivers/LIBWDI-NOTICE.txt`,
+   `COPYING.LGPL-3.0.txt`, `COPYING.GPL-3.0.txt` (bundled next to the exe).
+2. Provide the Corresponding Source → upstream tag + **`libwdi-v1.5.1-source.zip`
+   attached to every GitHub release** by the release workflow (issue #28), plus our
+   build recipe (the composite action) in this repo.
+3. Allow replacement → the app only executes the helper by path; users can rebuild
+   and swap it.
+4. When bumping libwdi: update the `libwdi-ref`/`libwdi-commit` inputs, the notice
+   file, and the release workflow's source archive in the same PR.
+
+## 2. USB-UART bridges: CP210x / CH34x (guidance only)
+
+Their vendor drivers are not ours to redistribute. `system_driver_status` returns:
+
+- `devices[]` entries with `kind = USB_UART_BRIDGE`; when no driver is bound (or the
+  device has a problem code) `action = VENDOR_DOWNLOAD` and `guidanceIndex` points
+  into `guidance[]`;
+- `guidance[]` (always filled, also for the "nothing detected" help screen):
+
+| id | Vendor | IDs | Official page |
+|---|---|---|---|
+| `CP210X` | Silicon Labs | 10C4:EA60, EA61, EA62, EA70, EA71 | https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers |
+| `CH34X` | WCH | 1A86:7522, 7523, 7584, 5523 | https://www.wch-ic.com/downloads/CH341SER_EXE.html |
+| `CH343` | WCH | 1A86:55D3, 55D4 | https://www.wch-ic.com/downloads/CH343SER_EXE.html |
+
+### For the UI (`src/api` already exposes these)
+
+```ts
+const s = await api.system.driverStatus();
+for (const d of s.devices.filter(d => !d.driverOk)) {
+  switch (d.action) {
+    case "INSTALL_DFU_DRIVER": // if d.replacesDriver: warn "replaces <d.service>" + confirm first
+      /* button → */ await api.system.installDfuDriver(); break;
+    case "VENDOR_DOWNLOAD":    /* show */ s.guidance[d.guidanceIndex!]; break; // open downloadUrl in the system browser
+    case "REPLUG":             /* "unplug and replug / check Device Manager" */ break;
+  }
+}
+```
+
+- Use `guidance[i].id` for i18n keys (e.g. `drivers.guidance.CP210X`); `vendor`,
+  `chips`, `downloadUrl` are data, not translations. `notes` are English diagnostics.
+- `replacesDriver = true` (DFU device currently bound to another driver, e.g.
+  `STTub30` from ST DfuSe/older CubeProgrammer, or libusb0): show a warning naming
+  `service` and require explicit confirmation before `installDfuDriver()`; tools that
+  depend on that driver stop working with the board until it is switched back in
+  Device Manager.
+- `installDfuDriver()` may take a while (UAC + driver install, up to minutes); show a
+  spinner and handle `{code: "DRIVER"}` (declined UAC or failure) with a retry.
+- Open `downloadUrl` with `openExternal()` from `src/api/opener.ts`. Its allow-list
+  (and `opener:allow-open-url` in `src-tauri/capabilities/default.json`) does not yet
+  include `https://www.silabs.com/*` and `https://www.wch-ic.com/*`; adding them is a
+  small `shared` follow-up (both lists must change together).
+- Non-Windows: `dfuWinusb = vcp = true`, `devices = []`.
+
+## 3. CI (issue #25)
+
+`.github/workflows/build.yml`: windows-latest (helper build, `npm ci/test/build`,
+`cargo test`, `tauri build` NSIS+MSI, installer check, artifacts) and ubuntu
+(`cargo fmt/check/test`). All actions run on Node 24.
