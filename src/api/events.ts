@@ -3,7 +3,9 @@
 // demo mode swap in an in-memory source with setEventSource().
 
 import { listen } from "@tauri-apps/api/event";
-import type { ConfigProgress, FlashProgress, MotorTestStopped, RcChannels, RcStopped } from "../types/model";
+import type {
+  Attitude, AttitudeStopped, ConfigProgress, FlashProgress, MotorTestStopped, RcChannels, RcStopped,
+} from "../types/model";
 import { EVENTS } from "./commands";
 
 export interface EventMap {
@@ -12,6 +14,8 @@ export interface EventMap {
   [EVENTS.motorTestStopped]: MotorTestStopped;
   [EVENTS.rcChannels]: RcChannels;
   [EVENTS.rcStopped]: RcStopped;
+  [EVENTS.attitude]: Attitude;
+  [EVENTS.attitudeStopped]: AttitudeStopped;
 }
 export type EventName = keyof EventMap;
 export type Unlisten = () => void;

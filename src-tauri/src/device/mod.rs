@@ -6,6 +6,7 @@
 //!   - `ConnectionManager` (Tauri managed state, device PR) lends `&mut dyn FcLink`
 //!     (`Connection` + `Reconnect`, below) to config/flasher; see ARCHITECTURE.md §4.1.
 
+pub mod attitude;
 pub mod cli;
 #[cfg(test)]
 mod cli_state_tests;
@@ -18,6 +19,7 @@ pub mod motor;
 pub mod msp;
 pub mod rc;
 pub mod rx_spi;
+pub mod sensors;
 pub mod serial;
 pub mod serial_ports;
 pub mod usb_ids;
@@ -33,6 +35,10 @@ pub const MOTOR_TEST_STOPPED_EVENT: &str = "device://motor-test-stopped";
 pub const RC_CHANNELS_EVENT: &str = "device://rc-channels";
 /// Payload `RcStopped`.
 pub const RC_STOPPED_EVENT: &str = "device://rc-stopped";
+/// Payload `Attitude`.
+pub const ATTITUDE_EVENT: &str = "device://attitude";
+/// Payload `AttitudeStopped`.
+pub const ATTITUDE_STOPPED_EVENT: &str = "device://attitude-stopped";
 
 /// Abstraction over an open FC link so config/flasher can be unit-tested
 /// against a mock (see config tests).

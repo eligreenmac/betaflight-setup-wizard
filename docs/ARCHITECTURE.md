@@ -75,6 +75,22 @@ Enums:
   The MVP config engine rejects `SOFTSERIAL*` (no soft serial in MVP).
 - `receiver.telemetry` defaults to `true`. Per-motor DShot direction reversal is phase 2 and not in the model.
 
+Optional fields (all 4.4 / 4.5 / 2025.12; `null` or absent = **keep the FC's current value**, nothing
+is written; the generator rejects out-of-range values with `CONFIG`, nothing sent):
+
+| Field | CLI | Rule |
+|---|---|---|
+| `extras.craftName` | `set craft_name = …` | 1–16 chars of printable ASCII (0x20–0x7E) except `#` and `?`, no leading/trailing space, not exactly `-`; `""` clears it (written as `-`). One rule: schema `pattern` = `model::CRAFT_NAME_PATTERN` = `CRAFT_NAME_PATTERN` in model.ts (tests compare them over `schemas/fixtures/craft-name-cases.json`). Why: craft_name is MODE_STRING 1..16 (`MAX_NAME_LENGTH`); the CLI only buffers 0x20–0x7E, cuts the line at `#` (comment), treats `?` as help in the interactive CLI that MSP opens, strips trailing spaces and skips leading ones, and reads exactly `-` as empty. |
+| `vtx.table` | `vtxtable …` | ≤ 8 bands, 8 channels, 8 power levels; band name ≤ 8 chars, power label ≤ 3; frequencies ≤ 5999 MHz (0 = unused); same channel count for every band (`drivers/vtx_table.h`). `null` keeps the FC's table. |
+| `vtx.band`, `vtx.channel` | `vtx_band`, `vtx_channel` | 1–8, 1-based into the table (written or the FC's). |
+| `vtx.power` | `vtx_power` | **1–7**, 1-based into `table.powerLevels` (0 = unknown, never written). The CLI range is `0..VTX_TABLE_MAX_POWER_LEVELS-1`, so the 8th level of an 8-level table can't be selected with the CLI. It must also be ≤ the table's level count. |
+| `esc.idle` | 2025.12 `motor_idle`; 4.4/4.5 `dshot_idle_value` | 0–2000 in 0.01 % (550 = 5.5 %). On 4.4/4.5 it is DShot-only (warning, not written, for analog protocols). |
+| `esc.motorOrder` | `motor_output_reordering` | Item *i* = 0-based output for motor *i+1*; must be a permutation of `0..n` (n ≤ the FC's list length, 8). Remaining slots keep identity. |
+| `gps.galileo` | `gps_ublox_use_galileo` | UBLOX only (warning, not written, for NMEA). |
+| `gps.sbasMode` | `gps_sbas_mode` | AUTO \| EGNOS \| WAAS \| MSAS \| GAGAN \| NONE. |
+
+The `gps.*` fields only apply when `gps.enabled`.
+
 #### 2.1.1 Model batch 2: modes, beepers, sensors, board alignment, OSD (shape; implementation follows)
 
 All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless noted. **null or absent = keep the FC's current state**; nothing is written for them. Sources: Betaflight `src/main` at tags 4.4.3, 4.5.5 and 2025.12.5.
@@ -122,7 +138,9 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
   - With ACC off, the firmware hides ANGLE, HORIZON, HEADFREE and ACRO TRAINER (plus ALTHOLD and POSHOLD on 2025.12). Failsafe and GPS rescue can't self-level, because angle mode requires `sensors(SENSOR_ACC)` (`fc/core.c`). So `acc: false` together with an ANGLE, HORIZON, ALTHOLD, POSHOLD or GPS RESCUE switch is a `CONFIG` error.
   - `baro: false` with ALTHOLD gives a warning: ALTHOLD can fall back to GPS altitude.
   - Turning ACC on needs an accelerometer calibration before arming (Device's `device_acc_calibrate`).
-- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on all three lines (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device should report them under the same names (`roll` / `pitch` / `yaw`) and the same units.
+  - Device's `SensorState.configuredHardware` reads the same settings: `NONE` = `false` (disabled), anything else = `true`.
+  - **Calibration is never interleaved with a config batch.** The firmware saves the whole config to flash when an ACC calibration finishes. So the UI runs `device_acc_calibrate` only after `config_apply` has returned (saved, rebooted, reconnected), or before `config_plan`, never between them. The config script doesn't rely on unsaved RAM state outside its own batch: every batch ends in `save` + reboot (or `exit`), and the batch holds the port, so a calibration can't start mid-batch (`PORT_BUSY`).
+- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on all three lines (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device reports them as `SensorAlignment.boardRollDeg` / `boardPitchDeg` / `boardYawDeg` (signed whole degrees, #63), which are the same values as `boardAlignment.roll` / `pitch` / `yaw`.
 - **`osd`.**
   - **Setting `osd` writes:**
     - always: `feature OSD`;
@@ -157,7 +175,12 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
 `ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
 `DriverStatus`, `UsbDriverInfo`, `UsbDeviceKind`, `DriverAction`, `DriverGuidance`, `AppInfo`,
 `MotorTestLimits {maxThrottle, watchdogMs}`, `MotorOutputConfig`, `MotorTestSession`,
-`MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`.
+`MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`,
+`SensorStatus {gyro, acc, baro, mag: SensorState, accCalibrated, alignment}`,
+`SensorState {present, enabled, configuredHardware, detectedHardware}`,
+`SensorAlignment {boardRollDeg, boardPitchDeg, boardYawDeg, gyroAlignment}`,
+`AccCalibrationResult {durationMs, completion: CALIBRATING_FLAG|FIXED_WAIT, maxGyroRateDps}`,
+`Attitude {seq, timestampMs, roll, pitch, yaw}`, `AttitudeStopped {reason, error}` (§4.3).
 
 `DriverStatus` (from `system_driver_status`, Windows; all-OK and empty on other OSes):
 
@@ -209,8 +232,11 @@ plus the device/flasher codes:
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
 | `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |
-| `BOARD_ARMED` | FC is armed at motor-test start (or became armed) | – | "Disarm first" |
+| `BOARD_ARMED` | FC is armed at motor-test start (or became armed), or at `device_acc_calibrate` (nothing sent) | – | "Disarm first" |
 | `MOTOR_TEST_NOT_ACTIVE` | Keepalive after the test stopped (watchdog, armed, disconnect) | – | Reset the motor-test UI |
+| `ACC_NOT_AVAILABLE` | `device_acc_calibrate`: no accelerometer detected, or disabled (`acc_hardware = NONE`), or firmware built without one; nothing was sent | `{ present: boolean, enabled: boolean }` | `enabled: false`: "The accelerometer is turned off"; else "No accelerometer found" (skip the level step) |
+| `BOARD_MOVING` | `device_acc_calibrate`: gyro rate above the limit (§4.3). `during: false`: checked before, nothing was sent. `during: true`: moved while calibrating, the FC already stored the (bad) result | `{ maxRateDps: number, limitDps: number, during: boolean }` | "Put the drone down level and keep it still", then retry |
+| `ACC_CALIBRATION_FAILED` | `device_acc_calibrate`: the FC still reports calibrating after 4 s, or still reports "accelerometer needs calibration" afterwards | – | Retry; then suggest a power cycle |
 
 Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
 `DRIVER` stays for driver-installation failures (packaging).
@@ -240,6 +266,11 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_motor_test_stop` | – | – (all motors to stop) | device |
 | `device_rc_stream_start` | `rateHz: number\|null` (15, clamped 1–50) | – (events) | device |
 | `device_rc_stream_stop` | – | – | device |
+| `device_sensors` | – | `SensorStatus` (read-only; §4.3) | device |
+| `device_acc_calibrate` | – | `AccCalibrationResult`, resolves when the FC is done (§4.3) | device |
+| `device_get_attitude` | – | `Attitude` (one sample, `seq` = `timestampMs` = 0) | device |
+| `device_attitude_stream_start` | `rateHz: number\|null` (10, clamped 1–30) | – (events) | device |
+| `device_attitude_stream_stop` | – | – | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
@@ -275,6 +306,8 @@ Events (named `<module>://<name>`):
 | `device://motor-test-stopped` | `MotorTestStopped {reason: REQUESTED\|WATCHDOG\|ARMED\|DISCONNECTED\|APP_CLOSING\|ERROR, error: AppError\|null}` |
 | `device://rc-channels` | `RcChannels {seq, timestampMs, channels: number[]}` |
 | `device://rc-stopped` | `RcStopped {reason: REQUESTED\|DISCONNECTED\|ERROR, error: AppError\|null}` |
+| `device://attitude` | `Attitude {seq, timestampMs, roll, pitch, yaw}` (degrees, §4.3) |
+| `device://attitude-stopped` | `AttitudeStopped {reason: REQUESTED\|DISCONNECTED\|ERROR, error: AppError\|null}` |
 
 ## 4. Rust interfaces between modules
 
@@ -379,6 +412,68 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
 Until `device` lands, `config` tests use a `MockConnection` that replays recorded CLI
 transcripts (put fixtures in `src-tauri/tests/fixtures/<firmware>/`).
 
+### 4.3 Sensors, accelerometer calibration and attitude (device)
+
+Read-only except `MSP_ACC_CALIBRATION`. Writing sensor enables (`acc_hardware` …) or the board
+/ sensor alignment belongs to the config engine; device sends no such command. Line references
+are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
+
+- **`device_sensors`** — `MSP_API_VERSION`, `MSP_STATUS_EX` (`MSP_STATUS` fallback),
+  `MSP_SENSOR_CONFIG` (96), `MSP2_SENSOR_CONFIG_ACTIVE` (0x300A, 4.5+ only), `MSP_BOARD_INFO`,
+  `MSP_BOARD_ALIGNMENT_CONFIG` (38), `MSP_SENSOR_ALIGNMENT` (126).
+  `present` = the `MSP_STATUS` sensor bit (ACC 0, BARO 1, MAG 2, GYRO 5): detected at boot and
+  running; a sensor disabled in the config is never initialised, so it is never present.
+  `enabled` = configured hardware ≠ `NONE` (gyro: always true). Hardware names use the
+  firmware's lookup tables for the connected API version (they differ between 4.4, 4.5 and
+  2025.12). `accCalibrated` = `MSP_BOARD_INFO` configuration problem bit 0
+  (`PROBLEM_ACC_NEEDS_CALIBRATION`) clear. Optional parts the firmware does not answer are
+  `null`.
+- **`device_acc_calibrate`** (holds the port for the whole run; others get `PORT_BUSY`):
+  1. Refuse `BOARD_ARMED` if armed. Betaflight itself ignores the request while armed but still
+     ACKs it (msp.c 3238 / 3285 / 3314: `if (!ARMING_FLAG(ARMED)) accStartCalibration();`).
+  2. Refuse `ACC_NOT_AVAILABLE {present, enabled}` if the ACC bit is clear or `acc_hardware =
+     NONE` (also if the FC rejects the command, i.e. no `USE_ACC`).
+  3. **Moving check**: 5 × `MSP_RAW_IMU` (gyro in deg/s) 40 ms apart; any axis > 8 °/s →
+     `BOARD_MOVING {during: false}`, nothing sent. This catches handling/rotation, **not** a
+     board that is still but not level, or slow sliding; the UI must still ask for a flat, level
+     surface. (Accelerometer data is not used: it reads zero during calibration and its scale
+     differs per sensor.)
+  4. Send `MSP_ACC_CALIBRATION` (205). The FC averages 400 acc samples
+     (`CALIBRATING_ACC_CYCLES`, acceleration_init.c 97 / 100 / 78) at the acc task rate
+     (≈1 kHz), so ≈0.4–0.5 s.
+  5. **Completion**: poll `MSP_STATUS_EX` every 50 ms; `ARMING_DISABLED_CALIBRATING` (bit 12) is
+     set while any sensor calibrates (core.c `updateArmingStatus`, 4.5.5:335-337). Seen set then
+     clear → `completion: CALIBRATING_FLAG`. If the flag cannot be used (no STATUS_EX, already
+     set by another sensor such as a baro, or never caught) → wait 2 s like Configurator
+     (`ACC_CALIBRATION_TIMEOUT_MS`) → `FIXED_WAIT`. Still set after 4 s →
+     `ACC_CALIBRATION_FAILED`. Polls that time out while the FC writes its EEPROM are ignored.
+     Gyro is sampled during the wait; > 8 °/s → `BOARD_MOVING {during: true}` (calibrate again).
+  6. Re-read `MSP_BOARD_INFO`; "acc needs calibration" still set → `ACC_CALIBRATION_FAILED`.
+  - **Auto-save**: the FC saves by itself. The last calibration cycle sets the trims and calls
+    `saveConfigAndNotify()` (acceleration_init.c 4.4.3:445-455, 4.5.5:461-471,
+    2025.12.5:428-438) = `writeEEPROM(); readEEPROM(); beeperConfirmationBeeps(1);` (config.c
+    786 / 826 / 738). Side effect: **any other unsaved MSP change in RAM is saved too**. CLI
+    changes cannot be pending (device leaves the CLI with `exit` before MSP).
+  - `MSP_MAG_CALIBRATION` is not offered: it needs the craft rotated in all directions for 30 s
+    and the algorithm/completion differs between 4.4 and 4.5+ (compass.c).
+- **Attitude** — `MSP_ATTITUDE` (108): roll and pitch int16 decidegrees, yaw int16 whole degrees
+  0..359 (msp.c 1332 / 1324 / 1323); sent as `f32` degrees with Betaflight's signs unchanged
+  (Configurator's 3D model rotates by (−pitch, −yaw, −roll)). Signs: **roll + = right side
+  down, pitch + = nose DOWN, yaw = heading, + = nose right** (imu.c 311-313; osd_elements.c
+  2025.12.5:801 / 4.5.5:765 `pitch > 0 //nose down`; pid.c angle mode uses stick-sign error
+  `angleTarget - attitude`, so pitch stick forward = nose down = positive). `device_attitude_stream_start`
+  lends the port to a worker exactly like the RC stream: default 10 Hz, clamped 1–30;
+  idempotent while running; motor test, RC stream and attitude stream are mutually exclusive
+  (`PORT_BUSY {heldBy: "APP"}`); it ends with `device://attitude-stopped` on
+  `device_attitude_stream_stop` / `device_disconnect` / app close (`REQUESTED`), port loss
+  (`DISCONNECTED`) or 5 unanswered polls / another error (`ERROR`).
+- **Board alignment is not live**: `MSP_SET_BOARD_ALIGNMENT_CONFIG` (39) only writes the
+  parameter group (msp.c 3640-3644 / 3689-3693 / 3728-3732). The rotation matrix is built by
+  `initBoardAlignment()` (boardalignment.c 51 / 66 / 64), which is called only from
+  `fc/init.c` at boot (707 / 676 / 661), not from `activateConfig()`. So `MSP_ATTITUDE` reflects a
+  new alignment only after save + reboot; a live "unsaved preview" must be done in the UI by
+  rotating the displayed attitude.
+
 ## 5. Firmware dialects (config)
 
 | Concern | 4.4 / 4.5 | 2025.12+ |
@@ -414,12 +509,16 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
 - **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
   backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
-  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's, or if
+  the backup's `boardUid` and the FC's UID (`FcLink::uid()`) are both known and differ (`CONFIG`, nothing sent).
+  The backup is always resolved by `id` inside the backups folder; the `path` field sent by the UI
+  is never opened.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
   for the UI's "open backups folder" action. `<boardUid>` is `FcInfo.uid`, i.e. the 24-char
   `mcu_id` hex (e.g. `backups/0033002b3138510b32383733/`), so the folder matches what
-  `mcu_id` prints in the CLI; `unknown` if MSP_UID failed.
+  `mcu_id` prints in the CLI. Config takes it from `FcLink::uid()` (cached by Device at connect, no
+  I/O; config never runs the `mcu_id` command); `unknown` if that is `None` (MSP_UID failed).
 - **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
   → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
   `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.

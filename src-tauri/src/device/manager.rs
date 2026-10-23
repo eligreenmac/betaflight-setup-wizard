@@ -3,9 +3,10 @@
 //!
 //! One [`ConnectionManager`] lives in Tauri managed state and owns the single open FC port.
 //! Callers borrow the link with [`ConnectionManager::with_link`]; a second caller while the
-//! link is borrowed (or lent to the motor-test / RC-stream worker) gets
+//! link is borrowed (or lent to the motor-test / RC-stream / attitude-stream worker) gets
 //! `PORT_BUSY {heldBy: "APP"}`.
 
+use super::attitude::{self, AttitudeStream, AttitudeStreamEvent, AttitudeStreamOptions};
 use super::cli::{BootloaderTarget, CliOptions, CliSession};
 use super::error::{DeviceError, Result as DResult};
 use super::motor::{
@@ -13,12 +14,14 @@ use super::motor::{
 };
 use super::msp::{ApiVersion, FcIdentity, MspClient, RebootType, Uid};
 use super::rc::{RcStopReason as DevRcStop, RcStream, RcStreamEvent, RcStreamOptions};
+use super::sensors::{self, AccCalibrationOptions};
 use super::serial::{SerialConfig as OpenConfig, SerialLink, SystemSerial};
 use super::{usb_ids, Connection, FcLink, Reconnect};
 use crate::error::{AppError, AppResult, PortHolder};
 use crate::model::{
-    FcInfo, FcSerialPort, HostPort, MotorOutputConfig, MotorTestLimits, MotorTestSession,
-    MotorTestStopReason, MotorTestStopped, RcChannels, RcStopReason, RcStopped, RxSpiInfo,
+    AccCalibrationResult, Attitude, AttitudeStopped, FcInfo, FcSerialPort, HostPort,
+    MotorOutputConfig, MotorTestLimits, MotorTestSession, MotorTestStopReason, MotorTestStopped,
+    RcChannels, RcStopReason, RcStopped, RxSpiInfo, SensorStatus,
 };
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
@@ -637,11 +640,17 @@ struct RcSlot {
     stream: RcStream<BoxLink>,
 }
 
+struct AttitudeSlot {
+    conn: FcConnection,
+    stream: AttitudeStream<BoxLink>,
+}
+
 enum Slot {
     Empty,
     Idle(FcConnection),
     MotorTest(MotorSlot),
     Rc(RcSlot),
+    Attitude(AttitudeSlot),
 }
 
 /// The single owner of the FC port. Put it in Tauri state:
@@ -658,6 +667,7 @@ pub struct ConnectionManager {
     lister: Lister,
     poll: Duration,
     msp_timeout: Duration,
+    acc_calibration: AccCalibrationOptions,
 }
 
 impl Default for ConnectionManager {
@@ -676,6 +686,7 @@ impl ConnectionManager {
             lister,
             poll: Duration::from_millis(200),
             msp_timeout: Duration::from_secs(1),
+            acc_calibration: AccCalibrationOptions::default(),
         }
     }
 
@@ -688,6 +699,12 @@ impl ConnectionManager {
     /// MSP response timeout for the connection's own requests (tests use a short one).
     pub fn with_msp_timeout(mut self, t: Duration) -> Self {
         self.msp_timeout = t;
+        self
+    }
+
+    /// Timing of `acc_calibrate` (tests use short waits).
+    pub fn with_acc_calibration(mut self, o: AccCalibrationOptions) -> Self {
+        self.acc_calibration = o;
         self
     }
 
@@ -730,7 +747,7 @@ impl ConnectionManager {
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
             Slot::Idle(c) => f(c),
-            Slot::MotorTest(_) | Slot::Rc(_) => Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
         }
     }
 
@@ -739,7 +756,7 @@ impl ConnectionManager {
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
             Slot::Idle(c) => Ok(f(c)?),
-            Slot::MotorTest(_) | Slot::Rc(_) => Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
         }
     }
 
@@ -780,7 +797,7 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Stop any motor test / RC stream, then close the port.
+    /// Stop any motor test / RC stream / attitude stream, then close the port.
     pub fn disconnect(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         Self::stop_workers(&mut g);
@@ -828,7 +845,7 @@ impl ConnectionManager {
         let mut g = self.lock()?;
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
-            Slot::Rc(_) => Err(self.busy()),
+            Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
             Slot::MotorTest(m) => {
                 let r = m.handle.set(req);
                 let session = m.session.clone();
@@ -926,8 +943,8 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Safety net for window close / app exit: stops a running motor test and the RC
-    /// stream. Returns whether a motor-test session was open. Never blocks:
+    /// Safety net for window close / app exit: stops a running motor test and the RC /
+    /// attitude stream. Returns whether a motor-test session was open. Never blocks:
     ///
     /// 1. Lock-free: sets the motor test's halt flag (checked by the worker before every
     ///    MSP_SET_MOTOR, by keepalive and every ~20 ms) and writes an all-stop
@@ -976,7 +993,7 @@ impl ConnectionManager {
         running
     }
 
-    /// Ends a motor test / RC stream and puts the connection back to Idle (or Empty if
+    /// Ends a motor test / RC stream / attitude stream and puts the connection back to Idle (or Empty if
     /// the port is gone).
     fn stop_workers(g: &mut MutexGuard<'_, Slot>) {
         match std::mem::replace(&mut **g, Slot::Empty) {
@@ -992,6 +1009,13 @@ impl ConnectionManager {
             }
             Slot::Rc(r) => {
                 let RcSlot { mut conn, stream } = r;
+                if let Some(link) = stream.stop() {
+                    conn.give_back(link);
+                    **g = Slot::Idle(conn);
+                }
+            }
+            Slot::Attitude(a) => {
+                let AttitudeSlot { mut conn, stream } = a;
                 if let Some(link) = stream.stop() {
                     conn.give_back(link);
                     **g = Slot::Idle(conn);
@@ -1014,7 +1038,7 @@ impl ConnectionManager {
         match &*g {
             Slot::Empty => return Err(AppError::NotConnected),
             Slot::Rc(_) => return Ok(()),
-            Slot::MotorTest(_) => return Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Attitude(_) => return Err(self.busy()),
             Slot::Idle(_) => {}
         }
         let Slot::Idle(mut conn) = std::mem::replace(&mut *g, Slot::Empty) else {
@@ -1056,6 +1080,86 @@ impl ConnectionManager {
     pub fn rc_stream_stop(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         if matches!(*g, Slot::Rc(_)) {
+            Self::stop_workers(&mut g);
+            if matches!(*g, Slot::Empty) {
+                self.set_port(None);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ConnectionManager {
+    // -------------------------------------------------------------------- sensors
+
+    /// Sensor presence / enable state, hardware names, acc calibration state and the
+    /// alignment readout. Read-only.
+    pub fn get_sensors(&self) -> AppResult<SensorStatus> {
+        self.with_conn(|c| sensors::read_sensors(c.msp()?))
+    }
+
+    /// One MSP_ATTITUDE sample (`seq` = 0, `timestampMs` = 0).
+    pub fn get_attitude(&self) -> AppResult<Attitude> {
+        self.with_conn(|c| sensors::read_attitude(c.msp()?))
+    }
+
+    /// Calibrate the accelerometer and return once the FC is done (holds the port for
+    /// the whole calibration, ~0.5-2 s). See [`sensors::acc_calibrate`].
+    pub fn acc_calibrate(&self) -> AppResult<AccCalibrationResult> {
+        let opts = self.acc_calibration;
+        self.with_conn(|c| sensors::acc_calibrate(c.msp()?, &opts))
+    }
+
+    // -------------------------------------------------------------- attitude stream
+
+    /// Poll MSP_ATTITUDE at `rate_hz` (default 10, clamped 1..=30) on a worker thread.
+    /// Already running: Ok (rate unchanged). Motor test / RC stream running: PORT_BUSY.
+    pub fn attitude_stream_start(
+        &self,
+        rate_hz: Option<u32>,
+        on_attitude: impl Fn(Attitude) + Send + 'static,
+        on_stopped: impl Fn(AttitudeStopped) + Send + 'static,
+    ) -> AppResult<()> {
+        let mut g = self.lock()?;
+        match &*g {
+            Slot::Empty => return Err(AppError::NotConnected),
+            Slot::Attitude(_) => return Ok(()),
+            Slot::MotorTest(_) | Slot::Rc(_) => return Err(self.busy()),
+            Slot::Idle(_) => {}
+        }
+        let Slot::Idle(mut conn) = std::mem::replace(&mut *g, Slot::Empty) else {
+            unreachable!()
+        };
+        let link = match conn.lend() {
+            Ok(l) => l,
+            Err(e) => {
+                *g = Slot::Idle(conn);
+                return Err(e.into());
+            }
+        };
+        let opts = AttitudeStreamOptions {
+            rate_hz: attitude::effective_rate(rate_hz),
+            ..Default::default()
+        };
+        let stream = AttitudeStream::start(link, opts, move |ev: AttitudeStreamEvent| match ev {
+            AttitudeStreamEvent::Attitude(a) => on_attitude(a),
+            AttitudeStreamEvent::Stopped { reason, error } => on_stopped(AttitudeStopped {
+                reason: match reason {
+                    DevRcStop::Requested => RcStopReason::Requested,
+                    DevRcStop::Disconnected => RcStopReason::Disconnected,
+                    DevRcStop::Error => RcStopReason::Error,
+                },
+                error,
+            }),
+        });
+        *g = Slot::Attitude(AttitudeSlot { conn, stream });
+        Ok(())
+    }
+
+    /// Idempotent.
+    pub fn attitude_stream_stop(&self) -> AppResult<()> {
+        let mut g = self.lock()?;
+        if matches!(*g, Slot::Attitude(_)) {
             Self::stop_workers(&mut g);
             if matches!(*g, Slot::Empty) {
                 self.set_port(None);
@@ -1744,5 +1848,133 @@ mod tests {
             ..Default::default()
         };
         assert!(bridge.same_device(&bridge.clone()));
+    }
+
+    // ------------------------------------------------------------ sensors / attitude
+
+    fn sensor_manager(sim: crate::device::sensors::sim::Sim) -> (ConnectionManager, FakeFc) {
+        let (fc, _) = crate::device::sensors::sim::fake(sim);
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)))
+            .with_acc_calibration(crate::device::sensors::sim::fast());
+        m.connect(PORT).unwrap();
+        (m, fc)
+    }
+
+    #[test]
+    fn attitude_stream_borrows_the_port_exclusively() {
+        let (m, fc) = sensor_manager(Default::default());
+        let (tx, rx) = mpsc::channel();
+        let (stx, srx) = mpsc::channel();
+        let (tx, stx) = (Mutex::new(tx), Mutex::new(stx));
+        m.attitude_stream_start(
+            Some(500),
+            move |a| {
+                let _ = tx.lock().unwrap().send(a);
+            },
+            move |s| {
+                let _ = stx.lock().unwrap().send(s.reason);
+            },
+        )
+        .unwrap();
+        let a = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!((a.seq, a.roll, a.pitch, a.yaw), (0, -12.5, 4.7, 271.0));
+        // Idempotent start.
+        m.attitude_stream_start(None, |_| {}, |_| {}).unwrap();
+
+        // Everyone else gets PORT_BUSY {APP}.
+        let busy = |e: AppError| {
+            assert_eq!(e.code(), "PORT_BUSY");
+            assert_eq!(e.details().unwrap()["heldBy"], "APP");
+        };
+        busy(m.rc_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        busy(
+            m.motor_test_start(req(Some(1), 1100), None, |_| {})
+                .unwrap_err(),
+        );
+        busy(m.get_sensors().unwrap_err());
+        busy(m.acc_calibrate().unwrap_err());
+        busy(m.with_link(|_| Ok(())).unwrap_err());
+        assert!(
+            fc.motors.lock().unwrap().is_empty(),
+            "no motor command sent"
+        );
+
+        m.attitude_stream_stop().unwrap();
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        m.attitude_stream_stop().unwrap(); // idempotent
+        assert_eq!(m.get_attitude().unwrap().yaw, 271.0);
+
+        // And the other way round.
+        m.rc_stream_start(None, |_| {}, |_| {}).unwrap();
+        busy(m.attitude_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        m.rc_stream_stop().unwrap();
+        m.motor_test_start(req(Some(1), 1100), None, |_| {})
+            .unwrap();
+        busy(m.attitude_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        m.motor_test_stop().unwrap();
+        m.attitude_stream_start(None, |_| {}, |_| {}).unwrap();
+        m.attitude_stream_stop().unwrap();
+    }
+
+    #[test]
+    fn attitude_stream_stops_on_disconnect_and_emergency_stop() {
+        let (m, _fc) = sensor_manager(Default::default());
+        let (stx, srx) = mpsc::channel();
+        let stx = Mutex::new(stx);
+        let start = |m: &ConnectionManager| {
+            let stx = Mutex::new(stx.lock().unwrap().clone());
+            m.attitude_stream_start(
+                None,
+                |_| {},
+                move |s| {
+                    let _ = stx.lock().unwrap().send(s.reason);
+                },
+            )
+            .unwrap();
+        };
+        start(&m);
+        assert!(!m.emergency_stop_all(), "no motor test was running");
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        assert!(
+            m.with_link(|_| Ok(())).is_ok(),
+            "port back with the manager"
+        );
+        start(&m);
+        m.disconnect().unwrap();
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        assert!(!m.is_connected());
+    }
+
+    #[test]
+    fn acc_calibration_through_the_manager() {
+        let (m, _) = sensor_manager(Default::default());
+        let s = m.get_sensors().unwrap();
+        assert_eq!(s.acc_calibrated, Some(false));
+        let r = m.acc_calibrate().unwrap();
+        assert_eq!(
+            r.completion,
+            crate::model::AccCalibrationCompletion::CalibratingFlag
+        );
+        assert_eq!(m.get_sensors().unwrap().acc_calibrated, Some(true));
+
+        let (m, _) = sensor_manager(crate::device::sensors::sim::Sim {
+            armed: true,
+            ..Default::default()
+        });
+        assert_eq!(m.acc_calibrate().unwrap_err().code(), "BOARD_ARMED");
+        let (m, _) = sensor_manager(crate::device::sensors::sim::Sim {
+            sensors: crate::device::sensors::sensor_bits::GYRO,
+            ..Default::default()
+        });
+        assert_eq!(m.acc_calibrate().unwrap_err().code(), "ACC_NOT_AVAILABLE");
     }
 }

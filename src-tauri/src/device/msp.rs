@@ -37,19 +37,26 @@ pub mod codes {
     pub const MSP_NAME: u16 = 10;
     pub const MSP_REBOOT: u16 = 68;
     pub const MSP_FEATURE_CONFIG: u16 = 36;
+    pub const MSP_BOARD_ALIGNMENT_CONFIG: u16 = 38;
     pub const MSP_RX_CONFIG: u16 = 44;
     pub const MSP_CF_SERIAL_CONFIG: u16 = 54;
     pub const MSP_ADVANCED_CONFIG: u16 = 90;
+    pub const MSP_SENSOR_CONFIG: u16 = 96;
     pub const MSP_SET_ARMING_DISABLED: u16 = 99;
     pub const MSP_STATUS: u16 = 101;
+    pub const MSP_RAW_IMU: u16 = 102;
     pub const MSP_MOTOR: u16 = 104;
     pub const MSP_RC: u16 = 105;
+    pub const MSP_ATTITUDE: u16 = 108;
+    pub const MSP_SENSOR_ALIGNMENT: u16 = 126;
     pub const MSP_MOTOR_CONFIG: u16 = 131;
     pub const MSP_STATUS_EX: u16 = 150;
+    pub const MSP_ACC_CALIBRATION: u16 = 205;
     pub const MSP_SET_MOTOR: u16 = 214;
     pub const MSP_UID: u16 = 160;
     pub const MSP2_COMMON_SERIAL_CONFIG: u16 = 0x1009;
     pub const MSP2_GET_TEXT: u16 = 0x3006;
+    pub const MSP2_SENSOR_CONFIG_ACTIVE: u16 = 0x300A;
     pub const MSP2_MCU_INFO: u16 = 0x300C;
 }
 
@@ -532,6 +539,9 @@ impl<'a> Reader<'a> {
     pub(crate) fn u16(&mut self) -> Result<u16> {
         let b = self.bytes(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+    pub(crate) fn i16(&mut self) -> Result<i16> {
+        Ok(self.u16()? as i16)
     }
     pub(crate) fn u32(&mut self) -> Result<u32> {
         let b = self.bytes(4)?;
