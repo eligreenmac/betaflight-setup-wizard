@@ -27,10 +27,10 @@
  * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
  * side down, every 2 s.
  *
- * HD OSD (FcInfo.hdOsdSupported, TODO(shared)): true by default. `osd-hd-unsupported`: false
+ * HD OSD (FcInfo.hdOsdSupported): true by default. `osd-hd-unsupported`: false
  * (HD disabled in the OSD step). `osd-hd-unknown`: null (HD allowed, with a note).
  * `osd-hd-plan-error`: null, but the firmware has no MSP DisplayPort, so config_plan refuses
- * an HD OSD with #67's CONFIG error. `osd-sd-only`: no field, build options say "OSD (SD)".
+ * an HD OSD with #67's CONFIG error. `osd-sd-only`: null, build options say "OSD (SD)".
  *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
@@ -296,7 +296,15 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         : [],
     flasher_fetch_firmware: async ({ request }) => {
       await stages(["DOWNLOADING"]);
-      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false };
+      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false, droppedOptions: [] };
+    },
+    // Opaque demo names: the real per-release mapping lives in the flasher backend.
+    flasher_required_options: ({ requirements }) => {
+      legacy("flasher_required_options");
+      const out: string[] = [];
+      if (requirements.receiver?.protocol) out.push(`MOCK_RX_${requirements.receiver.protocol}`);
+      if (requirements.osd?.videoSystem) out.push(`MOCK_OSD_${requirements.osd.videoSystem}`);
+      return out;
     },
     flasher_list_cache: () => [],
     flasher_flash: async ({ image, options }) => {
@@ -417,11 +425,14 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       mcu: "STM32F405",
       uid: UID,
       buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : []), ...(scenario === "osd-sd-only" ? ["USE_OSD_SD"] : [])],
-      // TODO(shared): Device's FcInfo.hdOsdSupported (boolean | null), read via wizard/osd.ts hdOsdSupport.
-      // Absent for the old backends (legacy-backend, osd-sd-only: build-options heuristic).
-      ...(scenario === "legacy-backend" || scenario === "osd-sd-only"
-        ? {}
-        : { hdOsdSupported: scenario === "osd-hd-unsupported" ? false : scenario === "osd-hd-unknown" || scenario === "osd-hd-plan-error" ? null : true }),
+      // Device's FcInfo.hdOsdSupported (boolean | null), read via wizard/osd.ts hdOsdSupport.
+      // null for legacy-backend / osd-sd-only too: hdOsdSupport falls back to the build options.
+      hdOsdSupported:
+        scenario === "osd-hd-unsupported"
+          ? false
+          : ["osd-hd-unknown", "osd-hd-plan-error", "legacy-backend", "osd-sd-only"].includes(scenario)
+            ? null
+            : true,
       serialPorts: device.ports.map((p) => ({ ...p })),
       // present stays null until device_probe_board ran (ARCHITECTURE §4.1).
       rxSpi: device.probed

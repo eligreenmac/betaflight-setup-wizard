@@ -57,8 +57,15 @@ pub struct FcInfo {
     /// (u32 little-endian) as `%08x%08x%08x` in order U_ID_0, U_ID_1, U_ID_2 — always 24
     /// lowercase hex chars. Used as the backup folder name. `None` only if MSP_UID fails.
     pub uid: Option<String>,
-    /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
+    /// Build options compiled in, as Build API defines (e.g. "USE_OSD_HD"), decoded from the
+    /// MSP_BUILD_INFO option ids (API 1.46+, i.e. 4.5+). Ids with no known name are dropped.
+    /// Empty on 4.4 (MSP_BUILD_INFO carries no options) or when unknown.
     pub build_options: Vec<String>,
+    /// Whether this firmware build can drive an HD (MSP DisplayPort, 53x20 canvas) OSD, i.e.
+    /// was built with `USE_OSD_HD`. `true`/`false` only on firm evidence (§4.1 "HD OSD
+    /// support"); `null` when it cannot be determined (typically 4.4 with an OSD build).
+    #[serde(default)]
+    pub hd_osd_supported: Option<bool>,
     /// Serial ports exactly as the board reports them (MSP2_COMMON_SERIAL_CONFIG, falling
     /// back to MSP_CF_SERIAL_CONFIG). `identifier` is the raw firmware value (4.4/4.5:
     /// UART1=0; 2025.12+: UART1=51). Empty if the firmware answered neither command.
@@ -306,15 +313,52 @@ pub struct FirmwareRelease {
     pub prerelease: bool,
 }
 
-/// What to build/fetch. Options are Build API option keys (e.g. "USE_GPS").
+/// What to build/fetch. Options are Build API option values (e.g. "USE_GPS"); see
+/// ARCHITECTURE §6 "Build options" for how they are resolved per release.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirmwareRequest {
     pub target: String,
     pub release: String,
+    /// The board's current build options (`FcInfo.buildOptions`). Filtered to what the
+    /// release offers; anything else is dropped and reported in `FirmwareImage.droppedOptions`.
+    /// Empty (4.4 boards, no board) = the release's default options.
     pub options: Vec<String>,
+    /// The wizard's choices (`flasher_required_options`): always added, never dropped. If the
+    /// release does not offer one, the request fails with `REQUIRED_OPTION_UNSUPPORTED`.
+    #[serde(default)]
+    pub required_options: Vec<String>,
     /// If true, never touch the network; fail if not cached.
     pub offline_only: bool,
+}
+
+/// The slice of the wizard's answers that needs firmware build options
+/// (`flasher_required_options`). Field names and enums are `DroneModel`'s, so the UI can
+/// pass the model itself (other fields are ignored).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirmwareRequirements {
+    #[serde(default)]
+    pub receiver: Option<ReceiverRequirement>,
+    #[serde(default)]
+    pub osd: Option<OsdRequirement>,
+}
+
+/// `DroneModel.receiver` (kind + protocol only).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiverRequirement {
+    pub kind: ReceiverKind,
+    #[serde(default)]
+    pub protocol: Option<RxProtocol>,
+}
+
+/// `DroneModel.osd` (video system only).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsdRequirement {
+    #[serde(default)]
+    pub video_system: Option<OsdVideoSystem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +372,10 @@ pub struct FirmwareImage {
     /// Build API build key, when built in the cloud.
     pub build_key: Option<String>,
     pub from_cache: bool,
+    /// Board options (`request.options`) left out because the release does not offer them
+    /// (e.g. USE_WING when going from 2025.12 to 4.5). Required options are never dropped.
+    #[serde(default)]
+    pub dropped_options: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

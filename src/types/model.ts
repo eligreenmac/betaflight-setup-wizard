@@ -23,7 +23,11 @@ export interface FcInfo {
   /** MCU unique id exactly as CLI `mcu_id` prints it: 24 lowercase hex chars
    * (`%08x%08x%08x` of U_ID_0..2). Backup folder name. null only if MSP_UID failed. */
   uid: string | null;
+  /** Build API defines compiled in (e.g. "USE_OSD_HD"), from MSP_BUILD_INFO on 4.5+. Empty on 4.4 / unknown. */
   buildOptions: string[];
+  /** Firmware built with USE_OSD_HD (HD / MSP DisplayPort OSD possible). null = can't tell
+   * (typically 4.4); never guessed true. ARCHITECTURE §4.1 "HD OSD support". */
+  hdOsdSupported: boolean | null;
   /** Serial ports exactly as the board reports them (raw identifiers). Empty if unknown. */
   serialPorts: FcSerialPort[];
   rxSpi: RxSpiInfo;
@@ -48,7 +52,23 @@ export interface FcSerialPort {
 // ---- flasher
 export interface BoardTarget { target: string; manufacturer: string | null; mcu: string | null }
 export interface FirmwareRelease { release: string; prerelease: boolean }
-export interface FirmwareRequest { target: string; release: string; options: string[]; offlineOnly: boolean }
+/** What to build/fetch (ARCHITECTURE §6 "Build options"). */
+export interface FirmwareRequest {
+  target: string;
+  release: string;
+  /** The board's current build options (FcInfo.buildOptions). Filtered to what the release offers;
+   * the rest is reported in FirmwareImage.droppedOptions. Empty = the release's defaults. */
+  options: string[];
+  /** From flasher_required_options (the wizard's choices). Always added, never dropped; a release
+   * that does not offer one fails with REQUIRED_OPTION_UNSUPPORTED. Omitted = []. */
+  requiredOptions?: string[];
+  offlineOnly: boolean;
+}
+/** Slice of the wizard's answers that needs build options; DroneModel itself fits (extra fields are ignored). */
+export interface FirmwareRequirements {
+  receiver?: Pick<DroneModel["receiver"], "kind" | "protocol"> | null;
+  osd?: Pick<Osd, "videoSystem"> | null;
+}
 export type FirmwareFormat = "HEX" | "BIN" | "UF2";
 export interface FirmwareImage {
   request: FirmwareRequest;
@@ -57,6 +77,8 @@ export interface FirmwareImage {
   sha256: string;
   buildKey: string | null;
   fromCache: boolean;
+  /** Board options left out because the release does not offer them (e.g. USE_WING on 4.5). */
+  droppedOptions: string[];
 }
 export interface DfuDevice {
   vid: number;
@@ -395,7 +417,8 @@ export type AppErrorCode =
   | "DRIVER" | "IO" | "INVALID_ARGUMENT" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
   | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
   | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE"
-  | "ACC_NOT_AVAILABLE" | "BOARD_MOVING" | "ACC_CALIBRATION_FAILED" | "PENDING_UNSAVED_CHANGES";
+  | "ACC_NOT_AVAILABLE" | "BOARD_MOVING" | "ACC_CALIBRATION_FAILED" | "PENDING_UNSAVED_CHANGES"
+  | "BUILD_OPTIONS_UNAVAILABLE" | "REQUIRED_OPTION_UNSUPPORTED";
 /** `details` of PORT_BUSY. */
 export interface PortBusyDetails { port: string; heldBy: "APP" | "EXTERNAL" }
 /** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
@@ -408,6 +431,10 @@ export interface BoardMovingDetails { maxRateDps: number; limitDps: number; duri
 export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE";
 /** `details` of PENDING_UNSAVED_CHANGES: offer "Reboot board" (`device_reboot`), then retry. A plain reconnect does not clear it. */
 export interface PendingUnsavedChangesDetails { reason: UnsavedChangesReason }
+/** `details` of BUILD_OPTIONS_UNAVAILABLE (retryable; nothing was built or flashed). */
+export interface BuildOptionsUnavailableDetails { release: string }
+/** `details` of REQUIRED_OPTION_UNSUPPORTED: required options the release does not offer. */
+export interface RequiredOptionUnsupportedDetails { release: string; options: string[] }
 
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
  * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES. */

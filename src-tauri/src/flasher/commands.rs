@@ -2,6 +2,7 @@
 //! Tauri commands for workstream `flasher`. Everything blocking (HTTP, USB) runs on
 //! `spawn_blocking`; progress goes out on `flasher://progress`.
 
+use crate::device::ConnectionManager;
 use crate::error::{AppError, AppResult};
 use crate::flasher::build_api::{BuildApi, ReqwestClient};
 use crate::flasher::dfu::DfuSe;
@@ -9,8 +10,8 @@ use crate::flasher::error::FlashError;
 use crate::flasher::service::{self, FirmwareService};
 use crate::flasher::{usb, PROGRESS_EVENT};
 use crate::model::{
-    BoardTarget, DfuDevice, FirmwareImage, FirmwareRelease, FirmwareRequest, FlashOptions,
-    FlashProgress, FlashStage,
+    BoardTarget, DfuDevice, FirmwareImage, FirmwareRelease, FirmwareRequest, FirmwareRequirements,
+    FlashOptions, FlashProgress, FlashStage,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -91,8 +92,10 @@ pub async fn flasher_list_dfu_devices() -> AppResult<Vec<DfuDevice>> {
     blocking(|| Ok(usb::list_dfu()?.into_iter().map(|f| f.info).collect())).await
 }
 
-/// Return a firmware image from cache, or request a cloud build and cache it.
-/// Emits `flasher://progress` with stage `DOWNLOADING`.
+/// Return a firmware image from cache, or request a cloud build and cache it. The board's
+/// options are filtered to what the release offers (`droppedOptions`), required options are
+/// added (`REQUIRED_OPTION_UNSUPPORTED`), and no build is requested without the release's
+/// option list (`BUILD_OPTIONS_UNAVAILABLE`). Emits `flasher://progress` with stage `DOWNLOADING`.
 #[tauri::command]
 pub async fn flasher_fetch_firmware(
     app: AppHandle,
@@ -104,6 +107,20 @@ pub async fn flasher_fetch_firmware(
         emit_failed(&app, r)
     })
     .await
+}
+
+/// Build API option values the wizard's answers need (`FirmwareRequest.requiredOptions`):
+/// receiver protocol and OSD type (ARCHITECTURE §6 "Build options"). With `release`, also
+/// checks that release offers them (`REQUIRED_OPTION_UNSUPPORTED`; the option list may be
+/// fetched: `BUILD_OPTIONS_UNAVAILABLE`). Read-only; no FC or USB I/O.
+#[tauri::command]
+pub async fn flasher_required_options(
+    app: AppHandle,
+    requirements: FirmwareRequirements,
+    release: Option<String>,
+) -> AppResult<Vec<String>> {
+    blocking(move || firmware_service(&app)?.required_options(&requirements, release.as_deref()))
+        .await
 }
 
 /// Cached firmware images available offline.
@@ -136,6 +153,11 @@ pub async fn flasher_flash(
                 &AtomicBool::new(false),
             )
         })();
+        if r.is_ok() {
+            // RAM changes of a board rebooted into DFU are gone now (§4.1 "RAM state").
+            app.state::<ConnectionManager>()
+                .forget_ram_state_after_flash();
+        }
         emit_failed(&app, r)
     })
     .await

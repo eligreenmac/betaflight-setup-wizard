@@ -79,7 +79,8 @@ pub async fn device_reboot_to_bootloader(app: AppHandle) -> AppResult<()> {
 }
 
 /// `device_identify` plus a read-only CLI probe (`serial`, `resource`,
-/// `get rx_spi_protocol`) that fills `rxSpi.present`. Leaves the CLI with
+/// `get rx_spi_protocol`, `get displayport_msp_col_adjust`) that fills `rxSpi.present` and
+/// can settle a null `hdOsdSupported` to false. Leaves the CLI with
 /// `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC and this reconnects.
 #[tauri::command]
 pub async fn device_probe_board(app: AppHandle) -> AppResult<FcInfo> {

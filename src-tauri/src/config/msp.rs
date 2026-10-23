@@ -123,8 +123,8 @@ pub fn encode_uid(mcu_id: &str) -> Option<Vec<u8>> {
 }
 
 /// Build the identification part of [`FcInfo`] from raw MSP replies (pure; the caller
-/// performs the requests). `build_options` is left empty: MSP_BUILD_INFO only carries
-/// numeric option ids on 4.5+.
+/// performs the requests). `build_options` / `hd_osd_supported` are left unset; the device
+/// path (`device_identify`) fills them from MSP_BUILD_INFO (`device::build_info`).
 pub fn fc_info(
     api: &[u8],
     variant: &[u8],
@@ -146,6 +146,7 @@ pub fn fc_info(
         mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
         uid: uid.and_then(decode_uid),
         build_options: Vec::new(),
+        hd_osd_supported: None,
         serial_ports: Vec::new(),
         rx_spi: Default::default(),
     })

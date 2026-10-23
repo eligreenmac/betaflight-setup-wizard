@@ -7,7 +7,7 @@
 import { api } from "../api/commands";
 import { onEvent } from "../api/events";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
-import type { Backup, DfuDevice, FcInfo, FcSerialPort, FlashProgress } from "../types/model";
+import type { Backup, DfuDevice, FcInfo, FcSerialPort, FirmwareRequirements, FlashProgress } from "../types/model";
 
 export const UPDATE_STAGES = ["download", "backup", "bootloader", "flash", "reconnect"] as const;
 export type UpdateStage = (typeof UPDATE_STAGES)[number];
@@ -26,6 +26,8 @@ export interface UpdateResult {
   ports: FcSerialPort[];
   path: string;
   backup: Backup | null;
+  /** Board options the release does not offer, left out of the build (opaque names; show them as-is). */
+  droppedOptions: string[];
 }
 
 export interface PollOptions {
@@ -55,6 +57,12 @@ export async function pollUntil<T>(fn: () => Promise<T | null | undefined>, opts
 export interface UpdateOptions {
   /** Erase the whole chip (offered after VERIFY_MISMATCH, as DESIGN.md §6 suggests). */
   fullErase?: boolean;
+  /**
+   * What the wizard's model needs in the firmware (receiver kind/protocol, OSD video system).
+   * The backend turns it into the release's build options (`flasher_required_options`), so
+   * option names never appear in the UI. Omitted/null: only the board's own options.
+   */
+  requirements?: FirmwareRequirements | null;
 }
 
 export async function runFirmwareUpdate(
@@ -65,7 +73,9 @@ export async function runFirmwareUpdate(
   opts: UpdateOptions = {},
 ): Promise<UpdateResult> {
   hooks.onStage("download");
-  const image = await api.flasher.fetchFirmware({ target: fc.boardName, release, options: fc.buildOptions, offlineOnly: false });
+  // REQUIRED_OPTION_UNSUPPORTED / BUILD_OPTIONS_UNAVAILABLE surface here, before anything is touched.
+  const requiredOptions = opts.requirements ? await api.flasher.requiredOptions(opts.requirements, release) : [];
+  const image = await api.flasher.fetchFirmware({ target: fc.boardName, release, options: fc.buildOptions, requiredOptions, offlineOnly: false });
 
   let dfu: DfuDevice | null = (await api.flasher.listDfuDevices())[0] ?? null;
   let backup: Backup | null = null;
@@ -99,7 +109,7 @@ export async function runFirmwareUpdate(
   await api.device.connect(host.path);
   const newFc = await api.device.identify();
   const ports = await api.config.readPorts();
-  return { fc: newFc, ports, path: host.path, backup };
+  return { fc: newFc, ports, path: host.path, backup, droppedOptions: image.droppedOptions ?? [] };
 }
 
 /**
