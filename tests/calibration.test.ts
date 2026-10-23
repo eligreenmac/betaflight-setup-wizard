@@ -180,13 +180,14 @@ describe("sensors", () => {
     expect(generateCli(toPlanModel(wizard.model, wizard.ext), []).commands).toContain("set mag_hardware = NONE");
   });
 
-  it("calibration is saved right away (one line) and waits after a failed apply", async () => {
+  it("calibration is saved right away (one line); after a failed apply a hint points to Reboot board", async () => {
     await open();
     expect(w!.get('[data-test="saves-now"]').text()).toContain("saved on the board right away");
     wizard.ui.applyStatus = "failed";
     await settle();
-    expect(w!.find('[data-test="unsaved-changes"]').exists()).toBe(true);
-    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeDefined();
+    // config_apply returned, so calibrating is allowed; Device refuses it if RAM is dirty.
+    expect(w!.get('[data-test="unsaved-changes"]').text()).toContain("press Reboot board first");
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeUndefined();
   });
 
   it("no step before calibration writes settings to the board", () => {
@@ -244,33 +245,45 @@ describe("accelerometer calibration", () => {
     expect(toUiError({ code: "ACC_CALIBRATION_FAILED", message: "x" }).code).toBe("ACC_CALIBRATION_FAILED");
   });
 
-  it("PENDING_UNSAVED_CHANGES {reason} (TODO(shared) string code): Reboot board + Try again; REBOOT_NOT_CONFIRMED: Go to Connect", () => {
+  it("PENDING_UNSAVED_CHANGES {reason}: Reboot board + Try again; reboot failures have their own guidance", () => {
     const e = toUiError({ code: "PENDING_UNSAVED_CHANGES", message: "x", details: { reason: "EXIT_NOREBOOT" } });
     expect(e).toMatchObject({ code: "PENDING_UNSAVED_CHANGES", category: "Safety", details: { reason: "EXIT_NOREBOOT" } });
     const g = guidanceFor(e);
     expect(g.titleKey).toBe("errors.PENDING_UNSAVED_CHANGES.title");
     expect(g.actions.map((x) => [x.id, x.labelKey])).toEqual([["rebootBoard", "actions.rebootBoard"], ["retry", "actions.tryAgain"]]);
-    const r = guidanceFor("REBOOT_NOT_CONFIRMED");
-    expect(categoryOf("REBOOT_NOT_CONFIRMED")).toBe("Connection");
-    expect(r.actions.map((x) => x.id)).toEqual(["goConnect", "retry"]);
+    expect(guidanceFor("REBOOT_NOT_CONFIRMED").actions.map((x) => x.id)).toEqual(["rebootBoard"]);
+    expect(guidanceFor("REBOOT_BOARD_LOST").actions.map((x) => x.id)).toEqual(["goConnect"]);
+    expect(guidanceFor("CONNECT_REBOOT_NOT_CONFIRMED").actions.map((x) => x.id)).toEqual(["retry"]);
+    for (const c of ["REBOOT_NOT_CONFIRMED", "REBOOT_BOARD_LOST", "CONNECT_REBOOT_NOT_CONFIRMED"] as const) expect(categoryOf(c)).toBe("Connection");
   });
 
-  it("unsaved changes: refused first (even armed), a plain reconnect does not clear it, Reboot board does", async () => {
+  it("no unplug / replug advice for unsaved changes, reboots, connecting or calibrating (en + he)", () => {
+    const en = i18n.global.getLocaleMessage("en") as Record<string, Record<string, unknown>>;
+    const he = i18n.global.getLocaleMessage("he") as Record<string, Record<string, unknown>>;
+    const codes = ["PENDING_UNSAVED_CHANGES", "REBOOT_NOT_CONFIRMED", "REBOOT_BOARD_LOST", "CONNECT_REBOOT_NOT_CONFIRMED", "ACC_CALIBRATION_FAILED",
+      "BOARD_NOT_FOUND", "PORT_BUSY", "PORT_BUSY_EXTERNAL", "PORT_BUSY_APP", "TIMEOUT", "SERIAL_ERROR", "USB_ERROR", "DRIVER_MISSING", "DISCONNECTED"];
+    const texts = (m: Record<string, Record<string, unknown>>) =>
+      JSON.stringify([codes.map((c) => m.errors![c]), m.calibration, (m.apply as Record<string, unknown>).notReconnected]);
+    expect(texts(en)).not.toMatch(/unplug|replug|plug (it|them) back|plug back/i);
+    // "התחברו מחדש" (connect again) is fine; "נתקו" (unplug) / "חברו שוב" (plug back in) are not.
+    expect(texts(he)).not.toMatch(/(?<![\u0590-\u05FF])(נתקו|חברו (אותו |אותם )?(שוב|מחדש))/);
+  });
+
+  it("unsaved changes: refused first (even armed), a reconnect does not clear it, Reboot board does", async () => {
     await open("unsaved-ram", (d) => (d.armed = true), 40);
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "failed");
     const panel = () => w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]');
     expect(panel().text()).toContain("The board has changes that were never saved, and calibrating now would save them too.");
-    expect(panel().text()).toContain("it will restart and nothing unsaved will be kept");
+    expect(panel().text()).toContain("the board will restart and nothing unsaved will be kept");
     expect(w!.find('[data-test="calibration-failed"]').exists()).toBe(false); // not the "keep it still" hint
-    // A reconnect alone keeps the flag (Device: only a confirmed reboot clears it).
+    // A reconnect never clears it (the flag lives in the app).
     await mock.backend("device_disconnect", {});
     await mock.backend("device_connect", { path: "COM5" });
     expect(mock.device.unsavedRam).toBe(true);
     mock.device.armed = false;
     await waitFor(() => mock.device.attitudeTimer !== null);
-    const reboot = panel().findAll("button").find((x) => x.text() === "Reboot board")!;
-    await reboot.trigger("click");
+    await panel().findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
     await waitFor(() => w!.find('[data-test="rebooting"]').exists());
     expect(w!.get('[data-test="rebooting"]').text()).toBe("Restarting the board…");
     expect(mock.device.attitudeTimer).toBeNull(); // live view paused during the reboot
@@ -283,38 +296,56 @@ describe("accelerometer calibration", () => {
     expect(mock.device.accCalibrations).toBe(1);
   });
 
-  it("reboot not confirmed: power-cycle guidance, Try again reboots again, Go to Connect", async () => {
+  it("reboot not confirmed: 'press Reboot board again', and pressing it again works", async () => {
     await open("unsaved-ram-reboot-fail");
     await w!.get('[data-test="calibrate"]').trigger("click");
     await waitFor(() => wizard.ui.accCalibration === "failed");
     await w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
     await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
-    const panel = () => w!.get('[data-error-code="REBOOT_NOT_CONFIRMED"]');
-    expect(panel().text()).toContain("We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.");
+    const panel = w!.get('[data-error-code="REBOOT_NOT_CONFIRMED"]');
+    expect(panel.text()).toContain("Press Reboot board again. If it keeps failing, check the USB cable and that the board is powered.");
     expect(mock.device.unsavedRam).toBe(true);
-    await panel().findAll("button").find((x) => x.text() === "Try again")!.trigger("click");
-    await waitFor(() => !w!.find('[data-test="rebooting"]').exists() && w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
-    expect(mock.device.accCalibrations).toBe(0);
-    await panel().findAll("button").find((x) => x.text() === "Go to Connect")!.trigger("click");
-    await waitFor(() => nav.currentId === "connect");
-    expect(wizard.fc).toBeNull();
-    expect(wizard.connectedPath).toBeNull();
+    await panel.findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "idle");
+    expect(mock.device.unsavedRam).toBe(false);
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done");
   });
 
-  it("Connect step: PENDING_UNSAVED_CHANGES from device_connect = power-cycle guidance, then connect again", async () => {
+  it("board did not come back (SERIAL): check the cable and connect again; Reboot board is still needed after", async () => {
+    await open("unsaved-ram", (d) => {
+      d.rebootFailuresLeft = 1;
+      d.rebootFailure = "lost";
+    });
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    await w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
+    await waitFor(() => w!.find('[data-error-code="REBOOT_BOARD_LOST"]').exists());
+    const panel = w!.get('[data-error-code="REBOOT_BOARD_LOST"]');
+    expect(panel.text()).toContain("The board didn't come back after restarting. Check the USB cable, then connect again.");
+    expect(panel.text()).toContain("Reboot board is still the way to clear the unsaved changes");
+    await panel.findAll("button").find((x) => x.text() === "Go to Connect")!.trigger("click");
+    await waitFor(() => nav.currentId === "connect");
+    expect(wizard.fc).toBeNull();
+    await w!.get('[data-test="connect"]').trigger("click");
+    await waitFor(() => wizard.fc !== null);
+    expect(mock.device.unsavedRam).toBe(true); // reconnecting did not clear it
+  });
+
+  it("Connect step: PENDING_UNSAVED_CHANGES from device_connect = try connecting again (no replug advice)", async () => {
     mock = installMock({ scenario: "unsaved-ram", latencyMs: 0, stepMs: 0 });
     mock.device.connectUnsavedFails = true;
     w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     await settle();
     await w.get('[data-test="next"]').trigger("click");
     await w.get('[data-test="connect"]').trigger("click");
-    await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
-    const panel = w.get('[data-error-code="REBOOT_NOT_CONFIRMED"]');
-    expect(panel.text()).toContain("We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.");
-    const labels = panel.findAll("button").map((x) => x.text());
-    expect(labels).toEqual(["Try again"]); // no "Go to Connect" on the Connect step
+    await waitFor(() => w!.find('[data-error-code="CONNECT_REBOOT_NOT_CONFIRMED"]').exists());
+    const panel = w.get('[data-error-code="CONNECT_REBOOT_NOT_CONFIRMED"]');
+    expect(panel.text()).toContain("we couldn't confirm the restart. Try connecting again. If it keeps failing, check the USB cable and that the board is powered.");
+    expect(panel.text()).not.toMatch(/unplug/i);
+    expect(panel.findAll("button").map((x) => x.text())).toEqual(["Try again"]);
     expect(wizard.fc).toBeNull();
-    mock.device.connectUnsavedFails = false; // unplugged and plugged back in
+    mock.device.connectUnsavedFails = false; // the connect-time reboot is confirmed this time
     await panel.findAll("button")[0]!.trigger("click");
     await waitFor(() => wizard.fc !== null);
   });
@@ -328,8 +359,7 @@ describe("accelerometer calibration", () => {
     expect(p.text()).toContain("יש בלוח שינויים שמעולם לא נשמרו, וכיול עכשיו ישמור גם אותם.");
     await p.findAll("button").find((x) => x.text() === "הפעלה מחדש של הלוח")!.trigger("click");
     await waitFor(() => w!.find('[data-error-code="REBOOT_NOT_CONFIRMED"]').exists());
-    expect(w!.text()).toContain("לא הצלחנו לוודא שהלוח הופעל מחדש. נתקו את כבל ה-USB ואת הסוללה");
-    expect(w!.text()).toContain("מעבר לשלב החיבור");
+    expect(w!.text()).toContain("לחצו שוב על 'הפעלה מחדש של הלוח'. אם זה ממשיך להיכשל, בדקו את כבל ה־USB ושהלוח מקבל חשמל.");
   });
 
   it("refused with MIXED_BACKEND when the board is real but calibration would be simulated", async () => {

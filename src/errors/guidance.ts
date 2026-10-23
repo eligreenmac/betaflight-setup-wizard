@@ -103,8 +103,10 @@ const TABLE: Record<ErrorCode, Entry> = {
   BOARD_MOVING: { steps: 2, actions: [retry] },
   ACC_CALIBRATION_FAILED: { steps: 2, actions: [retry] },
   PENDING_UNSAVED_CHANGES: { steps: 2, actions: [rebootBoard, retry2] },
-  // Calibration step: go back to Connect after the power cycle. The Connect step hides goConnect.
-  REBOOT_NOT_CONFIRMED: { steps: 2, actions: [goConnect, retry2] },
+  // "Reboot board" failures (Calibration step) and the connect-time reboot (Connect step).
+  REBOOT_NOT_CONFIRMED: { steps: 2, actions: [rebootBoard] },
+  REBOOT_BOARD_LOST: { steps: 2, actions: [goConnect] },
+  CONNECT_REBOOT_NOT_CONFIRMED: { steps: 2, actions: [retry] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */

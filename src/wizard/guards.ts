@@ -106,9 +106,9 @@ export function sensorIssues(s: WizardState): Issue[] {
 
 /**
  * The flight controller may hold unsaved RAM changes after an apply that failed half-way.
- * Acc calibration saves to EEPROM (with any pending RAM changes), so it waits until the
- * board was reconnected (reconnecting resets applyStatus). A running apply is
- * calibrationBlock's "applying".
+ * Acc calibration saves to EEPROM (with any pending RAM changes); Device refuses it then
+ * (PENDING_UNSAVED_CHANGES, cleared only by "Reboot board"), so this is only a hint.
+ * A running apply is calibrationBlock's "applying".
  */
 export const mayHaveUnsavedChanges = (s: WizardState): boolean => s.ui.applyStatus === "failed";
 

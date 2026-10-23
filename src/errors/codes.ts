@@ -11,7 +11,7 @@
  * is kept on the UiError. There is no backend BUSY code; a busy port is PORT_BUSY.
  */
 
-import type { DriverMissingDetails, PortBusyDetails } from "../types/model";
+import type { DriverMissingDetails, PendingUnsavedChangesDetails, PortBusyDetails } from "../types/model";
 
 export const ERROR_CATEGORIES = ["Connection", "Device", "Protocol", "Flash", "Network", "Io", "Safety", "Operation"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -61,23 +61,33 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
  * of the setup, in the MVP mostly the receiver (an SPI protocol other than ExpressLRS,
  * or no onboard SPI receiver, ARCHITECTURE §5.1). MIXED_BACKEND is the demo-fallback
  * safety stop: a write would combine simulated and real data (api/fallback.ts), so
- * nothing was sent. REBOOT_NOT_CONFIRMED: the board was asked to restart to drop unsaved
- * changes (device_reboot, or device_connect's own reboot answering PENDING_UNSAVED_CHANGES)
- * and the restart could not be confirmed; the user must power-cycle it. UNKNOWN is the catch-all.
+ * nothing was sent. "Reboot board" (device_reboot) failures, which the Calibration step
+ * maps: REBOOT_NOT_CONFIRMED = not confirmed (PENDING_UNSAVED_CHANGES / MSP), press it again;
+ * REBOOT_BOARD_LOST = the board did not come back (SERIAL / NOT_CONNECTED), check the cable
+ * and connect again. CONNECT_REBOOT_NOT_CONFIRMED = device_connect answered
+ * PENDING_UNSAVED_CHANGES (its reboot of a board left with unsaved changes was not
+ * confirmed), try connecting again. A reconnect or replug never clears the flag (it lives
+ * in the app; a battery-powered FC keeps its RAM). UNKNOWN is the catch-all.
  */
-export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "REBOOT_NOT_CONFIRMED", "UNKNOWN"] as const;
+export const UI_ERROR_CODES = [
+  "NOT_IMPLEMENTED",
+  "CONFIG_UNSUPPORTED",
+  "MIXED_BACKEND",
+  "REBOOT_NOT_CONFIRMED",
+  "REBOOT_BOARD_LOST",
+  "CONNECT_REBOOT_NOT_CONFIRMED",
+  "UNKNOWN",
+] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 /**
  * Backend codes outside the DESIGN.md §6 table.
  * device_acc_calibrate (#63 §2.3, in AppErrorCode): ACC_NOT_AVAILABLE {present, enabled} =
  * accelerometer missing or disabled; BOARD_MOVING {maxRateDps, limitDps, during} = not still
  * (during: the bad result is already stored); ACC_CALIBRATION_FAILED = the FC never finished.
- * TODO(shared): PENDING_UNSAVED_CHANGES {reason} (shared #68, Device #69) is not on main
- * (AppErrorCode in src/types/model.ts) yet; handled here as a UI-side string code with the
- * #68 details mirrored below. device_acc_calibrate rejects with it (checked first) while the
- * FC's RAM may hold unsaved changes, because calibrating saves the whole RAM config. Only a
- * confirmed reboot clears it (device_reboot, api/pending.ts). device_connect may surface it
- * too when the board could not be restarted.
+ * PENDING_UNSAVED_CHANGES {reason} (#68/#69): device_acc_calibrate refuses (checked first)
+ * while the FC's RAM may hold unsaved changes, because calibrating saves the whole RAM config.
+ * Only a confirmed reboot clears it (api.device.reboot); device_reboot and device_connect
+ * answer it when their reboot was not confirmed.
  */
 export const PENDING_ERROR_CODES = {
   ACC_NOT_AVAILABLE: "Device",
@@ -86,11 +96,7 @@ export const PENDING_ERROR_CODES = {
   PENDING_UNSAVED_CHANGES: "Safety",
 } as const satisfies Record<string, ErrorCategory>;
 export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
-/** TODO(shared): mirror of #68's UnsavedChangesReason / PendingUnsavedChangesDetails (src/types/model.ts). */
-export type UnsavedChangesReason = "CLI_COMMAND" | "EXIT_NOREBOOT" | "MSP_WRITE";
-export interface PendingUnsavedChangesDetails {
-  reason: UnsavedChangesReason;
-}
+
 export type ErrorCode = DesignErrorCode | UiOnlyCode | PendingErrorCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES, ...(Object.keys(PENDING_ERROR_CODES) as PendingErrorCode[])];
 
@@ -126,7 +132,7 @@ export function isErrorCode(code: string): code is ErrorCode {
 
 export function categoryOf(code: ErrorCode): ErrorCategory {
   if (code === "MIXED_BACKEND") return "Safety";
-  if (code === "REBOOT_NOT_CONFIRMED") return "Connection";
+  if (code === "REBOOT_NOT_CONFIRMED" || code === "REBOOT_BOARD_LOST" || code === "CONNECT_REBOOT_NOT_CONFIRMED") return "Connection";
   if (code in PENDING_ERROR_CODES) return PENDING_ERROR_CODES[code as PendingErrorCode];
   return code in ERROR_CODE_CATEGORY ? ERROR_CODE_CATEGORY[code as DesignErrorCode] : "Operation";
 }

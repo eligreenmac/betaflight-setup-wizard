@@ -9,7 +9,7 @@
  *   - attitudeToEuler: MSP_ATTITUDE signs (pitch + = nose DOWN) -> the orientation math.
  * No live board-alignment command: the preview rotates the displayed attitude here.
  */
-import { api, call, EVENTS, type CommandName } from "./commands";
+import { api, EVENTS } from "./commands";
 import type { Attitude, AttitudeStopped } from "../types/model";
 
 export type { Attitude, AttitudeStopped };
@@ -35,24 +35,12 @@ export interface SensorsInfo {
   alignment: CurrentAlignment | null;
 }
 /** Command names the mock and the guards refer to. */
-export const PENDING_COMMANDS = ["device_reboot", "device_sensors", "device_acc_calibrate", "device_get_attitude", "device_attitude_stream_start", "device_attitude_stream_stop"] as const;
+export const PENDING_COMMANDS = ["device_sensors", "device_acc_calibrate", "device_get_attitude", "device_attitude_stream_start", "device_attitude_stream_stop"] as const;
 export type PendingCommandName = (typeof PENDING_COMMANDS)[number];
 
 export const SENSORS_COMMAND = "device_sensors";
 export const ACC_CALIBRATE_COMMAND = "device_acc_calibrate";
 export const ATTITUDE_START_COMMAND = "device_attitude_stream_start";
-
-/**
- * TODO(shared): Device's `device_reboot(): Promise<void>` (follow-up to #68/#69) is not in
- * CommandMap yet. It reboots the board, waits for it to come back, re-verifies the API
- * version + UID, clears the unsaved-changes flag and resolves; it rejects when the reboot
- * cannot be confirmed. Called through `call()` so the demo fallback and the mixed-backend
- * guard (it is a write: api/fallback.ts) apply. Swap for api.device.reboot when it lands.
- */
-export const DEVICE_REBOOT_COMMAND = "device_reboot";
-export const deviceRebootApi = {
-  reboot: (): Promise<void> => call(DEVICE_REBOOT_COMMAND as unknown as CommandName, {} as never) as Promise<void>,
-};
 
 export const PENDING_EVENTS = { attitude: EVENTS.attitude, attitudeStopped: EVENTS.attitudeStopped } as const;
 

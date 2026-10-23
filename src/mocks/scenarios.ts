@@ -16,10 +16,12 @@
  * and baro present (baro disabled), no mag. `no-sensors`: no acc and no baro.
  * `calib-fail`: the first accelerometer calibration fails. `unsaved-ram`: an earlier apply
  * left unsaved changes in RAM, so device_acc_calibrate answers PENDING_UNSAVED_CHANGES
- * {reason: "CLI_COMMAND"} (before any other check) until device_reboot; a plain reconnect
- * does not clear it. `unsaved-ram-reboot-fail`: the same, and device_reboot cannot confirm
- * the restart (TIMEOUT). `device.connectUnsavedFails` (tests): device_connect answers
- * PENDING_UNSAVED_CHANGES (its own reboot of a dirty board was not confirmed). `mounted-yaw90`: the board is
+ * {reason: "CLI_COMMAND"} (before any other check) until device_reboot; a reconnect never
+ * clears it. `unsaved-ram-reboot-fail`: the same, and the first device_reboot is not
+ * confirmed (PENDING_UNSAVED_CHANGES); pressing it again works. `device.rebootFailure =
+ * "lost"` (tests): the board does not come back (SERIAL). `device.connectUnsavedFails`
+ * (tests): device_connect answers PENDING_UNSAVED_CHANGES (its reboot of a board left dirty
+ * was not confirmed). `mounted-yaw90`: the board is
  * mounted turned 90° to the right, so tilting the nose down shows as a roll until the
  * user picks the "arrow points right" (yaw 90) alignment. The attitude stream follows
  * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
@@ -109,8 +111,10 @@ interface MockDevice {
   accCalFailuresLeft: number;
   /** An earlier apply left unsaved changes in RAM; cleared only by a confirmed device_reboot. */
   unsavedRam: boolean;
-  /** device_reboot cannot confirm the restart. */
-  rebootFails: boolean;
+  /** The next N device_reboot calls fail, as `rebootFailure` says. */
+  rebootFailuresLeft: number;
+  /** unconfirmed = PENDING_UNSAVED_CHANGES (flag still set) / MSP; lost = SERIAL (board did not come back). */
+  rebootFailure: "unconfirmed" | "lost";
   /** device_connect fails with PENDING_UNSAVED_CHANGES (its reboot of a dirty board was not confirmed). */
   connectUnsavedFails: boolean;
   reboots: number;
@@ -178,7 +182,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
           { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: false, enabled: false }, mag: { present: false, enabled: true } },
     accCalFailuresLeft: scenario === "calib-fail" ? 1 : 0,
     unsavedRam: scenario === "unsaved-ram" || scenario === "unsaved-ram-reboot-fail",
-    rebootFails: scenario === "unsaved-ram-reboot-fail",
+    rebootFailuresLeft: scenario === "unsaved-ram-reboot-fail" ? 1 : 0,
+    rebootFailure: "unconfirmed",
     connectUnsavedFails: false,
     reboots: 0,
     accCalibrations: 0,
@@ -255,7 +260,21 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_reboot_to_bootloader: () => {
       device.inDfu = true;
     },
-    device_reboot: () => undefined,
+    // "Reboot board" (#68/#69): resolves once the reboot is confirmed and clears the unsaved
+    // flag. Not confirmed: PENDING_UNSAVED_CHANGES while the flag is set (else MSP); the board
+    // did not come back: SERIAL. Pressing it again is safe.
+    device_reboot: async () => {
+      await sleep(stepMs * 2);
+      if (device.rebootFailuresLeft > 0) {
+        device.rebootFailuresLeft--;
+        if (device.rebootFailure === "lost") throw err("SERIAL_ERROR", "COM5: the board did not come back after the reboot");
+        if (device.unsavedRam)
+          throw { ...err("PENDING_UNSAVED_CHANGES", "the reboot was not confirmed; the flight controller may still have unsaved changes (CLI command)"), details: { reason: "CLI_COMMAND" } };
+        throw err("MSP_BAD_RESPONSE", "MSP_REBOOT was not acknowledged");
+      }
+      device.reboots++;
+      device.unsavedRam = false;
+    },
     flasher_list_targets: () => [{ target: "SPEEDYBEEF405V4", manufacturer: "SPBE", mcu: "STM32F405" }],
     flasher_list_releases: () => [
       { release: "2025.12.0-RC1", prerelease: true },
@@ -474,14 +493,6 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     return phase === 1 ? { roll: 0, pitch: -30, yaw: 0 } : phase === 3 ? { roll: 30, pitch: 0, yaw: 0 } : { roll: 0, pitch: 0, yaw: 0 };
   };
   const pendingHandlers: Record<PendingCommandName, (args: never) => unknown> = {
-    // TODO(shared): device_reboot (api/pending.ts). Reboot, wait, re-verify, clear the flag.
-    device_reboot: async () => {
-      legacy("device_reboot");
-      await sleep(stepMs * 2);
-      if (device.rebootFails) throw err("TIMEOUT", "the board did not come back after MSP_REBOOT");
-      device.reboots++;
-      device.unsavedRam = false;
-    },
     device_sensors: () => {
       legacy("device_sensors");
       // SensorStatus (#63). Extra keys are allowed; the UI must ignore them.

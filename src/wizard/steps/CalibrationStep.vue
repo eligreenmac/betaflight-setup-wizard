@@ -11,7 +11,7 @@ import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { sourceMismatch } from "../../api/fallback";
-import { ATTITUDE_START_COMMAND, attitudeToEuler, deviceRebootApi, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
+import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
@@ -84,8 +84,9 @@ async function loadSensors(): Promise<void> {
 // ---- accelerometer calibration
 const calError = ref<UiError | null>(null);
 async function calibrate(): Promise<void> {
-  // Calibration saves to EEPROM together with any pending RAM change: never with unsaved changes.
-  if (wizard.ui.accCalibration === "running" || unsaved.value || block.value !== null || rebooting.value) return;
+  // Calibration saves to EEPROM together with any pending RAM change: Device refuses with
+  // PENDING_UNSAVED_CHANGES then (handled below). Never between config_plan and config_apply.
+  if (wizard.ui.accCalibration === "running" || block.value !== null || rebooting.value) return;
   calError.value = null;
   wizard.ui.accCalibration = "running";
   const wasLive = live.value === "on";
@@ -102,11 +103,13 @@ async function calibrate(): Promise<void> {
 }
 
 /**
- * PENDING_UNSAVED_CHANGES (TODO(shared), errors/codes.ts): the FC's RAM may hold unsaved
- * changes and calibrating would save them too. Only a confirmed reboot clears it (Device):
- * "Reboot board" calls device_reboot (api/pending.ts wrapper). If the restart cannot be
- * confirmed, the user has to power-cycle the board and connect again (REBOOT_NOT_CONFIRMED).
+ * PENDING_UNSAVED_CHANGES (#68/#69): the FC's RAM may hold unsaved changes and calibrating
+ * would save them too. Only a confirmed reboot clears it; a reconnect or replug never does
+ * (the flag lives in the app). "Reboot board" = api.device.reboot, safe to press again.
+ * Not confirmed (PENDING_UNSAVED_CHANGES / MSP) -> REBOOT_NOT_CONFIRMED (press it again);
+ * the board did not come back (SERIAL / NOT_CONNECTED) -> REBOOT_BOARD_LOST (connect again).
  */
+const LOST: string[] = ["SERIAL_ERROR", "DISCONNECTED", "USB_ERROR", "TIMEOUT"];
 const rebooting = ref(false);
 async function rebootBoard(): Promise<void> {
   if (rebooting.value || wizard.ui.accCalibration === "running") return;
@@ -116,22 +119,22 @@ async function rebootBoard(): Promise<void> {
   if (wasLive) await stopAttitude();
   let ok = false;
   try {
-    await deviceRebootApi.reboot();
+    await api.device.reboot();
     ok = true;
     calError.value = null;
     wizard.ui.accCalibration = "idle";
     await loadSensors();
   } catch (e) {
     const ue = toUiError(e);
-    calError.value = uiError("REBOOT_NOT_CONFIRMED", `device_reboot: ${ue.code}: ${ue.message}`);
+    const code = LOST.includes(ue.code) ? "REBOOT_BOARD_LOST" : ue.code === "PENDING_UNSAVED_CHANGES" || ue.code === "MSP_BAD_RESPONSE" ? "REBOOT_NOT_CONFIRMED" : null;
+    calError.value = code ? uiError(code, `device_reboot: ${ue.code}: ${ue.message}`) : ue;
     wizard.ui.accCalibration = "failed";
   } finally {
     rebooting.value = false;
   }
-  // Not after a failed reboot: the board is in an unknown state until it is power-cycled.
   if (wasLive && ok) await startAttitude();
 }
-/** After a power cycle the connection is gone: forget the board and go back to Connect. */
+/** The board did not come back: forget the connection and go back to Connect. */
 async function goConnect(): Promise<void> {
   if (live.value === "on") await stopAttitude();
   try {
@@ -146,8 +149,7 @@ async function goConnect(): Promise<void> {
 }
 function onCalAction(id: GuidanceActionId): void {
   if (id === "rebootBoard") void rebootBoard();
-  else if (id === "goConnect") void goConnect();
-  else if (calError.value?.code === "REBOOT_NOT_CONFIRMED") void rebootBoard();
+  else if (id === "goConnect" || id === "reconnect") void goConnect();
   else void calibrate();
 }
 
@@ -312,7 +314,7 @@ onBeforeUnmount(() => {
           type="button"
           class="btn btn--primary"
           data-test="calibrate"
-          :disabled="wizard.ui.accCalibration === 'running' || !accOn || unsaved || block !== null || rebooting"
+          :disabled="wizard.ui.accCalibration === 'running' || !accOn || block !== null || rebooting"
           @click="calibrate"
         >
           {{ wizard.ui.accCalibration === "failed" ? t("calibration.acc.retry") : t("calibration.acc.calibrate") }}
@@ -338,7 +340,7 @@ onBeforeUnmount(() => {
           <span class="spinner" aria-hidden="true" />
           {{ t("calibration.acc.rebooting") }}
         </p>
-        <p v-if="!['PENDING_UNSAVED_CHANGES', 'REBOOT_NOT_CONFIRMED'].includes(calError.code)" class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
+        <p v-if="!['PENDING_UNSAVED_CHANGES', 'REBOOT_NOT_CONFIRMED', 'REBOOT_BOARD_LOST'].includes(calError.code)" class="hint" data-test="calibration-failed">{{ t("calibration.acc.failedHint") }}</p>
       </template>
       <p class="hint">{{ t("calibration.acc.optional") }}</p>
     </section>

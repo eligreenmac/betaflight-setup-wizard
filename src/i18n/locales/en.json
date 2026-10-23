@@ -432,7 +432,7 @@
       "optional": "Recommended if you use Angle or Horizon mode. You can continue without it.",
       "needed": "The board says its accelerometer has not been calibrated yet.",
       "savesNow": "The calibration is saved on the board right away, before you apply the other settings.",
-      "unsaved": "The last apply did not finish, so the board may hold unsaved changes. Unplug the board, plug it back in and reconnect before you calibrate.",
+      "unsaved": "The last apply did not finish, so the board may still have unsaved changes. If calibrating says so, press Reboot board first.",
       "rebooting": "Restarting the board…",
       "blockedApplying": "Settings are being written to the board. Calibrate after that finishes.",
       "blockedPlan": "A setup plan is ready but not applied yet. Apply it first, then calibrate.",
@@ -643,7 +643,7 @@
       "step2": "If the same setting fails again, your firmware may not support it. Update the firmware and try again.",
       "step3": "You can restore the backup below to undo all changes."
     },
-    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Unplug the USB cable, plug it back in, and connect again to check them."
+    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Check the USB cable, then connect again to check them."
   },
   "done": {
     "success": "{board} is set up.",
@@ -780,7 +780,7 @@
     "BOARD_NOT_FOUND": {
       "title": "No flight controller found",
       "body": "The computer does not see a flight controller. This is usually the cable or the USB port.",
-      "step1": "Unplug the USB cable and plug it back in. Wait a few seconds.",
+      "step1": "Check that the USB cable is pushed in firmly at both ends. Wait a few seconds.",
       "step2": "Try another cable. Many USB cables only charge.",
       "step3": "Plug straight into the computer, not through a hub.",
       "step4": "Check that a light turns on on the board. If nothing lights up, it is not getting power."
@@ -789,7 +789,7 @@
       "title": "The flight controller's connection is in use",
       "body": "Another program, or another window of this app, has the connection open.",
       "step1": "Close other windows of this app, and apps such as Betaflight Configurator or Cura.",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "Wait a few seconds, then try again."
     },
     "PORT_BUSY_APP": {
       "title": "This app is already using the flight controller",
@@ -801,7 +801,7 @@
       "title": "Another program is using the flight controller",
       "body": "Another app on this computer has the connection open.",
       "step1": "Close Betaflight Configurator, Cura or another app that may use the port (for example ESC Configurator or a 3D-printer tool).",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "Wait a few seconds, then try again."
     },
     "DISCONNECTED": {
       "title": "The flight controller was disconnected",
@@ -813,24 +813,24 @@
       "title": "The flight controller stopped responding",
       "body": "The board did not answer in time.",
       "step1": "Check the cable, then select Try again.",
-      "step2": "If it keeps happening, unplug and replug the board."
+      "step2": "If it keeps happening, try another USB port or cable."
     },
     "SERIAL_ERROR": {
       "title": "Could not talk to the board",
       "body": "The USB connection reported an error.",
-      "step1": "Unplug and replug the board.",
+      "step1": "Check the USB cable and that the board is powered, then try again.",
       "step2": "Try another USB port or cable."
     },
     "DRIVER_MISSING": {
       "title": "Windows needs a driver for this board",
       "body": "Windows sees the board but has no driver for it. This is common on a new computer.",
       "step1": "Select Install the driver. It takes a minute.",
-      "step2": "Unplug and replug the board, then try again."
+      "step2": "When it is installed, try again."
     },
     "USB_ERROR": {
       "title": "USB error",
       "body": "The computer reported a USB problem while talking to the board.",
-      "step1": "Unplug and replug the board.",
+      "step1": "Check the USB cable and that the board is powered, then try again.",
       "step2": "Try another USB port, straight on the computer."
     },
     "UNSUPPORTED_FIRMWARE": {
@@ -1012,19 +1012,31 @@
       "title": "The calibration did not finish",
       "body": "The board did not finish calibrating the accelerometer.",
       "step1": "Keep the quad level and still, and try again.",
-      "step2": "If it fails again, unplug the board, plug it back in and try once more."
+      "step2": "If it fails again, check the USB cable and that the board is powered, then try once more."
     },
     "PENDING_UNSAVED_CHANGES": {
       "title": "The board has unsaved changes",
-      "body": "The board has changes that were never saved, and calibrating now would save them too. Restart the board first: it will restart and nothing unsaved will be kept.",
-      "step1": "Click Reboot board. Your saved settings stay as they are; only the unsaved changes are dropped. Nothing was calibrated.",
+      "body": "The board has changes that were never saved, and calibrating now would save them too. Press Reboot board first: the board will restart and nothing unsaved will be kept.",
+      "step1": "Press Reboot board. Your saved settings stay as they are; only the unsaved changes are dropped. Nothing was calibrated.",
       "step2": "When the board is back, calibrate again."
     },
     "REBOOT_NOT_CONFIRMED": {
       "title": "We couldn't confirm the board restarted",
-      "body": "We couldn't confirm the board restarted. Unplug the USB cable and the battery, wait a few seconds, plug back in, and connect again.",
-      "step1": "Unplug the USB cable and the battery.",
-      "step2": "Wait a few seconds, plug them back in, and connect again."
+      "body": "We couldn't confirm the board restarted, so the unsaved changes may still be there. Press Reboot board again. If it keeps failing, check the USB cable and that the board is powered.",
+      "step1": "Press Reboot board again. It is safe to press it more than once.",
+      "step2": "If it keeps failing, check the USB cable and that the board is powered."
+    },
+    "REBOOT_BOARD_LOST": {
+      "title": "The board didn't come back after restarting",
+      "body": "The board didn't come back after restarting. Check the USB cable, then connect again. After you reconnect, Reboot board is still the way to clear the unsaved changes.",
+      "step1": "Check the USB cable and that the board is powered.",
+      "step2": "Go to Connect and connect again. If calibrating still says there are unsaved changes, press Reboot board."
+    },
+    "CONNECT_REBOOT_NOT_CONFIRMED": {
+      "title": "We couldn't confirm the board restarted",
+      "body": "This board still had unsaved changes, so it is restarted when you connect, but we couldn't confirm the restart. Try connecting again. If it keeps failing, check the USB cable and that the board is powered.",
+      "step1": "Select Try again. It is safe to try more than once.",
+      "step2": "If it keeps failing, check the USB cable and that the board is powered."
     }
   },
   "driverReplace": {

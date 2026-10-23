@@ -59,9 +59,10 @@ async function connect(): Promise<void> {
     setBoard(wizard, info, ports, path);
   } catch (e) {
     const ue = toUiError(e);
-    // device_connect reboots a board left with unsaved changes; PENDING_UNSAVED_CHANGES here
-    // means that reboot was not confirmed: the user has to power-cycle it (TODO(shared) code).
-    error.value = ue.code === "PENDING_UNSAVED_CHANGES" ? uiError("REBOOT_NOT_CONFIRMED", `device_connect: ${ue.message}`) : ue;
+    // device_connect reboots a board left with unsaved changes (#69); PENDING_UNSAVED_CHANGES
+    // here means that reboot was not confirmed. Connecting again retries it (a replug alone
+    // never clears the flag, it lives in the app).
+    error.value = ue.code === "PENDING_UNSAVED_CHANGES" ? uiError("CONNECT_REBOOT_NOT_CONFIRMED", `device_connect: ${ue.message}`) : ue;
   } finally {
     busy.value = false;
   }
@@ -166,7 +167,7 @@ onMounted(scan);
         <button type="button" class="btn" :disabled="busy" @click="scan">{{ t("connect.rescan") }}</button>
       </div>
       <DriverReplaceConfirm v-if="pendingReplace" :replaces="pendingReplace" :busy="busy" @confirm="confirmReplace" @cancel="pendingReplace = null" />
-      <ErrorPanel v-else-if="error" :error="error" :busy="busy" :hide="['goConnect']" @action="onAction" />
+      <ErrorPanel v-else-if="error" :error="error" :busy="busy" @action="onAction" />
       <p v-if="!demoState.forced" class="hint">
         {{ t("demo.tryHint") }}
         <button type="button" class="btn btn--small btn--link" :disabled="busy" data-test="use-demo" @click="useDemo">{{ t("demo.try") }}</button>

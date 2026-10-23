@@ -54,7 +54,7 @@ export const WRITE_DEPENDENCIES: Partial<Record<string, string[]>> = {
   flasher_remove_read_protection: ["flasher_list_dfu_devices"],
   // TODO(shared): pending device command (api/pending.ts). Calibration is stored on the board.
   device_acc_calibrate: [],
-  // TODO(shared): device_reboot (api/pending.ts). Never "reboot" a simulated board for a real one.
+  // "Reboot board": never answered by the simulated board for a real one.
   device_reboot: [],
 };
 
