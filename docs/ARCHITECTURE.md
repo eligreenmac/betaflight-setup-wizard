@@ -380,7 +380,9 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
 - WinUSB: libwdi-based elevated helper exe shipped as a Tauri resource (phase 1),
   invoked by `system_install_dfu_driver`: binds WinUSB only to connected DFU devices that
-  lack it (one UAC prompt; the app itself never runs elevated). Driver files are
+  lack it (one UAC prompt: the app relaunches its own exe with an elevated-install
+  subcommand that `main.rs` dispatches before Tauri starts; the app UI never runs
+  elevated). Driver files are
   extracted to a per-run SYSTEM/Administrators-only folder under `%ProgramData%`. Details, build and
   LGPL-3.0 obligations: `docs/PACKAGING.md`.
   device/flasher never install drivers; they report `DRIVER_MISSING` with the device's

@@ -51,6 +51,26 @@ jobs:
           $list = 7z l $setup.FullName
           if (-not ($list | Select-String -SimpleMatch 'bfsw-wdi-simple.exe')) { throw "bfsw-wdi-simple.exe not found in $($setup.Name)" }
           $list | Select-String -SimpleMatch 'drivers'
+      - name: Elevated WinUSB install mode of the built app exe
+        # Runs the real release exe the way the app relaunches itself via UAC
+        # (runners are already elevated): main() must dispatch before Tauri starts,
+        # find drivers/bfsw-wdi-simple.exe next to the exe, create/verify/clean the
+        # admin-only %ProgramData% folder (no devices -> exit 0) and reject bad args.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Resolve-Path src-tauri/target/release/betaflight-setup-wizard.exe
+          function Invoke-Mode([string[]]$a) {
+            $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -PassThru -WindowStyle Hidden
+            $p.ExitCode
+          }
+          $code = Invoke-Mode @('--bfsw-elevated-winusb-install')
+          if ($code -ne 0) { throw "no-device run exited $code (expected 0)" }
+          $code = Invoke-Mode @('--bfsw-elevated-winusb-install', 'not-a-device')
+          if ($code -ne 1008) { throw "bad-args run exited $code (expected 1008)" }
+          $left = @(Get-ChildItem -Force -Directory $env:ProgramData -Filter 'BFSW-WinUSB-*')
+          if ($left.Count -ne 0) { throw "work folder left behind: $($left.Name -join ', ')" }
+          Write-Host 'elevated mode OK'
       - uses: actions/upload-artifact@v7
         with:
           name: windows-installers
