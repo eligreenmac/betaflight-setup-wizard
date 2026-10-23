@@ -74,11 +74,10 @@ const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
 /**
  * The FC fields the HD gate reads. `hdOsdSupported` is Device's shared field
  * (`FcInfo.hdOsdSupported: boolean | null`): true = HD / MSP DisplayPort OSD compiled in,
- * false = confirmed absent, null = unknown.
- * TODO(shared): add `hdOsdSupported` to FcInfo (types/model.ts) when Device's shared PR
- * lands, then drop this optional mirror.
+ * false = confirmed absent, null = unknown. Optional here so older backends / fixtures
+ * that omit it still type-check (they fall back to the build options).
  */
-export type HdOsdFc = Pick<FcInfo, "buildOptions"> & { hdOsdSupported?: boolean | null };
+export type HdOsdFc = Pick<FcInfo, "buildOptions"> & Partial<Pick<FcInfo, "hdOsdSupported">>;
 
 /** Old heuristic: the build options (empty on real boards today, so usually "unknown"). */
 function hdFromBuildOptions(fc: Pick<FcInfo, "buildOptions"> | null): boolean | null {

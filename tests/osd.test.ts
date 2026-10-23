@@ -57,8 +57,7 @@ async function choose(): Promise<void> {
   await w!.get('[data-osd-mode="choose"]').setValue(true);
   await settle();
 }
-// TODO(shared): FcInfo.hdOsdSupported is not in src/types/model.ts yet.
-const fcHd = () => (wizard.fc as { hdOsdSupported?: boolean | null } | null)?.hdOsdSupported;
+const fcHd = () => wizard.fc?.hdOsdSupported;
 const previewNames = () => w!.findAll("[data-preview]").map((e) => e.attributes("data-preview"));
 
 describe("video system", () => {
@@ -120,7 +119,7 @@ describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
     expect(hdOsdSupport(null)).toBeNull();
   });
 
-  it("hdOsdSupport: FcInfo.hdOsdSupported (TODO(shared)) wins when it is a boolean; null / missing / junk = build options", () => {
+  it("hdOsdSupport: FcInfo.hdOsdSupported wins when it is a boolean; null / missing / junk = build options", () => {
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD"], hdOsdSupported: true })).toBe(true);
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD"], hdOsdSupported: false })).toBe(false);
     expect(hdOsdSupport({ buildOptions: [], hdOsdSupported: null })).toBeNull();
