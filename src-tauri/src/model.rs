@@ -662,6 +662,13 @@ pub struct UsbDriverInfo {
     pub action: DriverAction,
     /// For `action = VENDOR_DOWNLOAD`: index into `DriverStatus.guidance`.
     pub guidance_index: Option<u32>,
+    /// DFU only: true when `action = INSTALL_DFU_DRIVER` and another driver
+    /// (`service`, e.g. ST's DfuSe "STTub30" or libusb0) is currently bound, which
+    /// installing WinUSB will REPLACE (STM32CubeProgrammer/DfuSe stop seeing the
+    /// device). The UI must warn and get confirmation first. False when no driver
+    /// is bound.
+    #[serde(default)]
+    pub replaces_driver: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
