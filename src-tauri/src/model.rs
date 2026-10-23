@@ -105,6 +105,91 @@ pub struct FcSerialPort {
     pub is_connection_port: bool,
 }
 
+/// Motor-test limits. Always clamped by the backend: `maxThrottle` <= 1250,
+/// `watchdogMs` 100..=2000. Defaults: 1150 / 500.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestLimits {
+    pub max_throttle: u16,
+    pub watchdog_ms: u32,
+}
+
+/// How the FC drives its motors (read at motor-test start).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorOutputConfig {
+    /// `motor_pwm_protocol` name, e.g. "DSHOT600", "PWM", "DISABLED".
+    pub protocol: String,
+    /// DShot / ProShot.
+    pub digital: bool,
+    /// `feature 3D` (motor test is refused in 3D mode).
+    pub feature3d: bool,
+    pub mincommand: u16,
+    pub motor_count: u8,
+    /// Value meaning "motor stopped": 1000 for digital protocols, else `mincommand`.
+    pub stop_value: u16,
+}
+
+/// Result of `device_motor_test_start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestSession {
+    pub output_config: MotorOutputConfig,
+    /// The limits actually in force (after clamping).
+    pub limits: MotorTestLimits,
+}
+
+/// Emitted on `device://motor-test-stopped` whenever a running test ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestStopped {
+    pub reason: MotorTestStopReason,
+    /// `AppError` JSON when `reason` = ERROR.
+    pub error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MotorTestStopReason {
+    /// `device_motor_test_stop` or `device_disconnect`.
+    Requested,
+    /// No keepalive within `watchdogMs`.
+    Watchdog,
+    /// The FC became armed during the test.
+    Armed,
+    Disconnected,
+    /// Window close/destroy or app exit (emergency stop in the Tauri run loop).
+    AppClosing,
+    Error,
+}
+
+/// Emitted on `device://rc-channels` at the stream rate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RcChannels {
+    pub seq: u64,
+    /// Milliseconds since the stream started.
+    pub timestamp_ms: u64,
+    /// Raw MSP_RC values (usually 1000..2000), firmware channel order (AETR + AUX).
+    pub channels: Vec<u16>,
+}
+
+/// Emitted on `device://rc-stopped` when the RC stream ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RcStopped {
+    pub reason: RcStopReason,
+    pub error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RcStopReason {
+    Requested,
+    Disconnected,
+    Error,
+}
+
 // ---------------------------------------------------------------- flasher
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,7 +6,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AppInfo, ApplyResult, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
-  FcInfo, FcSerialPort, FirmwareImage, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
+  FcInfo, FcSerialPort, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
   VerifyReport,
 } from "../types/model";
 
@@ -20,6 +20,14 @@ export interface CommandMap {
   device_cli_exec: [{ line: string }, string];
   device_reboot_to_bootloader: [Record<string, never>, void];
   device_probe_board: [Record<string, never>, FcInfo];
+  device_motor_test_start: [
+    { motorIndex: number | null; throttle: number; propsOffConfirmed: boolean; limits: MotorTestLimits | null },
+    MotorTestSession,
+  ];
+  device_motor_test_keepalive: [Record<string, never>, void];
+  device_motor_test_stop: [Record<string, never>, void];
+  device_rc_stream_start: [{ rateHz: number | null }, void];
+  device_rc_stream_stop: [Record<string, never>, void];
   // flasher
   flasher_list_targets: [Record<string, never>, BoardTarget[]];
   flasher_list_releases: [{ target: string }, FirmwareRelease[]];
@@ -79,6 +87,14 @@ export const api = {
     cliExec: (line: string) => call("device_cli_exec", { line }),
     rebootToBootloader: () => call("device_reboot_to_bootloader", none),
     probeBoard: () => call("device_probe_board", none),
+    /** First call starts the test, later calls change the throttle. Feeds the watchdog. */
+    motorTestStart: (motorIndex: number | null, throttle: number, propsOffConfirmed: boolean, limits: MotorTestLimits | null = null) =>
+      call("device_motor_test_start", { motorIndex, throttle, propsOffConfirmed, limits }),
+    /** Every 200 ms while a test runs. */
+    motorTestKeepalive: () => call("device_motor_test_keepalive", none),
+    motorTestStop: () => call("device_motor_test_stop", none),
+    rcStreamStart: (rateHz: number | null = null) => call("device_rc_stream_start", { rateHz }),
+    rcStreamStop: () => call("device_rc_stream_stop", none),
   },
   flasher: {
     listTargets: () => call("flasher_list_targets", none),
@@ -118,4 +134,7 @@ export const api = {
 export const EVENTS = {
   flashProgress: "flasher://progress",
   configProgress: "config://progress",
+  motorTestStopped: "device://motor-test-stopped",
+  rcChannels: "device://rc-channels",
+  rcStopped: "device://rc-stopped",
 } as const;

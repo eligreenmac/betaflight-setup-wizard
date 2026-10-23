@@ -7,7 +7,7 @@ use serde::Serialize;
 
 /// Who holds a serial port when `PORT_BUSY` is returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PortHolder {
     /// Another operation in this app (the device connection manager allows one owner).
     App,
@@ -72,6 +72,16 @@ pub enum AppError {
     FlashFailed(String),
     #[error("verify failed: {0}")]
     VerifyMismatch(String),
+    /// The motor-test safety gate refused (props not confirmed, throttle above the cap,
+    /// 3D mode, invalid motor, motors disabled). Motors are at stop.
+    #[error("motor test refused: {0}")]
+    MotorTestRefused(String),
+    /// The FC is armed; motor test refused (or stopped).
+    #[error("the flight controller is armed; disarm it first")]
+    BoardArmed,
+    /// Keepalive/stop without a running motor test (e.g. the watchdog already fired).
+    #[error("motor test is not running")]
+    MotorTestNotActive,
     #[error("I/O error: {0}")]
     Io(String),
 }
@@ -97,8 +107,16 @@ impl AppError {
             AppError::EraseConfirmationRequired => "ERASE_CONFIRMATION_REQUIRED",
             AppError::FlashFailed(_) => "FLASH_FAILED",
             AppError::VerifyMismatch(_) => "VERIFY_MISMATCH",
+            AppError::MotorTestRefused(_) => "MOTOR_TEST_REFUSED",
+            AppError::BoardArmed => "BOARD_ARMED",
+            AppError::MotorTestNotActive => "MOTOR_TEST_NOT_ACTIVE",
             AppError::Io(_) => "IO",
         }
+    }
+
+    /// The serialized form as a JSON value (used inside event payloads).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({ "code": self.code() }))
     }
 
     /// Structured payload for the UI, serialized as `details`.
@@ -173,6 +191,6 @@ mod tests {
         };
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "PORT_BUSY");
-        assert_eq!(v["details"], json!({ "port": "COM5", "heldBy": "app" }));
+        assert_eq!(v["details"], json!({ "port": "COM5", "heldBy": "APP" }));
     }
 }

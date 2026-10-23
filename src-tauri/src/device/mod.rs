@@ -9,6 +9,13 @@ pub mod usb_ids;
 
 use crate::error::AppResult;
 
+/// Payload `MotorTestStopped`.
+pub const MOTOR_TEST_STOPPED_EVENT: &str = "device://motor-test-stopped";
+/// Payload `RcChannels`.
+pub const RC_CHANNELS_EVENT: &str = "device://rc-channels";
+/// Payload `RcStopped`.
+pub const RC_STOPPED_EVENT: &str = "device://rc-stopped";
+
 /// Abstraction over an open FC link so config/flasher can be unit-tested
 /// against a mock (see config tests).
 pub trait Connection: Send {

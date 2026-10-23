@@ -86,7 +86,9 @@ Enums:
 `Backup {id, path, boardUid, boardName, firmwareVersion, createdAt}`,
 `ApplyResult {applied, errors, saved, backup, reconnected}`, `ConfigProgress {stage, fraction, message}`,
 `ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
-`DriverStatus`, `AppInfo`.
+`DriverStatus`, `AppInfo`,
+`MotorTestLimits {maxThrottle, watchdogMs}`, `MotorOutputConfig`, `MotorTestSession`,
+`MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`.
 
 ### 2.3 Errors
 
@@ -99,13 +101,16 @@ plus the device/flasher codes:
 | Code | When | `details` | Suggested UI |
 |---|---|---|---|
 | `BOARD_NOT_FOUND` | Port path gone / FC unplugged | – | "Plug the FC in and pick its port" |
-| `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "app" \| "external" }` | `external`: "Close Betaflight App / other tools"; `app`: wait/retry |
+| `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "APP" \| "EXTERNAL" }` | `EXTERNAL`: "Close Betaflight App / other tools"; `APP`: wait/retry |
 | `DRIVER_MISSING` | DFU device present but cannot be opened (Windows: no WinUSB bound) | `{ vid: number, pid: number, detail: string }` | Offer `system_install_dfu_driver` (owned by packaging), then retry `flasher_list_dfu_devices` |
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
 | `ERASE_CONFIRMATION_REQUIRED` | `flasher_remove_read_protection` called without `confirmErase: true`; nothing was sent | – | (programming error in the UI) |
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
+| `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |
+| `BOARD_ARMED` | FC is armed at motor-test start (or became armed) | – | "Disarm first" |
+| `MOTOR_TEST_NOT_ACTIVE` | Keepalive after the test stopped (watchdog, armed, disconnect) | – | Reset the motor-test UI |
 
 Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
 `DRIVER` stays for driver-installation failures (packaging).
@@ -130,6 +135,11 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_cli_exec` | `line` | `string` | device |
 | `device_reboot_to_bootloader` | – | – | device |
 | `device_probe_board` | – | `FcInfo` (identify + read-only CLI probe, §4.1) | device |
+| `device_motor_test_start` | `motorIndex: number\|null, throttle, propsOffConfirmed, limits: MotorTestLimits\|null` | `MotorTestSession` (first call starts, later calls update; §4.2) | device |
+| `device_motor_test_keepalive` | – | – (every 200 ms) | device |
+| `device_motor_test_stop` | – | – (all motors to stop) | device |
+| `device_rc_stream_start` | `rateHz: number\|null` (15, clamped 1–50) | – (events) | device |
+| `device_rc_stream_stop` | – | – | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
@@ -152,8 +162,15 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
 
-Events: `flasher://progress` → `FlashProgress`; `config://progress` → `ConfigProgress`.
-New events are named `<module>://<name>`.
+Events (named `<module>://<name>`):
+
+| Event | Payload |
+|---|---|
+| `flasher://progress` | `FlashProgress {stage, fraction, message}` |
+| `config://progress` | `ConfigProgress {stage, fraction, message}` |
+| `device://motor-test-stopped` | `MotorTestStopped {reason: REQUESTED\|WATCHDOG\|ARMED\|DISCONNECTED\|APP_CLOSING\|ERROR, error: AppError\|null}` |
+| `device://rc-channels` | `RcChannels {seq, timestampMs, channels: number[]}` |
+| `device://rc-stopped` | `RcStopped {reason: REQUESTED\|DISCONNECTED\|ERROR, error: AppError\|null}` |
 
 ## 4. Rust interfaces between modules
 
@@ -174,7 +191,7 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
 
 - **One connection manager** (device) owns the single open serial port app-wide. Commands
   that need the FC borrow it for the duration of the call; a concurrent caller gets
-  `PORT_BUSY {heldBy: "app"}`. Another program holding the port → `PORT_BUSY {heldBy: "external"}`.
+  `PORT_BUSY {heldBy: "APP"}`. Another program holding the port → `PORT_BUSY {heldBy: "EXTERNAL"}`.
   config/flasher get the link only as `&mut dyn Connection` through the manager.
 - **Serial port list** (`FcInfo.serialPorts`): read by `device_identify` with
   `MSP2_COMMON_SERIAL_CONFIG` (0x1009), falling back to `MSP_CF_SERIAL_CONFIG` (54).
@@ -191,6 +208,30 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   `RX_SPI_EXPRESSLRS_RESET` + `_BUSY` assigned, `protocol` = value printed by `get`.
   It leaves the CLI with `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC
   (the manager reconnects) — prefer running it where a reboot is expected anyway.
+
+### 4.2 Motor test safety (device)
+
+- Runs on the manager's connection; while it runs the port is lent to the motor-test worker
+  thread, so other device/config/flasher calls get `PORT_BUSY {heldBy: "APP"}` until
+  `device_motor_test_stop` (or `device_disconnect`, which stops first).
+- **Gate** (checked on every start/update, in order): `propsOffConfirmed`, FC disarmed
+  (`MSP_STATUS_EX` bit 0), no 3D feature, motor protocol not DISABLED and motorCount > 0,
+  `motorIndex < motorCount`, `stopValue <= throttle <= maxThrottle`. Cap 1150 by default, hard cap
+  1250; over-cap requests are **refused, not clamped**. Any refusal puts all motors at stop.
+- **Watchdog**: no keepalive within `watchdogMs` (default 500, clamped 100–2000) → stop, event
+  `WATCHDOG`. The FC is re-checked every 250 ms; armed → stop, event `ARMED`.
+- **Stop paths** — every one sends `MSP_SET_MOTOR` with the stop value for **all 8 motors**
+  (twice; MSP_SET_MOTOR has no reply): `device_motor_test_stop`, a gate refusal, watchdog,
+  armed, `device_disconnect`, dropping the worker/handle, and the **emergency stop in the Tauri
+  run loop**: `on_window_event` on `CloseRequested` and `Destroyed`, and the `App::run` callback on
+  `RunEvent::ExitRequested` and `RunEvent::Exit` call `device::emergency_stop_all()` (event
+  `APP_CLOSING`). This does not depend on the UI being alive.
+- `MSP_SET_ARMING_DISABLED` is **not** sent. Betaflight has no firmware-side MSP motor timeout:
+  if USB drops mid-test the last value stays applied, so the UI must tell the user to test on
+  USB power with the battery disconnected and props off.
+- The RC stream (`device_rc_stream_start`) also lends the port to a worker; it polls `MSP_RC`
+  at `rateHz` and ends with `device://rc-stopped`. Motor test and RC stream are mutually
+  exclusive (the second gets `PORT_BUSY {heldBy: "APP"}`).
 
 Until `device` lands, `config` tests use a `MockConnection` that replays recorded CLI
 transcripts (put fixtures in `src-tauri/tests/fixtures/<firmware>/`).

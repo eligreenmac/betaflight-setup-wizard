@@ -28,6 +28,11 @@ pub fn run() {
             device::commands::device_cli_exec,
             device::commands::device_reboot_to_bootloader,
             device::commands::device_probe_board,
+            device::commands::device_motor_test_start,
+            device::commands::device_motor_test_keepalive,
+            device::commands::device_motor_test_stop,
+            device::commands::device_rc_stream_start,
+            device::commands::device_rc_stream_stop,
             // flasher
             flasher::commands::flasher_list_targets,
             flasher::commands::flasher_list_releases,

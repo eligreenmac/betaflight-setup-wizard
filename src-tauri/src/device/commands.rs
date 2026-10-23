@@ -2,7 +2,7 @@
 //! (src/api/commands.ts) - do not change without a `shared` PR.
 
 use crate::error::{AppError, AppResult};
-use crate::model::{FcInfo, HostPort};
+use crate::model::{FcInfo, HostPort, MotorTestLimits, MotorTestSession};
 
 /// List host serial ports, classified by VID/PID.
 #[tauri::command]
@@ -47,4 +47,42 @@ pub async fn device_reboot_to_bootloader() -> AppResult<()> {
 #[tauri::command]
 pub async fn device_probe_board() -> AppResult<FcInfo> {
     Err(AppError::NotImplemented("device_probe_board"))
+}
+
+/// Start (first call) or update (later calls) a motor test on the active connection.
+/// Safety gate: `props_off_confirmed`, FC disarmed, no 3D, valid motor, stop <= throttle
+/// <= cap. Feeds the watchdog. Emits `device://motor-test-stopped` when the test ends.
+#[tauri::command]
+pub async fn device_motor_test_start(
+    motor_index: Option<u8>,
+    throttle: u16,
+    props_off_confirmed: bool,
+    limits: Option<MotorTestLimits>,
+) -> AppResult<MotorTestSession> {
+    let _ = (motor_index, throttle, props_off_confirmed, limits);
+    Err(AppError::NotImplemented("device_motor_test_start"))
+}
+
+/// Feed the motor-test watchdog (UI: every 200 ms). `MOTOR_TEST_NOT_ACTIVE` once stopped.
+#[tauri::command]
+pub async fn device_motor_test_keepalive() -> AppResult<()> {
+    Err(AppError::NotImplemented("device_motor_test_keepalive"))
+}
+
+/// Stop all motors and hand the port back to the connection manager.
+#[tauri::command]
+pub async fn device_motor_test_stop() -> AppResult<()> {
+    Err(AppError::NotImplemented("device_motor_test_stop"))
+}
+
+/// Stream MSP_RC on `device://rc-channels` (`rate_hz` default 15, clamped 1..=50).
+#[tauri::command]
+pub async fn device_rc_stream_start(rate_hz: Option<u32>) -> AppResult<()> {
+    let _ = rate_hz;
+    Err(AppError::NotImplemented("device_rc_stream_start"))
+}
+
+#[tauri::command]
+pub async fn device_rc_stream_stop() -> AppResult<()> {
+    Err(AppError::NotImplemented("device_rc_stream_stop"))
 }

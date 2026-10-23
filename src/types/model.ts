@@ -151,6 +151,29 @@ export interface ConfigProgress { stage: ConfigStage; fraction: number; message:
 export interface Mismatch { setting: string; expected: string; actual: string }
 export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
 
+// ---- device: motor test + RC stream
+/** Clamped by the backend: maxThrottle <= 1250, watchdogMs 100..2000. Defaults 1150 / 500. */
+export interface MotorTestLimits { maxThrottle: number; watchdogMs: number }
+export interface MotorOutputConfig {
+  /** motor_pwm_protocol name, e.g. "DSHOT600", "PWM", "DISABLED". */
+  protocol: string;
+  digital: boolean;
+  feature3d: boolean;
+  mincommand: number;
+  motorCount: number;
+  /** 1000 for DShot/ProShot, else mincommand. */
+  stopValue: number;
+}
+export interface MotorTestSession { outputConfig: MotorOutputConfig; limits: MotorTestLimits }
+export type MotorTestStopReason = "REQUESTED" | "WATCHDOG" | "ARMED" | "DISCONNECTED" | "APP_CLOSING" | "ERROR";
+/** `device://motor-test-stopped` */
+export interface MotorTestStopped { reason: MotorTestStopReason; error: AppError | null }
+/** `device://rc-channels`: raw MSP_RC values (usually 1000..2000), firmware channel order. */
+export interface RcChannels { seq: number; timestampMs: number; channels: number[] }
+export type RcStopReason = "REQUESTED" | "DISCONNECTED" | "ERROR";
+/** `device://rc-stopped` */
+export interface RcStopped { reason: RcStopReason; error: AppError | null }
+
 // ---- system
 export interface DriverStatus { dfuWinusb: boolean; vcp: boolean; notes: string[] }
 export interface AppInfo { version: string; os: string; cacheDir: string }
@@ -159,9 +182,10 @@ export interface AppInfo { version: string; os: string; cacheDir: string }
 export type AppErrorCode =
   | "NOT_IMPLEMENTED" | "NOT_CONNECTED" | "SERIAL" | "MSP" | "CLI" | "USB" | "FIRMWARE" | "CONFIG"
   | "DRIVER" | "IO" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
-  | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH";
+  | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
+  | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE";
 /** `details` of PORT_BUSY. */
-export interface PortBusyDetails { port: string; heldBy: "app" | "external" }
+export interface PortBusyDetails { port: string; heldBy: "APP" | "EXTERNAL" }
 /** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
 export interface DriverMissingDetails { vid: number; pid: number; detail: string }
 
