@@ -124,6 +124,44 @@ pub fn restore(
     })
 }
 
+/// Restore after flash (ARCHITECTURE §5.2): the backup is found, read and checked before the
+/// port is borrowed (`BACKUP_UNREADABLE` / `BACKUP_NOT_DIFF_ALL`, nothing sent); no link →
+/// `BOARD_NOT_RECONNECTED` without a stage; `PORT_BUSY` passes through unchanged.
+pub fn restore_after_flash(
+    links: &impl LinkSource,
+    store: &BackupStore,
+    backup_id: &str,
+    progress: &mut dyn FnMut(ConfigProgress),
+) -> AppResult<RestoreReport> {
+    use super::restore;
+    use crate::error::ConfigErrorReason;
+    let target = store.find(backup_id).map_err(|e| {
+        AppError::restore_rejected(
+            ConfigErrorReason::BackupUnreadable,
+            e.to_string(),
+            backup_id,
+            None,
+            None,
+        )
+    })?;
+    let prepared = restore::prepare(&target, std::fs::read_to_string(&target.path))?;
+    links
+        .with_link(|l| {
+            let uid = board_uid(l);
+            restore::run(l, &prepared, &uid, progress)
+        })
+        .map_err(|e| match e {
+            AppError::NotConnected => AppError::restore_rejected(
+                ConfigErrorReason::BoardNotReconnected,
+                "the FC is not connected; reconnect it and retry the restore",
+                backup_id,
+                None,
+                None,
+            ),
+            e => e,
+        })
+}
+
 // ------------------------------------------------------------------ Tauri wrappers
 
 /// `<app_data_dir>/backups`
@@ -265,15 +303,16 @@ pub async fn config_restore(app: AppHandle, backup_id: String) -> AppResult<Appl
 }
 
 /// Restore a `diff all` backup after a firmware flash, across firmware lines
-/// (ARCHITECTURE.md §5.2). Contract only for now: returns `NOT_IMPLEMENTED` until the
-/// implementation lands.
+/// (ARCHITECTURE.md §5.2).
 #[tauri::command]
 pub async fn config_restore_after_flash(
     app: AppHandle,
     backup_id: String,
 ) -> AppResult<RestoreReport> {
-    let _ = (app, backup_id);
-    Err(AppError::NotImplemented("config_restore_after_flash"))
+    blocking(app, move |m, store, emit| {
+        restore_after_flash(m, store, &backup_id, emit)
+    })
+    .await
 }
 
 #[cfg(test)]

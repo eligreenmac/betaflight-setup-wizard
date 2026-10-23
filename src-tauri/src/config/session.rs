@@ -32,7 +32,7 @@ pub const MSP_SET_REBOOT: u16 = 68;
 /// configuration. On 4.4 `exit` reboots, which drops the RAM changes. On 4.5+ the device
 /// link leaves the CLI with `exit noreboot` (ARCHITECTURE §4.1), which keeps them active,
 /// so the FC is rebooted over MSP right after. Either way the caller must `reconnect`.
-fn discard<C: Connection + ?Sized>(conn: &mut C, dialect: Dialect) -> AppResult<()> {
+pub(super) fn discard<C: Connection + ?Sized>(conn: &mut C, dialect: Dialect) -> AppResult<()> {
     conn.exit_cli(false)?;
     if dialect != Dialect::V4_4 {
         conn.msp_request(MSP_SET_REBOOT, &[0])?;
