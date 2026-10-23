@@ -56,6 +56,15 @@ pub enum FlashError {
     /// The image path given to `flasher_flash` is not a file inside the firmware cache.
     #[error("firmware image must be a file in the firmware cache: {0}")]
     PathOutsideCache(String),
+    /// `/api/options/{release}` could not be loaded and there is no cached copy.
+    #[error("the build options of firmware {release} could not be loaded: {reason}")]
+    OptionsUnavailable { release: String, reason: String },
+    /// A required option is not offered by the release.
+    #[error("firmware {release} cannot be built with {}", options.join(", "))]
+    RequiredOptionUnsupported {
+        release: String,
+        options: Vec<String>,
+    },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -94,6 +103,12 @@ impl From<FlashError> for AppError {
             | FlashError::ChecksumMismatch { .. }
             | FlashError::Json(_) => AppError::Firmware(msg),
             FlashError::PathOutsideCache(_) => AppError::InvalidArgument(msg),
+            FlashError::OptionsUnavailable { release, reason } => {
+                AppError::BuildOptionsUnavailable { release, reason }
+            }
+            FlashError::RequiredOptionUnsupported { release, options } => {
+                AppError::RequiredOptionUnsupported { release, options }
+            }
             FlashError::Io(_) => AppError::Io(msg),
         }
     }

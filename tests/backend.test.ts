@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { afterEach, describe, expect, it } from "vitest";
-import { api, EVENTS } from "../src/api/commands";
+import { api, EVENTS, setBackend, type Backend } from "../src/api/commands";
 import { onEvent } from "../src/api/events";
 import { toUiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
@@ -95,6 +95,42 @@ describe("firmware update orchestration", () => {
     expect(flash.at(-1)).toBe("DONE");
     expect(res.fc.firmwareVersion).toBe("4.5.2");
     expect(res.backup).not.toBeNull();
+  });
+
+  it("asks the backend for the required options and passes them with the board's options", async () => {
+    const { runFirmwareUpdate } = await import("../src/wizard/flash");
+    const mock = installMock({ latencyMs: 0 });
+    const requests: unknown[] = [];
+    const asked: unknown[] = [];
+    const wrapped: Backend = async (cmd, args) => {
+      if (cmd === "flasher_required_options") asked.push(args);
+      const out = await mock.backend(cmd, args);
+      if (cmd !== "flasher_fetch_firmware") return out;
+      requests.push((args as { request: unknown }).request);
+      return { ...(out as object), droppedOptions: ["X_DROPPED"] } as typeof out;
+    };
+    setBackend(wrapped);
+    const hooks = { onStage: () => {}, onProgress: () => {} };
+    const requirements = { receiver: { kind: "SERIAL" as const, protocol: "SBUS" as const }, osd: { videoSystem: "HD" as const } };
+    const res = await runFirmwareUpdate({ ...fc, buildOptions: ["USE_DSHOT"] }, "4.5.2", hooks, poll, { requirements });
+    expect(asked).toEqual([{ requirements, release: "4.5.2" }]);
+    expect(requests[0]).toMatchObject({ options: ["USE_DSHOT"], requiredOptions: ["MOCK_RX_SBUS", "MOCK_OSD_HD"] });
+    expect(res.droppedOptions).toEqual(["X_DROPPED"]);
+  });
+
+  it("refuses before touching the board when a required option is unsupported", async () => {
+    const { runFirmwareUpdate } = await import("../src/wizard/flash");
+    const mock = installMock({ latencyMs: 0 });
+    const refusing: Backend = (cmd, args) =>
+      cmd === "flasher_required_options"
+        ? Promise.reject({ code: "REQUIRED_OPTION_UNSUPPORTED", message: "x", details: { release: "4.4.3", options: ["X"] } })
+        : mock.backend(cmd, args);
+    setBackend(refusing);
+    const stages: string[] = [];
+    await expect(
+      runFirmwareUpdate(fc, "4.4.3", { onStage: (s) => stages.push(s), onProgress: () => {} }, poll, { requirements: { osd: { videoSystem: "HD" } } }),
+    ).rejects.toMatchObject({ code: "REQUIRED_OPTION_UNSUPPORTED" });
+    expect(stages).toEqual(["download"]);
   });
 
   it("stops with DRIVER_MISSING, then resumes from DFU after the driver is installed", async () => {

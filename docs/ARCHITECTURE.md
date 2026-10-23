@@ -428,7 +428,7 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   (a build without RX_SPI still reports protocol 0), so `device_identify` fills only hints
   (`featureEnabled`, `protocol` from MSP_RX_CONFIG) and leaves `present: null`.
   `device_probe_board` runs the read-only CLI commands `serial`, `resource`,
-  `get rx_spi_protocol` and sets `present` = `RX_SPI_CS` assigned, `expresslrsPins` =
+  `get rx_spi_protocol` (and `get displayport_msp_col_adjust`, see "HD OSD support") and sets `present` = `RX_SPI_CS` assigned, `expresslrsPins` =
   `RX_SPI_EXPRESSLRS_RESET` + `_BUSY` assigned, `protocol` = value printed by `get`.
   It leaves the CLI with `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC
   (the manager reconnects) — prefer running it where a reboot is expected anyway.

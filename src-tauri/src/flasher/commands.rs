@@ -2,6 +2,7 @@
 //! Tauri commands for workstream `flasher`. Everything blocking (HTTP, USB) runs on
 //! `spawn_blocking`; progress goes out on `flasher://progress`.
 
+use crate::device::ConnectionManager;
 use crate::error::{AppError, AppResult};
 use crate::flasher::build_api::{BuildApi, ReqwestClient};
 use crate::flasher::dfu::DfuSe;
@@ -91,8 +92,10 @@ pub async fn flasher_list_dfu_devices() -> AppResult<Vec<DfuDevice>> {
     blocking(|| Ok(usb::list_dfu()?.into_iter().map(|f| f.info).collect())).await
 }
 
-/// Return a firmware image from cache, or request a cloud build and cache it.
-/// Emits `flasher://progress` with stage `DOWNLOADING`.
+/// Return a firmware image from cache, or request a cloud build and cache it. The board's
+/// options are filtered to what the release offers (`droppedOptions`), required options are
+/// added (`REQUIRED_OPTION_UNSUPPORTED`), and no build is requested without the release's
+/// option list (`BUILD_OPTIONS_UNAVAILABLE`). Emits `flasher://progress` with stage `DOWNLOADING`.
 #[tauri::command]
 pub async fn flasher_fetch_firmware(
     app: AppHandle,
@@ -116,8 +119,8 @@ pub async fn flasher_required_options(
     requirements: FirmwareRequirements,
     release: Option<String>,
 ) -> AppResult<Vec<String>> {
-    let _ = (app, requirements, release);
-    Err(AppError::NotImplemented("flasher_required_options"))
+    blocking(move || firmware_service(&app)?.required_options(&requirements, release.as_deref()))
+        .await
 }
 
 /// Cached firmware images available offline.
@@ -150,6 +153,11 @@ pub async fn flasher_flash(
                 &AtomicBool::new(false),
             )
         })();
+        if r.is_ok() {
+            // RAM changes of a board rebooted into DFU are gone now (§4.1 "RAM state").
+            app.state::<ConnectionManager>()
+                .forget_ram_state_after_flash();
+        }
         emit_failed(&app, r)
     })
     .await

@@ -298,6 +298,14 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       await stages(["DOWNLOADING"]);
       return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false, droppedOptions: [] };
     },
+    // Opaque demo names: the real per-release mapping lives in the flasher backend.
+    flasher_required_options: ({ requirements }) => {
+      legacy("flasher_required_options");
+      const out: string[] = [];
+      if (requirements.receiver?.protocol) out.push(`MOCK_RX_${requirements.receiver.protocol}`);
+      if (requirements.osd?.videoSystem) out.push(`MOCK_OSD_${requirements.osd.videoSystem}`);
+      return out;
+    },
     flasher_list_cache: () => [],
     flasher_flash: async ({ image, options }) => {
       if (!device.inDfu) throw err("DFU_NOT_FOUND", "no DFU device");

@@ -7,6 +7,7 @@
 //!     (`Connection` + `Reconnect`, below) to config/flasher; see ARCHITECTURE.md §4.1.
 
 pub mod attitude;
+pub mod build_info;
 pub mod cli;
 #[cfg(test)]
 mod cli_state_tests;

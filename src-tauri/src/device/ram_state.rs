@@ -99,6 +99,7 @@ mod tests {
             "diff all",
             "diff hardware",
             "get rx_spi_protocol",
+            "get displayport_msp_col_adjust",
             "get",
         ] {
             assert!(cli_line_is_read_only(l), "{l:?} is read-only");
