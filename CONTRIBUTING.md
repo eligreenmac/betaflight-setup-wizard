@@ -11,7 +11,7 @@ from that branch (or short-lived branches cut from it) **into `main`**.
 | Flasher & firmware service | `feat/flasher` | `flasher` | `src-tauri/src/flasher/**` |
 | Config engine | `feat/config` | `config` | `src-tauri/src/config/**`, `src-tauri/tests/fixtures/**` |
 | Wizard UI & i18n | `feat/ui` | `ui` | `src/**` except `src/api/commands.ts` and `src/types/model.ts`, `tests/**` |
-| Packaging, drivers, CI | `feat/packaging` | `packaging` | `src-tauri/src/system/**`, `src-tauri/tauri.conf.json`, `src-tauri/icons/**`, `.github/**` |
+| Packaging, drivers, CI | `feat/packaging` | `packaging` | `src-tauri/src/system/**`, `src-tauri/tauri.conf.json`, `src-tauri/icons/**`, `src-tauri/windows/**`, `.github/**` |
 
 ### Shared files (label `shared`)
 
