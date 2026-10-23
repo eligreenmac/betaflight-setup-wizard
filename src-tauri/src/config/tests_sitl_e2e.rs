@@ -635,7 +635,15 @@ fn sitl_end_to_end_apply_error_and_rollback() {
     assert!(b2.is_empty(), "{b2:?}");
     let dump = fc.cli_exec("dump all").unwrap();
     let snap = super::snapshot::parse_dump(&dump);
-    assert_eq!(snap.features.get("AIRMODE"), Some(&false));
+    assert_eq!(
+        snap.features.get("AIRMODE"),
+        Some(&false),
+        "dump ({} lines), feature lines: {:?}",
+        dump.lines().count(),
+        dump.lines()
+            .filter(|l| l.starts_with("feature"))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(snap.setting("align_board_yaw"), Some("90"));
     assert_eq!(snap.setting("baro_hardware"), Some("NONE"));
     let used: Vec<(u8, u8)> = snap
