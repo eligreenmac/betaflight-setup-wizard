@@ -120,7 +120,7 @@ bridge drivers are never bundled.
 Every command returns `Result<T, AppError>`; the UI receives
 `{ "code": "...", "message": "...", "details"?: {...} }` (`details` only where listed below).
 Codes: NOT_IMPLEMENTED, NOT_CONNECTED, SERIAL, MSP, CLI, USB, FIRMWARE, CONFIG,
-UNSUPPORTED_FIRMWARE, DRIVER, IO,
+UNSUPPORTED_FIRMWARE, DRIVER, IO, INVALID_ARGUMENT (bad command argument, see the table),
 plus the device/flasher codes:
 
 | Code | When | `details` | Suggested UI |
