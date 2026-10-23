@@ -207,17 +207,48 @@ pub struct Receiver {
     pub kind: ReceiverKind,
     /// Serial RX provider (when kind = SERIAL) or SPI protocol (when kind = SPI).
     pub protocol: Option<RxProtocol>,
-    /// FC port name, e.g. "UART2". Required when kind = SERIAL.
+    /// FC port name, e.g. "UART2". Required when kind = SERIAL, must be null for SPI.
     pub port: Option<String>,
-    #[serde(default)]
+    /// Enable `feature TELEMETRY` for links that carry it (CRSF, FPORT, SPI EXPRESSLRS).
+    /// For other protocols the feature is left untouched. Default true.
+    #[serde(default = "default_true")]
     pub telemetry: bool,
     #[serde(default)]
     pub inverted: bool,
     #[serde(default)]
     pub half_duplex: bool,
+    /// SPI EXPRESSLRS only: the 6-byte UID written as `expresslrs_uid`.
+    /// None = leave the current UID (bind with `bind_rx`).
+    /// The UI derives it from the binding phrase via `config_elrs_uid` and drops the
+    /// phrase; the phrase is never part of the model, never stored and never logged.
+    #[serde(default)]
+    pub elrs_uid: Option<[u8; 6]>,
+    /// SPI EXPRESSLRS only: regulatory domain. Must be one the board's chip
+    /// supports (SX1280: ISM2400/CE2400; SX127x: the 433/868/915 MHz ones).
+    #[serde(default)]
+    pub elrs_domain: Option<ElrsDomain>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+fn default_true() -> bool {
+    true
+}
+
+/// `expresslrs_domain` values (betaflight src/main/cli/settings.c lookupTableFreqDomain).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ElrsDomain {
+    Au433,
+    Au915,
+    Eu433,
+    Eu868,
+    In866,
+    Fcc915,
+    Ism2400,
+    Ce2400,
+}
+
+/// MVP config engine supports NONE, SERIAL and SPI (+ EXPRESSLRS only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReceiverKind {
     None,
@@ -312,7 +343,8 @@ pub struct Esc {
     pub motor_poles: Option<u8>,
     /// Port for analog ESC telemetry wire, if used.
     pub telemetry_port: Option<String>,
-    /// Props-out ("reversed") motor direction.
+    /// Props-out ("reversed") motor direction (`yaw_motors_reversed`).
+    /// Per-motor DShot spin-direction reversal is phase 2 (not in the MVP model).
     #[serde(default)]
     pub props_out: bool,
 }
@@ -355,20 +387,77 @@ pub struct Extras {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CliScript {
-    /// Commands WITHOUT the surrounding `batch start`/`batch end`/`save`
+    /// Commands WITHOUT the surrounding `batch start`/`save`
     /// (config_apply adds those).
     pub commands: Vec<String>,
     /// Non-fatal issues to show the user (e.g. "UART3 also used by GPS").
     pub warnings: Vec<String>,
-    /// Firmware dialect used, e.g. "4.5" or "2025.12".
+    /// Firmware dialect used: "4.4", "4.5" or "2025.12".
     pub dialect: String,
+    /// Wizard-managed serial functions this script removes from ports that no
+    /// longer need them (shown in the review step before applying).
+    #[serde(default)]
+    pub cleared: Vec<ClearedPort>,
+}
+
+/// One FC port whose managed functions are cleared by a plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearedPort {
+    /// e.g. "UART3"
+    pub port: String,
+    /// Functions removed. MSP appears only when an old MSP DisplayPort port had
+    /// exactly MSP|VTX_MSP.
+    pub functions: Vec<SerialFunction>,
+    pub function_mask_before: u32,
+    pub function_mask_after: u32,
+}
+
+/// Serial functions the config engine manages (others are never touched).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SerialFunction {
+    RxSerial,
+    Gps,
+    EscSensor,
+    VtxSmartaudio,
+    VtxTramp,
+    VtxMsp,
+    Msp,
+}
+
+/// Emitted on event `config://progress` by config_apply / config_rollback / config_restore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigProgress {
+    pub stage: ConfigStage,
+    /// 0.0..=1.0 within the stage (SENDING: lines sent / total)
+    pub fraction: f32,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConfigStage {
+    Backup,
+    Sending,
+    Saving,
+    Rebooting,
+    Reconnected,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Backup {
-    /// Absolute path of the saved `diff all` text file.
+    /// Stable id: "<boardUid>/<timestamp>" (timestamp = UTC YYYYMMDDTHHMMSSZ).
+    #[serde(default)]
+    pub id: String,
+    /// Absolute path of the saved `diff all` text file:
+    /// `<app_data_dir>/backups/<boardUid>/<timestamp>.txt` (kept forever).
     pub path: String,
+    /// MCU unique id (hex, FcInfo.uid); "unknown" if unavailable.
+    #[serde(default)]
+    pub board_uid: String,
     pub board_name: String,
     pub firmware_version: String,
     /// RFC 3339 timestamp.
@@ -381,6 +470,12 @@ pub struct ApplyResult {
     pub applied: usize,
     pub errors: Vec<CliError>,
     pub saved: bool,
+    /// Backup taken before writing (config_apply / config_restore always take one).
+    #[serde(default)]
+    pub backup: Option<Backup>,
+    /// True once the FC rebooted after `save` and the CLI is reachable again.
+    #[serde(default)]
+    pub reconnected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +495,7 @@ pub struct VerifyReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Mismatch {
+    /// What was compared, e.g. "set motor_poles", "serial UART2", "feature TELEMETRY", "aux ARM".
     pub setting: String,
     pub expected: String,
     pub actual: String,
@@ -498,4 +594,47 @@ pub struct AppInfo {
     pub version: String,
     pub os: String,
     pub cache_dir: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every example in the JSON schema must deserialize into the Rust mirror.
+    #[test]
+    fn schema_examples_deserialize() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/drone-model.schema.json")).unwrap();
+        let examples = schema["examples"].as_array().unwrap();
+        assert!(examples.len() >= 2);
+        for ex in examples {
+            let m: DroneModel = serde_json::from_value(ex.clone()).unwrap();
+            assert_eq!(m.schema_version, DRONE_MODEL_SCHEMA_VERSION);
+        }
+    }
+
+    #[test]
+    fn receiver_telemetry_defaults_to_true() {
+        let r: Receiver =
+            serde_json::from_str(r#"{"kind":"SERIAL","protocol":"CRSF","port":"UART2"}"#).unwrap();
+        assert!(r.telemetry);
+        assert_eq!(r.elrs_domain, None);
+    }
+
+    /// The binding phrase is never part of the model: a stray `elrsBindingPhrase` from an
+    /// older client is ignored on input and never serialized back out.
+    #[test]
+    fn binding_phrase_is_never_persisted() {
+        let r: Receiver = serde_json::from_str(
+            r#"{"kind":"SPI","protocol":"EXPRESSLRS","port":null,
+                "elrsBindingPhrase":"secret phrase","elrsUid":[1,2,3,4,5,6]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.elrs_uid, Some([1, 2, 3, 4, 5, 6]));
+        let out = serde_json::to_string(&r).unwrap();
+        assert!(
+            !out.contains("secret") && !out.to_lowercase().contains("phrase"),
+            "{out}"
+        );
+    }
 }
