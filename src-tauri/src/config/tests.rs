@@ -1529,3 +1529,42 @@ fn batch2_fields_from_json_each_change_the_script() {
         }
     }
 }
+
+/// HD OSD on a build without MSP DisplayPort: CONFIG with `details.reason =
+/// OSD_HD_NO_DISPLAYPORT` from both config_generate's path and config_plan's, on every
+/// firmware line. Other CONFIG errors keep no details.
+#[test]
+fn osd_hd_without_displayport_carries_a_reason() {
+    let m = model("batch2-freestyle-hd");
+    for d in Dialect::ALL {
+        let nodp = fixture_without(d, "speedybeef405v4", &|l| {
+            l.starts_with("set displayport_msp_")
+        });
+        let check = |e: crate::error::AppError| {
+            let v = e.to_json();
+            assert_eq!(v["code"], "CONFIG", "{d:?}: {v}");
+            assert_eq!(
+                v["details"],
+                serde_json::json!({ "reason": "OSD_HD_NO_DISPLAYPORT" }),
+                "{d:?}: {v}"
+            );
+            assert!(
+                v["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("HD OSD needs MSP DisplayPort"),
+                "{d:?}: {v}"
+            );
+        };
+        check(gen_on(&nodp, &m, d).unwrap_err());
+        let mut fc = nodp;
+        check(session::plan(&mut fc, &m).unwrap_err());
+    }
+    // a plain CONFIG error has no details
+    let mut bad = m.clone();
+    bad.osd.as_mut().unwrap().elements[0].name = "BOGUS".into();
+    let fc = MockFc::load("4.5", "speedybeef405v4");
+    let v = gen_on(&fc, &bad, Dialect::V4_5).unwrap_err().to_json();
+    assert_eq!(v["code"], "CONFIG");
+    assert!(v.get("details").is_none(), "{v}");
+}

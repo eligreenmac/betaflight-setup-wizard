@@ -225,6 +225,7 @@ plus the device/flasher codes:
 |---|---|---|---|
 | `BOARD_NOT_FOUND` | Port path gone / FC unplugged | – | "Plug the FC in and pick its port" |
 | `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "APP" \| "EXTERNAL" }` | `EXTERNAL`: "Close Betaflight App / other tools"; `APP`: wait/retry |
+| `CONFIG` | The model can't be turned into a script for this FC (`config_generate`, `config_plan`, `config_verify`); nothing is sent. Usually no `details`. | `{ reason: "OSD_HD_NO_DISPLAYPORT" }` only when `osd.videoSystem = HD` but the FC's `dump all` has no MSP DisplayPort (`displayport_msp_*` missing), on all three firmware lines. This comes from `config_plan` / `config_verify`, which read the dump. `config_generate` has no dump, so it never raises it. | `OSD_HD_NO_DISPLAYPORT`: back to the OSD step (pick analog or flash firmware with HD OSD); otherwise show the message |
 | `DRIVER_MISSING` | DFU device present but cannot be opened (Windows: no WinUSB bound) | `{ vid: number, pid: number, detail: string }` | Offer `system_install_dfu_driver` (owned by packaging), then retry `flasher_list_dfu_devices` |
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |

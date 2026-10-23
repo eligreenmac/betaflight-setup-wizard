@@ -9,7 +9,7 @@ use super::osd;
 use super::serial_functions::{self as sf, check_serial_config, functions_in};
 use super::snapshot::{AuxSlot, PortState, Snapshot};
 use super::vtx_table::{self, VtxTableState};
-use crate::error::{AppError, AppResult};
+use crate::error::{AppError, AppResult, ConfigErrorReason};
 use crate::model::{
     Airmode, ClearedPort, CliScript, DigitalSystem, DroneModel, ElrsDomain, EscProtocol,
     GpsProvider, OsdVideoSystem, ReceiverKind, RxProtocol, SbasMode, VtxKind, VtxProtocol,
@@ -885,9 +885,10 @@ fn osd_section(cx: &mut Ctx) -> AppResult<()> {
         },
     };
     if vs == OsdVideoSystem::Hd && !has("displayport_msp_col_adjust") {
-        return Err(cfg_err(
-            "HD OSD needs MSP DisplayPort, which this firmware build does not have",
-        ));
+        return Err(AppError::ConfigRejected {
+            message: "HD OSD needs MSP DisplayPort, which this firmware build does not have".into(),
+            reason: ConfigErrorReason::OsdHdNoDisplayport,
+        });
     }
     if o.video_system.is_some() && !has("vcd_video_system") {
         return Err(cfg_err(
