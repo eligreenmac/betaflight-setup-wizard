@@ -45,6 +45,17 @@ runs:
           -replace '^#define LIBUSB0_DIR .*$', '/* LIBUSB0_DIR disabled by BFSW: WinUSB only */' `
           -replace '^#define LIBUSBK_DIR .*$', '/* LIBUSBK_DIR disabled by BFSW: WinUSB only */' |
           Set-Content msvc\config.h
+        # x86/x64 only: hosted runners no longer ship the v143 ARM64 tools, and the
+        # app is x64-only, so drop the embedded ARM64 installer (OPT_ARM) and its
+        # project reference. Fail loudly if upstream layout changes.
+        $cfg = Get-Content -Raw msvc\config.h
+        if ($cfg -notmatch '(?m)^#define OPT_ARM\s*$') { throw 'OPT_ARM define not found in msvc\config.h' }
+        ($cfg -replace '(?m)^#define OPT_ARM\s*$', '/* OPT_ARM disabled by BFSW: x86/x64 only */') | Set-Content -NoNewline msvc\config.h
+        $proj = 'libwdi\.msvc\libwdi_static.vcxproj'
+        $xml = Get-Content -Raw $proj
+        $patched = $xml -replace '(?s)\s*<ProjectReference Include="installer_arm64\.vcxproj">.*?</ProjectReference>', ''
+        if ($patched -eq $xml) { throw 'installer_arm64 ProjectReference not found' }
+        Set-Content -NoNewline -Path $proj -Value $patched
         Pop-Location
         "LIBWDI_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -52,13 +63,13 @@ runs:
       if: steps.cache.outputs.cache-hit != 'true'
       uses: microsoft/setup-msbuild@v3
 
-    - name: Build wdi-simple (Win32 pass builds installer_x86, then x64)
+    - name: Build wdi-simple (Win32 pass builds installer_x86, then x64; ARM64 excluded)
       if: steps.cache.outputs.cache-hit != 'true'
       shell: cmd
       working-directory: ${{ env.LIBWDI_SRC }}
       run: |
         for %%P in (Win32 x64) do (
-          msbuild libwdi.sln /m /p:Configuration=Release,Platform=%%P,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\"" || exit /b 1
+          msbuild libwdi.sln /m /t:wdi-simple /p:Configuration=Release,Platform=%%P,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\"" || exit /b 1
         )
 
     - name: Copy helper into src-tauri/drivers
