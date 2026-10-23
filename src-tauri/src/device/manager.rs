@@ -309,8 +309,8 @@ impl FcConnection {
                                 return Err(DeviceError::Serial(format!(
                                     "a different flight controller came back on {} (uid {}, expected {})",
                                     found.path,
-                                    new.device_identifier(),
-                                    old.device_identifier()
+                                    new.mcu_id(),
+                                    old.mcu_id()
                                 )));
                             }
                         }
@@ -910,7 +910,7 @@ pub fn fc_info(id: &FcIdentity) -> FcInfo {
             .unwrap_or_else(|| b.board_identifier.clone()),
         manufacturer_id: non_empty(&b.manufacturer_id),
         mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
-        uid: id.uid.map(|u| u.device_identifier()),
+        uid: id.uid.map(|u| u.mcu_id()),
         build_options: Vec::new(),
         serial_ports,
         rx_spi: RxSpiInfo {
@@ -1230,13 +1230,13 @@ mod tests {
     }
 
     #[test]
-    fn uid_is_formatted_like_the_configurator() {
-        // Three little-endian u32, unpadded lowercase hex, concatenated.
+    fn fc_info_uid_is_the_cli_mcu_id() {
+        // Three little-endian u32, each %08x, concatenated (CLI `mcu_id`).
         let p = [
             0x78, 0x56, 0x34, 0x12, 0x0f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,
         ];
         let uid = parse_uid(&p).unwrap();
-        assert_eq!(uid.device_identifier(), "12345678f80000000");
+        assert_eq!(uid.mcu_id(), "123456780000000f80000000");
         assert!(parse_uid(&p[..11]).is_err());
 
         let id = FcIdentity {
@@ -1266,7 +1266,8 @@ mod tests {
             rx_spi: DevRxSpi::from_msp(None, None),
         };
         let info = fc_info(&id);
-        assert_eq!(info.uid.as_deref(), Some("12345678f80000000"));
+        assert_eq!(info.uid.as_deref(), Some("123456780000000f80000000"));
+        assert_eq!(info.uid.as_ref().unwrap().len(), 24);
         assert_eq!(info.api_version, "1.46");
         assert_eq!(info.board_name, "SPEEDYBEEF405V4");
         assert_eq!(info.mcu.as_deref(), Some("F40X"));

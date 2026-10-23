@@ -453,18 +453,16 @@ impl BoardInfo {
     }
 }
 
-/// MSP_UID: the MCU's 96-bit unique id.
+/// MSP_UID: the MCU's 96-bit unique id as the three words `U_ID_0, U_ID_1, U_ID_2`
+/// (msp.c writes each with `sbufWriteU32`, i.e. little-endian).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Uid(pub [u32; 3]);
 
 impl Uid {
-    /// The configurator's `deviceIdentifier`: the three words in unpadded hex, concatenated.
-    pub fn device_identifier(&self) -> String {
-        format!("{:x}{:x}{:x}", self.0[0], self.0[1], self.0[2])
-    }
-
-    /// Fixed-width hex, safer as a key.
-    pub fn to_hex(&self) -> String {
+    /// Exactly what the CLI `mcu_id` command prints (cli.c:
+    /// `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`): always 24 lowercase hex chars.
+    /// This is `FcInfo.uid` and the backup folder name.
+    pub fn mcu_id(&self) -> String {
         format!("{:08x}{:08x}{:08x}", self.0[0], self.0[1], self.0[2])
     }
 }
@@ -981,6 +979,43 @@ mod tests {
     }
 
     #[test]
+    fn uid_matches_cli_mcu_id() {
+        // Known vector: an MSP_UID payload and the `mcu_id` line the same FC prints.
+        // U_ID_0 = 0x0033002b, U_ID_1 = 0x3138510b, U_ID_2 = 0x32383733, each LE on the wire.
+        let payload = [
+            0x2b, 0x00, 0x33, 0x00, 0x0b, 0x51, 0x38, 0x31, 0x33, 0x37, 0x38, 0x32,
+        ];
+        let cli = "mcu_id 0033002b3138510b32383733";
+        let uid = parse_uid(&payload).unwrap();
+        assert_eq!(uid.0, [0x0033_002b, 0x3138_510b, 0x3238_3733]);
+        assert_eq!(uid.mcu_id(), cli.strip_prefix("mcu_id ").unwrap());
+
+        // Padding: words with leading zeros keep all 8 digits (the unpadded form would be
+        // "1f0abc", ambiguous with other UIDs).
+        let uid = parse_uid(&[1, 0, 0, 0, 0x0f, 0, 0, 0, 0xbc, 0x0a, 0, 0]).unwrap();
+        assert_eq!(uid.mcu_id(), "000000010000000f00000abc");
+        assert_eq!(Uid([0; 3]).mcu_id(), "000000000000000000000000");
+        assert_eq!(Uid([u32::MAX; 3]).mcu_id(), "ffffffffffffffffffffffff");
+
+        // Always 24 lowercase hex chars.
+        for w in [
+            [0, 0, 0],
+            [1, 0x10, 0x100],
+            [0xABCD_EF01, 7, 0x8000_0000],
+            [u32::MAX; 3],
+        ] {
+            let s = Uid(w).mcu_id();
+            assert_eq!(s.len(), 24, "{s}");
+            assert!(
+                s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "{s}"
+            );
+        }
+        assert!(parse_uid(&payload[..11]).is_err());
+    }
+
+    #[test]
     fn parses_versions_and_uid() {
         assert_eq!(
             parse_api_version(&[0, 1, 46]).unwrap().to_string(),
@@ -993,8 +1028,7 @@ mod tests {
         p.extend(b"2025.12");
         assert_eq!(parse_fc_version(&p).unwrap(), "2025.12");
         let uid = parse_uid(&[0x01, 0, 0, 0, 0xEF, 0xBE, 0xAD, 0xDE, 0x10, 0, 0, 0]).unwrap();
-        assert_eq!(uid.device_identifier(), "1deadbeef10");
-        assert_eq!(uid.to_hex(), "00000001deadbeef00000010");
+        assert_eq!(uid.mcu_id(), "00000001deadbeef00000010");
         assert!(ApiVersion {
             protocol: 0,
             major: 1,
@@ -1079,7 +1113,7 @@ mod tests {
         assert_eq!(id.fc_variant, "BTFL");
         assert_eq!(id.fc_version, "4.5.2");
         assert_eq!(id.api_version.to_string(), "1.46.0");
-        assert_eq!(id.uid.unwrap().device_identifier(), "123");
+        assert_eq!(id.uid.unwrap().mcu_id(), "000000010000000200000003");
         assert!(id.is_supported_betaflight());
         // FcIdentity serialises for the Tauri layer.
         let json = serde_json::to_value(&id).unwrap();
