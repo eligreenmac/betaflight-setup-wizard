@@ -108,17 +108,41 @@ export interface DroneModel {
     port: string | null;
     digitalSystem: DigitalSystem | null;
     region: string | null;
+    /** Analog VTX table (`vtxtable`); null = keep the FC's table. */
+    table?: VtxTable | null;
+    /** 1-based band / channel / power level into `table`; null = keep. */
+    band?: number | null;
+    channel?: number | null;
+    power?: number | null;
   };
-  gps: { enabled: boolean; port: string | null; provider: GpsProvider | null };
+  gps: {
+    enabled: boolean;
+    port: string | null;
+    provider: GpsProvider | null;
+    /** UBLOX only: gps_ublox_use_galileo; null = keep. */
+    galileo?: boolean | null;
+    sbasMode?: SbasMode | null;
+  };
   esc: {
     protocol: EscProtocol;
     bidirectionalDshot: boolean;
     motorPoles: number | null;
     telemetryPort: string | null;
     propsOut: boolean;
+    /** Motor idle in 0.01 % (550 = 5.5 %), 0..2000; null = keep. */
+    idle?: number | null;
+    /** motor_output_reordering: item i = 0-based output for motor i+1 (permutation); null = keep. */
+    motorOrder?: number[] | null;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
-  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null };
+  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
+}
+
+export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
+/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
+export interface VtxTable {
+  bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
+  powerLevels: { value: number; label: string }[];
 }
 
 // ---- config engine

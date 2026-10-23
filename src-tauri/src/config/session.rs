@@ -4,6 +4,7 @@
 //! All functions assume they may enter the CLI. Read-only operations do not leave it
 //! (in Betaflight `exit` reboots the FC); the caller decides when to leave.
 
+use super::vtx_table::VtxTableState;
 use std::time::{Duration, SystemTime};
 
 use super::backup::BackupStore;
@@ -254,6 +255,7 @@ pub fn verify<C: Connection + ?Sized>(conn: &mut C, model: &DroneModel) -> AppRe
     let (snap, dialect) = read_snapshot(conn)?;
     let script = generate_for(model, dialect, &snap.ports, Some(&snap))?;
     let mut mismatches = Vec::new();
+    let mut vtx_checked = false;
     for cmd in &script.commands {
         let mut t = cmd.split_whitespace();
         match t.next() {
@@ -315,6 +317,34 @@ pub fn verify<C: Connection + ?Sized>(conn: &mut C, model: &DroneModel) -> AppRe
                         expected: cmd.clone(),
                         actual: have.unwrap_or_else(|| "missing".into()),
                     });
+                }
+            }
+            // The whole table is compared once, line by line as `vtxtable` prints it.
+            Some("vtxtable") if !vtx_checked => {
+                vtx_checked = true;
+                let want = model
+                    .vtx
+                    .table
+                    .as_ref()
+                    .map(VtxTableState::from_model)
+                    .unwrap_or_default()
+                    .render();
+                let have = snap.vtxtable.as_ref().map(VtxTableState::render);
+                for (i, w) in want.iter().enumerate() {
+                    let h = have.as_ref().and_then(|h| h.get(i));
+                    if h != Some(w) {
+                        let key: Vec<&str> = w.split_whitespace().take(3).collect();
+                        let key = if key.get(1) == Some(&"band") {
+                            key.join(" ")
+                        } else {
+                            key[..2].join(" ")
+                        };
+                        mismatches.push(Mismatch {
+                            setting: key,
+                            expected: w.clone(),
+                            actual: h.cloned().unwrap_or_else(|| "missing".into()),
+                        });
+                    }
                 }
             }
             _ => {}

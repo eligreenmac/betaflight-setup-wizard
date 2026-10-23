@@ -405,7 +405,51 @@ pub struct Vtx {
     /// Digital system hint (affects OSD/canvas settings).
     pub digital_system: Option<DigitalSystem>,
     /// ISO-3166 region code for analog VTX tables / power legality, e.g. "IL".
+    /// The UI uses it to pick a table preset; the generator only writes `table`.
     pub region: Option<String>,
+    /// Analog VTX table (`vtxtable ...`); null = keep the FC's table.
+    #[serde(default)]
+    pub table: Option<VtxTable>,
+    /// Selected band / channel / power level, 1-based indexes into `table`
+    /// (`vtx_band`, `vtx_channel`, `vtx_power`); null = keep.
+    #[serde(default)]
+    pub band: Option<u8>,
+    #[serde(default)]
+    pub channel: Option<u8>,
+    #[serde(default)]
+    pub power: Option<u8>,
+}
+
+/// Betaflight VTX table. Limits (drivers/vtx_table.h, same on 4.4 / 4.5 / 2025.12):
+/// at most 8 bands, 8 channels per band, 8 power levels; band name <= 8 chars,
+/// power label <= 3 chars; user frequencies <= 5999 MHz.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxTable {
+    pub bands: Vec<VtxBand>,
+    pub power_levels: Vec<VtxPowerLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxBand {
+    /// e.g. "BOSCAM_A"
+    pub name: String,
+    /// One character, e.g. "A"
+    pub letter: String,
+    /// FACTORY (VTX uses its own frequencies) vs CUSTOM (FC sends `frequencies`).
+    pub factory: bool,
+    /// MHz per channel; 0 = channel disabled. Same length for every band.
+    pub frequencies: Vec<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VtxPowerLevel {
+    /// Protocol-specific value (SmartAudio 2.1: dBm; Tramp: mW; SmartAudio 1/2: index).
+    pub value: u16,
+    /// OSD label, up to 3 chars, e.g. "25", "200", "1W".
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -440,6 +484,25 @@ pub struct Gps {
     pub enabled: bool,
     pub port: Option<String>,
     pub provider: Option<GpsProvider>,
+    /// UBLOX only: also track Galileo (`gps_ublox_use_galileo`). GPS is always on;
+    /// GLONASS / BeiDou are not configurable in 4.4 / 4.5 / 2025.12. null = keep.
+    #[serde(default)]
+    pub galileo: Option<bool>,
+    /// SBAS augmentation (`gps_sbas_mode`); null = keep.
+    #[serde(default)]
+    pub sbas_mode: Option<SbasMode>,
+}
+
+/// `gps_sbas_mode` values (same table on 4.4 / 4.5 / 2025.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SbasMode {
+    Auto,
+    Egnos,
+    Waas,
+    Msas,
+    Gagan,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -463,6 +526,15 @@ pub struct Esc {
     /// Per-motor DShot spin-direction reversal is phase 2 (not in the MVP model).
     #[serde(default)]
     pub props_out: bool,
+    /// Motor idle in 0.01 % (550 = 5.5 %), 0..=2000. Written as `dshot_idle_value` on
+    /// 4.4 / 4.5 (exists only with DShot) and `motor_idle` on 2025.12; null = keep.
+    #[serde(default)]
+    pub idle: Option<u16>,
+    /// Motor remap (`motor_output_reordering`, 4.4 / 4.5 / 2025.12): entry i is the
+    /// 0-based output that drives motor i+1. Must be a permutation of 0..n where n is
+    /// the motor count (4 for a quad); null = keep.
+    #[serde(default)]
+    pub motor_order: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -493,7 +565,9 @@ pub struct SwitchAssignment {
 pub struct Extras {
     pub beeper: Option<bool>,
     pub led_strip: Option<bool>,
-    /// Name shown in OSD / Configurator
+    /// Name shown in OSD / Configurator (`set craft_name = ...`, all of 4.4 / 4.5 / 2025.12;
+    /// the old `name` command no longer exists). 1-16 printable ASCII characters;
+    /// `""` clears it (written as `-`, the firmware's empty value); null = keep.
     pub craft_name: Option<String>,
 }
 

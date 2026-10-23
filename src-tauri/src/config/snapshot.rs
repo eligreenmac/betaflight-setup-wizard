@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use super::firmware::{parse_version, Dialect};
 use super::serial_functions::{normalize_port_name, port_identifier, port_name};
+use super::vtx_table::VtxTableState;
 use crate::model::FcSerialPort;
 
 /// One `serial` line, with the three baud fields kept verbatim.
@@ -97,6 +98,8 @@ pub struct Snapshot {
     pub aux: Vec<AuxSlot>,
     /// "RX_SPI_CS 1" -> "A15" / "NONE"
     pub resources: BTreeMap<String, String>,
+    /// The `vtxtable` block; None when the dump has none (VTX table compiled out).
+    pub vtxtable: Option<VtxTableState>,
 }
 
 impl Snapshot {
@@ -214,6 +217,10 @@ pub fn parse_dump(text: &str) -> Snapshot {
                     s.aux.retain(|a| a.slot != slot.slot);
                     s.aux.push(slot);
                 }
+            }
+            Some("vtxtable") => {
+                let rest = line["vtxtable".len()..].trim();
+                let _ = s.vtxtable.get_or_insert_with(Default::default).apply(rest);
             }
             Some("resource") => {
                 let parts: Vec<&str> = t.collect();

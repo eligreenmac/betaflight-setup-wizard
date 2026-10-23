@@ -412,6 +412,8 @@ set dshot_bidir = OFF
 set dshot_idle_value = 550
 set gps_auto_config = ON
 set gps_provider = UBLOX
+set gps_sbas_mode = NONE
+set gps_ublox_use_galileo = OFF
 set osd_displayport_device = AUTO
 set vcd_video_system = AUTO
 

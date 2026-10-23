@@ -32,6 +32,8 @@ OVERLAY = {
         "dshot_bidir": "OFF",                 # pg/motor.c DEFAULT_DSHOT_TELEMETRY = OFF
         "gps_provider": "UBLOX",              # pg/gps.c .provider = GPS_UBLOX
         "gps_auto_config": "ON",              # pg/gps.c .autoConfig = GPS_AUTOCONFIG_ON
+        "gps_sbas_mode": "NONE",              # pg/gps.c .sbasMode = SBAS_NONE
+        "gps_ublox_use_galileo": "OFF",       # pg/gps.c .gps_ublox_use_galileo = false
         "osd_displayport_device": "AUTO",     # osd/osd.c (MAX7456 present)
         "vcd_video_system": "AUTO",           # pg/vcd.c VIDEO_SYSTEM_AUTO
     },

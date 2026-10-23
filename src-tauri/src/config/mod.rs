@@ -26,6 +26,7 @@ pub mod msp;
 pub mod serial_functions;
 pub mod session;
 pub mod snapshot;
+pub mod vtx_table;
 
 #[cfg(test)]
 mod mock;

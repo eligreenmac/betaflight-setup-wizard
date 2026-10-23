@@ -14,7 +14,7 @@ use crate::error::{AppError, AppResult};
 
 /// Verbs `generate` emits. Add a verb here only together with the generator code that
 /// emits it (a test checks every generated script against this list).
-pub const APPLY_VERBS: &[&str] = &["set", "serial", "feature", "aux"];
+pub const APPLY_VERBS: &[&str] = &["set", "serial", "feature", "aux", "vtxtable"];
 
 /// Verbs `diff all` emits that restore configuration (cli.c `printConfig`, identical in
 /// 4.4.3, 4.5.5 and 2025.12.5), besides the ones [`replay_lines`] handles specially.
@@ -274,6 +274,16 @@ mod tests {
             "aux 0 0 0 1700 2100 0 0",
         ]))
         .is_ok());
+    }
+
+    #[test]
+    fn apply_allowlist_is_exactly_what_generate_emits() {
+        assert_eq!(APPLY_VERBS, ["set", "serial", "feature", "aux", "vtxtable"]);
+        assert!(validate_script(&s(&["vtxtable bands 2", "VTXTABLE channels 8"])).is_ok());
+        // `vtx` (channel on switch) and the removed `name` command are never generated.
+        for bad in ["vtx 0 0 0 0 0 900 900", "name Quad"] {
+            assert!(validate_script(&s(&[bad])).is_err(), "{bad}");
+        }
     }
 
     #[test]
