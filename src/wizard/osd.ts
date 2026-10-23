@@ -66,17 +66,10 @@ export function systemFromVtx(vtx: { kind: VtxKind; protocol?: string | null; di
   return null;
 }
 
-/**
- * Build options (MSP_BUILD_INFO names, filled on 4.5+, Device #75) that mean the firmware has
- * an HD OSD: only USE_OSD_HD (16417). Without it io/displayport_msp.c forces HD -> AUTO.
- */
-const HD_OSD_OPTIONS = ["USE_OSD_HD", "OSD_HD"];
-/**
- * Build options that show an OSD was built in, so a missing USE_OSD_HD means "no HD".
- * USE_MSP_DISPLAYPORT is here, not above: target/common_pre.h defines it for every USE_OSD
- * build, SD-only (USE_OSD_SD, 16416) included.
- */
-const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "USE_MSP_DISPLAYPORT", "OSD", "OSD_SD", "MSP_DISPLAYPORT"];
+/** Build options that mean the firmware has an HD (MSP DisplayPort) OSD. */
+const HD_OSD_OPTIONS = ["USE_OSD_HD", "USE_MSP_DISPLAYPORT", "OSD_HD", "MSP_DISPLAYPORT"];
+/** Build options that show the OSD was chosen at build time (so a missing HD option is meaningful). */
+const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
 
 /**
  * The FC fields the HD gate reads. `hdOsdSupported` is Device's shared field
@@ -180,11 +173,6 @@ export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, l
  * config_plan's error for an HD OSD on firmware without MSP DisplayPort (config::generate,
  * #67): AppError::Config "HD OSD needs MSP DisplayPort, which this firmware build does not
  * have" (code CONFIG -> CONFIG_UNSUPPORTED in the UI).
- *
- * TODO(shared): the backend has no distinct code or detail for this refusal yet (cfg_err ->
- * AppError::Config(String), no details), so the message text is matched. Asked of Config:
- * keep code CONFIG and add details `{ reason: "OSD_HD_NO_DISPLAYPORT" }` (like PORT_BUSY
- * {heldBy}). Then match on the reason, keeping this message match only as a fallback.
  */
 export function isHdOsdPlanError(e: { code: string; message: string }): boolean {
   return (e.code === "CONFIG_UNSUPPORTED" || e.code === "CONFIG") && /HD OSD|MSP DisplayPort/i.test(e.message);

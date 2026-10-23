@@ -46,6 +46,10 @@ async function load(): Promise<void> {
   } catch (e) {
     const ue = toUiError(e);
     // HD OSD on firmware without MSP DisplayPort: plain words and a way back to the OSD step.
+    // TODO(shared): config_plan has no distinct code or detail for this refusal yet (#67's
+    // cfg_err -> AppError::Config(String), no details), so isHdOsdPlanError matches the message.
+    // Asked of Config: keep code CONFIG and add details { reason: "OSD_HD_NO_DISPLAYPORT" }
+    // (like PORT_BUSY {heldBy}); then match the reason here, with the message only as a fallback.
     error.value = isHdOsdPlanError(ue) ? { ...uiError("OSD_HD_UNSUPPORTED", ue.message) } : e;
   } finally {
     loading.value = false;
