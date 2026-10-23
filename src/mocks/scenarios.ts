@@ -824,36 +824,63 @@ function mockDialect(firmwareVersion: string | null | undefined): string {
 
 /** UNSUPPORTED_FIRMWARE for a parseable version outside MOCK_CONFIG_LINES (empty / unparseable = lenient, the 4.5 lists). */
 /**
- * Demo RestoreReport. Same line: everything applies. Another line: some lines fail and some
- * are skipped, like the real dialect mapping (ARCHITECTURE §5.2) does for this kind of board.
+ * Demo RestoreReport, worded like Config's real one (#97 config/restore.rs: skip reasons,
+ * `detail` and `warnings` sentences). Same line: everything applies. Another line: some lines
+ * fail and some are skipped, as the dialect mapping (ARCHITECTURE §5.2) does for this board:
+ * pins (resource / timer), a removed setting, a setting left out of the build, a serial port
+ * and a mode the target lacks; D-term across 2025.12, horizon across 4.5, battery profiles
+ * from 2026.6 to an older line.
  */
 function mockRestoreReport(fromVersion: string, toVersion: string): RestoreReport {
   const line = (v: string) => (/^\s*(\d+)\.(\d+)/.exec(v) ?? []).slice(1, 3).map(Number).join(".");
+  const from = line(fromVersion);
   const to = line(toVersion);
-  const lineChanged = line(fromVersion) !== to;
+  const lineChanged = from !== to;
+  const crosses = (boundary: number) => parseFloat(from) < boundary !== parseFloat(to) < boundary;
   const bookkeeping: RestoreReport["skipped"] = [
-    { line: `# version`, reason: "COMMENT", detail: "comment" },
-    { line: "batch start", reason: "SESSION_CONTROL", detail: "sent by the restore itself" },
-    { line: "board_name SPEEDYBEEF405V4", reason: "BOARD_IDENTITY", detail: "hardware identity" },
-    { line: "batch end", reason: "SESSION_CONTROL", detail: "sent by the restore itself" },
-    { line: "save", reason: "SESSION_CONTROL", detail: "sent by the restore itself" },
+    { line: "# version", reason: "COMMENT", detail: "" },
+    { line: "batch start", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
+    { line: "board_name SPEEDYBEEF405V4", reason: "BOARD_IDENTITY", detail: "identity of the hardware, never replayed" },
+    { line: "batch end", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
+    { line: "save", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
   ];
   if (!lineChanged) return { applied: 212, failed: [], skipped: bookkeeping, warnings: [], saved: true, lineChanged, fromVersion, toVersion };
+  const pins = `pin maps differ between Betaflight ${from} and ${to}; the new firmware's board defaults are kept`;
+  const skipped: RestoreReport["skipped"] = [
+    ...bookkeeping,
+    { line: "resource MOTOR 1 B06", reason: "HARDWARE_LINE_CHANGED", detail: pins },
+    { line: "timer B06 AF2", reason: "HARDWARE_LINE_CHANGED", detail: pins },
+    { line: "set iterm_limit = 400", reason: "REMOVED_ON_TARGET", detail: `setting iterm_limit does not exist on Betaflight ${to}` },
+    { line: "set gps_ublox_use_galileo = ON", reason: "NOT_IN_BUILD", detail: `gps_ublox_use_galileo exists on Betaflight ${to} but not in this build` },
+    { line: "serial UART6 64 115200 57600 0 115200", reason: "PORT_NOT_AVAILABLE", detail: "UART6 does not exist on this board / firmware" },
+    { line: "aux 6 40 2 1800 2100 0 0", reason: "NO_EQUIVALENT_MODE", detail: `mode VTX CONTROL DISABLE (40) does not exist on Betaflight ${to}` },
+  ];
+  const warnings = [`Settings were converted from Betaflight ${from} to ${to}; check the skipped lines.`];
+  if (crosses(2025.12)) {
+    skipped.push({
+      line: "set d_roll = 40",
+      reason: "SEMANTICS_CHANGED",
+      detail: "D-term changed meaning in 2025.12 (4.x: d_* is the maximum and d_min_* the minimum; 2025.12+: d_* is the base and d_max_* the maximum); re-tune D",
+    });
+    warnings.push("D-term settings were not restored: their meaning changed in 2025.12. Re-tune D (or re-apply your tune) before flying.");
+  }
+  if (crosses(4.5)) skipped.push({ line: "set horizon_limit_sticks = 75", reason: "SEMANTICS_CHANGED", detail: "horizon mode was reworked in 4.5" });
+  if (from === "2026.6") {
+    skipped.push({
+      line: "set vbat_max_cell_voltage = 435",
+      reason: "OTHER_BATTERY_PROFILE",
+      detail: `battery profile 1; Betaflight ${to} has one set of battery settings (profile 0 is restored)`,
+    });
+    warnings.push(`Only battery profile 0 was restored: Betaflight ${to} has one set of battery settings.`);
+  }
   return {
     applied: 186,
     failed: [
       { line: "set angle_limit = 85", error: "###ERROR IN set: INVALID VALUE### (angle_limit: 10 - 80)" },
       { line: "set gyro_lpf1_static_hz = 1100", error: "###ERROR IN set: INVALID VALUE### (gyro_lpf1_static_hz: 0 - 1000)" },
     ],
-    skipped: [
-      ...bookkeeping,
-      { line: "resource MOTOR 1 B06", reason: "HARDWARE_LINE_CHANGED", detail: "pin maps differ between firmware lines" },
-      { line: "timer B06 AF2", reason: "HARDWARE_LINE_CHANGED", detail: "pin maps differ between firmware lines" },
-      { line: "set iterm_limit = 400", reason: "REMOVED_ON_TARGET", detail: `removed in ${to}` },
-      { line: "set d_roll = 40", reason: "SEMANTICS_CHANGED", detail: `D-term meaning differs on ${to}` },
-      { line: "aux 6 40 2 1800 2100 0 0", reason: "NO_EQUIVALENT_MODE", detail: `mode 40 has no equivalent on ${to}` },
-    ],
-    warnings: [`D-term settings were not restored because their meaning changed on ${to}: re-tune D`],
+    skipped,
+    warnings,
     saved: true,
     lineChanged,
     fromVersion,

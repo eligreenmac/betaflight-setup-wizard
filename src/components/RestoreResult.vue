@@ -7,7 +7,7 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import type { UiError } from "../errors/codes";
-import { canRetryRestore, refusalKind, refusalStage, visibleSkips, type RestoreReport } from "../wizard/restore";
+import { canRetryRestore, refusalKind, refusalStage, restoreNote, skipKey, visibleSkips, type RestoreReport } from "../wizard/restore";
 import BackupsPanel from "./BackupsPanel.vue";
 
 const props = defineProps<{
@@ -24,7 +24,12 @@ const skips = computed(() => (props.report ? visibleSkips(props.report) : []));
 const kind = computed(() => (props.error ? refusalKind(props.error) : null));
 const stage = computed(() => (props.error ? refusalStage(props.error) : null));
 const retryable = computed(() => !!props.error && !!props.backupId && canRetryRestore(props.error));
-const skipReason = (reason: string, detail: string) => (te(`restore.skip.${reason}`) ? t(`restore.skip.${reason}`) : detail);
+/** Plain text per reason; a reason this version doesn't know: a generic sentence with the raw code. */
+const skipReason = (reason: string) => {
+  const key = skipKey(reason);
+  return key && te(key) ? t(key) : t("restore.skipUnknown", { code: reason });
+};
+const notes = computed(() => (props.report ? props.report.warnings.map(restoreNote) : []));
 </script>
 
 <template>
@@ -54,7 +59,8 @@ const skipReason = (reason: string, detail: string) => (te(`restore.skip.${reaso
         <ul>
           <li v-for="(s, i) in skips" :key="i" :data-reason="s.reason">
             <code dir="ltr">{{ s.line }}</code>
-            <span class="restore-list__why">{{ skipReason(s.reason, s.detail) }}</span>
+            <span class="restore-list__why" data-test="skip-why">{{ skipReason(s.reason) }}</span>
+            <span v-if="s.detail" class="restore-list__why restore-list__detail" data-test="skip-detail"><bdi dir="ltr">{{ s.detail }}</bdi></span>
           </li>
         </ul>
       </details>
@@ -62,7 +68,13 @@ const skipReason = (reason: string, detail: string) => (te(`restore.skip.${reaso
         <summary>{{ t("restore.warningsTitle", { n: report.warnings.length }) }}</summary>
         <p class="hint">{{ t("restore.warningsHelp") }}</p>
         <ul>
-          <li v-for="(w, i) in report.warnings" :key="i"><bdi dir="ltr">{{ w }}</bdi></li>
+          <li v-for="(n, i) in notes" :key="i" :data-note="n.kind ?? 'OTHER'">
+            <template v-if="n.kind">
+              <span>{{ t(`restore.note.${n.kind}`, n.params) }}</span>
+              <span v-if="n.kind === 'READ_BACK_DIFFERS' || n.kind === 'READ_BACK_FAILED'" class="restore-list__why restore-list__detail"><bdi dir="ltr">{{ n.raw }}</bdi></span>
+            </template>
+            <bdi v-else dir="ltr">{{ n.raw }}</bdi>
+          </li>
         </ul>
       </details>
     </template>

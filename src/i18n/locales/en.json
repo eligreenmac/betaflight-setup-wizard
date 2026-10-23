@@ -1303,18 +1303,29 @@
     "skippedTitle": "Settings left out on purpose ({n})",
     "skippedHelp": "These lines were not sent because they don't fit the new firmware. The reason is next to each one.",
     "warningsTitle": "Notes from the restore ({n})",
-    "warningsHelp": "Notes about the restore, as the app reported them:",
+    "warningsHelp": "Things to know about the restore:",
     "skip": {
       "COMMENT": "A note in the backup file, not a setting.",
       "SESSION_CONTROL": "A control line; the wizard sends its own.",
-      "BOARD_IDENTITY": "The board's name and ID belong to the hardware, so they are never copied.",
-      "HARDWARE_LINE_CHANGED": "Pin settings differ between firmware versions, so the new firmware's own pin settings are kept.",
-      "REMOVED_ON_TARGET": "This setting doesn't exist in the new firmware.",
-      "NOT_IN_BUILD": "The new firmware was built without this feature.",
-      "SEMANTICS_CHANGED": "This setting means something different in the new firmware, so it was not copied. Check it again (for example the D-term tuning).",
-      "NO_EQUIVALENT_MODE": "This switch mode doesn't exist in the new firmware.",
-      "PORT_NOT_AVAILABLE": "This port doesn't exist on the board with the new firmware.",
-      "OTHER_BATTERY_PROFILE": "A setting from another battery profile, which the new firmware doesn't have."
+      "BOARD_IDENTITY": "The board's own name and ID. They belong to this board, so they are never copied from a backup.",
+      "HARDWARE_LINE_CHANGED": "Which pin does what (motors, LEDs and so on) is set up differently in the new firmware version, so the new firmware's own pin setup for this board is used instead.",
+      "REMOVED_ON_TARGET": "The new firmware version doesn't have this setting any more, so there was nothing to copy it to.",
+      "NOT_IN_BUILD": "The new firmware version has this setting, but the firmware built for your board left that feature out.",
+      "SEMANTICS_CHANGED": "This setting has the same name but works differently in the new firmware version, so copying the old number could change how the quad flies. Set it again yourself (see the notes below).",
+      "NO_EQUIVALENT_MODE": "This switch mode or in-flight adjustment doesn't exist in the new firmware version, so it was left out.",
+      "PORT_NOT_AVAILABLE": "This connector (serial port) isn't available on your board with the new firmware, so its setting was left out.",
+      "OTHER_BATTERY_PROFILE": "This came from one of your other battery profiles. The new firmware version has only one set of battery settings, so only the battery profile you were using was copied."
+    },
+    "skipUnknown": "This line was not copied to the new firmware. (Reason code: {code})",
+    "note": {
+      "CONVERTED": "Your settings were converted from Betaflight {from} to {to}. Look through the lines that were left out.",
+      "D_TERM": "Your D settings were not copied. D is the part of the PID tuning that calms down wobbles, and Betaflight 2025.12 changed what its numbers mean. Before you fly, set your D values again or load your tune again. Until then the new firmware's default D values are used.",
+      "BATTERY_INTO_PROFILE": "Your battery settings ({settings}) were copied into battery profile {profile}, the one in use. The other battery profiles keep their default values.",
+      "OTHER_BATTERY_PROFILE": "Only battery profile {profile} was copied, because Betaflight {to} has just one set of battery settings.",
+      "SERIAL_FUNCTIONS_REMOVED": "Some uses of the serial ports don't exist in Betaflight {to}, so they were removed: {ports}.",
+      "MATCHED_BY_NAME": "The board's unique ID couldn't be read, so the backup was matched by the board name ({board}) only.",
+      "READ_BACK_FAILED": "After the board restarted, the wizard couldn't read the settings back to double-check them.",
+      "READ_BACK_DIFFERS": "After the board restarted, {name} didn't read back the way it was restored. Check it in the next steps."
     },
     "refusedTitle": "The firmware is installed, but your settings were not put back",
     "refused": {

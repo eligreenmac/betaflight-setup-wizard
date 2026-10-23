@@ -221,3 +221,7 @@ th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
 .restore-list__why {
   color: var(--muted);
 }
+/* Config's own wording (English), under the plain-language text. */
+.restore-list__detail {
+  font-size: 0.85em;
+}

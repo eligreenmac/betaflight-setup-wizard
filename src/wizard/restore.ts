@@ -47,6 +47,65 @@ export type RestoreProgress = ConfigProgress;
 export const HIDDEN_SKIPS: RestoreSkipReason[] = ["COMMENT", "SESSION_CONTROL", "BOARD_IDENTITY"];
 export const visibleSkips = (r: RestoreReport): RestoreSkip[] => r.skipped.filter((s) => !HIDDEN_SKIPS.includes(s.reason));
 
+/**
+ * Text for a skipped line: `restore.skip.<reason>` for the reasons #92/#97 send, null for a
+ * reason this UI does not know yet (shown as a generic sentence plus the raw code).
+ */
+export function skipKey(reason: string): string | null {
+  return (RESTORE_SKIP_REASONS as string[]).includes(reason) ? `restore.skip.${reason}` : null;
+}
+
+/**
+ * The restore's `warnings` are English sentences from Config (#97 config/restore.rs). The ones
+ * it can send are recognised here and shown in the user's language (`restore.note.<kind>`);
+ * anything else is shown as sent. Values (versions, setting / port / board names) are passed
+ * through as-is.
+ */
+export type RestoreNoteKind =
+  | "CONVERTED"
+  | "D_TERM"
+  | "BATTERY_INTO_PROFILE"
+  | "OTHER_BATTERY_PROFILE"
+  | "SERIAL_FUNCTIONS_REMOVED"
+  | "MATCHED_BY_NAME"
+  | "READ_BACK_FAILED"
+  | "READ_BACK_DIFFERS";
+export const RESTORE_NOTE_KINDS: RestoreNoteKind[] = [
+  "CONVERTED",
+  "D_TERM",
+  "BATTERY_INTO_PROFILE",
+  "OTHER_BATTERY_PROFILE",
+  "SERIAL_FUNCTIONS_REMOVED",
+  "MATCHED_BY_NAME",
+  "READ_BACK_FAILED",
+  "READ_BACK_DIFFERS",
+];
+export interface RestoreNote {
+  kind: RestoreNoteKind | null;
+  params: Record<string, string>;
+  /** The sentence as Config sent it (shown when not recognised, and as the technical detail). */
+  raw: string;
+}
+const NOTE_PATTERNS: [RestoreNoteKind, RegExp, string[]][] = [
+  ["CONVERTED", /^Settings were converted from Betaflight (\S+) to (\S+); check the skipped lines\.?$/, ["from", "to"]],
+  ["D_TERM", /^D-term settings were not restored: their meaning changed in 2025\.12\b/, []],
+  ["BATTERY_INTO_PROFILE", /^Battery settings \((.+)\) were restored into battery profile (\d+), the selected one; battery profiles .+ keep their defaults\.?$/, ["settings", "profile"]],
+  ["OTHER_BATTERY_PROFILE", /^Only battery profile (\d+) was restored: Betaflight (\S+) has one set of battery settings\.?$/, ["profile", "to"]],
+  ["SERIAL_FUNCTIONS_REMOVED", /^Serial functions that do not exist on Betaflight (\S+) were removed: (.+?)\.?$/, ["to", "ports"]],
+  ["MATCHED_BY_NAME", /^The board's unique id is unknown; the backup was matched by board name \((.+)\) only\.?$/, ["board"]],
+  ["READ_BACK_FAILED", /^The restored settings could not be read back: (.*)$/, ["error"]],
+  ["READ_BACK_DIFFERS", /^Read back: (?:feature )?(\S+) (?:is |differs )/, ["name"]],
+];
+/** Unicode isolates, so an LTR value (a version, `UART6 (mask 64)`) sits cleanly in Hebrew text. */
+const isolate = (v: string) => `\u2068${v}\u2069`;
+export function restoreNote(raw: string): RestoreNote {
+  for (const [kind, re, names] of NOTE_PATTERNS) {
+    const m = re.exec(raw.trim());
+    if (m) return { kind, raw, params: Object.fromEntries(names.map((n, i) => [n, isolate(m[i + 1] ?? "")])) };
+  }
+  return { kind: null, raw, params: {} };
+}
+
 export async function restoreAfterFlash(backupId: string): Promise<RestoreReport> {
   return api.config.restoreAfterFlash(backupId);
 }
