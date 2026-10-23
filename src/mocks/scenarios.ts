@@ -296,7 +296,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         : [],
     flasher_fetch_firmware: async ({ request }) => {
       await stages(["DOWNLOADING"]);
-      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false };
+      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false, droppedOptions: [] };
     },
     flasher_list_cache: () => [],
     flasher_flash: async ({ image, options }) => {

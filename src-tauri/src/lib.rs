@@ -63,6 +63,7 @@ pub fn run() {
             flasher::commands::flasher_list_dfu_devices,
             flasher::commands::flasher_fetch_firmware,
             flasher::commands::flasher_list_cache,
+            flasher::commands::flasher_required_options,
             flasher::commands::flasher_flash,
             flasher::commands::flasher_remove_read_protection,
             // config

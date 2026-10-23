@@ -133,6 +133,7 @@ impl<C: HttpClient> FirmwareService<C> {
                 target: entry.key.target.clone(),
                 release: entry.key.release.clone(),
                 options: entry.key.options.clone(),
+                required_options: Vec::new(),
                 offline_only: false,
             },
             path: entry.path.to_string_lossy().into_owned(),
@@ -140,6 +141,7 @@ impl<C: HttpClient> FirmwareService<C> {
             sha256: sha256_hex(data),
             build_key: entry.source.clone(),
             from_cache,
+            dropped_options: Vec::new(),
         }
     }
 
@@ -331,6 +333,7 @@ mod tests {
             target: "STM32F405".into(),
             release: "4.5.2".into(),
             options: vec!["USE_GPS".into()],
+            required_options: vec![],
             offline_only: offline,
         }
     }
@@ -440,6 +443,7 @@ mod tests {
             sha256: sha256_hex(hex().as_bytes()),
             build_key: None,
             from_cache: true,
+            dropped_options: vec![],
         };
         assert!(load_image(&img, dir.path()).is_ok());
         img.sha256 = "00".repeat(32);
@@ -466,6 +470,7 @@ mod tests {
             sha256: sha256_hex(hex().as_bytes()),
             build_key: None,
             from_cache: true,
+            dropped_options: vec![],
         };
         let rejected = |p: &Path| {
             let e = load_image(&img(p), &root).unwrap_err();

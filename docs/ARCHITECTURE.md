@@ -230,6 +230,8 @@ plus the device/flasher codes:
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
 | `ERASE_CONFIRMATION_REQUIRED` | `flasher_remove_read_protection` called without `confirmErase: true`; nothing was sent | – | (programming error in the UI) |
 | `INVALID_ARGUMENT` | A command argument is invalid, e.g. `flasher_flash` given an image path that is not a file inside the firmware cache (canonicalized; `..` and symlink escapes rejected); nothing was sent | – | (programming error in the UI) |
+| `BUILD_OPTIONS_UNAVAILABLE` | `flasher_fetch_firmware` / `flasher_required_options`: the Build API option list of the release (`/api/options/{release}`) could not be loaded (network, HTTP status, bad JSON) and no cached copy exists. Nothing was built or flashed: a build without the board's options is never requested (§6 "Build options"). **Retryable** | `{ release: string }` | "Couldn't reach the firmware build service", retry |
+| `REQUIRED_OPTION_UNSUPPORTED` | `flasher_fetch_firmware` / `flasher_required_options`: a required option (`FirmwareRequest.requiredOptions`, the wizard's choice, e.g. `USE_OSD_HD`) is not offered by the target release. Nothing was built or flashed | `{ release: string, options: string[] }` | Pick a newer release, or change the choice (e.g. analog OSD) |
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
 | `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |
@@ -277,7 +279,8 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
-| `flasher_fetch_firmware` | `request: FirmwareRequest` | `FirmwareImage` | flasher |
+| `flasher_fetch_firmware` | `request: FirmwareRequest` | `FirmwareImage` (`droppedOptions`: board options the release does not offer; §6 "Build options") | flasher |
+| `flasher_required_options` | `requirements: FirmwareRequirements, release: string\|null` | `string[]` (Build API option values for `FirmwareRequest.requiredOptions`; read-only, no FC/USB I/O; with a release: `REQUIRED_OPTION_UNSUPPORTED` / `BUILD_OPTIONS_UNAVAILABLE`) | flasher |
 | `flasher_list_cache` | – | `FirmwareImage[]` | flasher |
 | `flasher_flash` | `image, dfuSerial, options` | – (events); `READ_PROTECTED` if protected | flasher |
 | `flasher_remove_read_protection` | `dfuSerial, confirmErase` | – (erases chip, device re-enumerates) | flasher |
@@ -617,7 +620,8 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 
 1. `device_identify` → `FcInfo` (board, MCU). If no Betaflight: user picks target from
    `flasher_list_targets` filtered by `DfuDevice.mcuFamily`.
-2. `flasher_fetch_firmware` (cache hit or Build API).
+2. `flasher_fetch_firmware` (cache hit or Build API), with `options = FcInfo.buildOptions` and
+   `requiredOptions = flasher_required_options(model)` (see "Build options" below).
 3. `config_backup` (if FC runs Betaflight).
 4. `device_reboot_to_bootloader` → poll `flasher_list_dfu_devices`; if `driverOk=false` or a
    flasher call fails with `DRIVER_MISSING {vid, pid}` → `system_install_dfu_driver` (UAC
@@ -627,6 +631,36 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
    re-enumerates → back to step 4.
 6. After flashing → device re-enumerates as VCP → `device_connect` →
    `device_identify` → `config_read_ports`.
+
+### Build options
+
+Option values are the Build API's (`/api/options/{release}` → `value`, e.g. `USE_SERIALRX_CRSF`,
+`USE_OSD_HD`); they match the firmware's `MSP_BUILD_INFO` names (`FcInfo.buildOptions`, §4.1).
+The UI never names options itself.
+
+- **Required options** (`flasher_required_options(requirements, release?)`, mapping owned by
+  flasher in `flasher/options.rs`), from the `DroneModel` slice `{receiver: {kind, protocol}, osd: {videoSystem}}`:
+
+  | Answer | Option |
+  |---|---|
+  | `receiver.kind = SERIAL`, protocol `CRSF` / `GHST` / `SBUS` / `FPORT` / `IBUS` / `SRXL2` / `SUMD` | `USE_SERIALRX_CRSF` / `_GHST` / `_SBUS` / `_FPORT` / `_IBUS` / `_SRXL2` / `_SUMD` |
+  | `SERIAL` + `SPEK1024` / `SPEK2048` | `USE_SERIALRX_SPEKTRUM` |
+  | `receiver.kind = PPM` | `USE_RX_PPM` |
+  | `SPI` (`EXPRESSLRS`, `FRSKY_*`), `MSP`, `NONE` | – (SPI receivers come from the board's target config, not a Build API option; MSP RX needs none) |
+  | `osd.videoSystem = HD` | `USE_OSD_HD` |
+  | `osd.videoSystem = PAL` / `NTSC` / `AUTO` | `USE_OSD_SD` |
+  | `osd` null / `videoSystem` null | – |
+
+  The names are the same on 4.4.3, 4.5.x and 2025.12.x. With `release`, the result is also checked
+  against that release's list.
+- **Resolution in `flasher_fetch_firmware`:** fetch the release's option list (stored under the
+  firmware cache, `api/options-<release>.json`, and reused when offline or the API fails). Base =
+  `options` (board) if non-empty, else the release's `default` options. Keep base options the
+  release offers; the rest go to `FirmwareImage.droppedOptions` (logged), e.g. 2025.12 → 4.5.2
+  drops `USE_ALTITUDE_HOLD`, `USE_POSITION_HOLD`, `USE_SOFTSERIAL`, `USE_WING`, and 4.4.3 also
+  `USE_RACE_PRO`. Required options are always added; one the release does not offer →
+  `REQUIRED_OPTION_UNSUPPORTED`. No usable option list → `BUILD_OPTIONS_UNAVAILABLE`, never a
+  stripped build. The firmware cache key uses the resolved list.
 
 ## 7. UI structure
 
