@@ -7,10 +7,11 @@
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
-import { attitudeStopping, SHARES_PORT_WITH_ATTITUDE, stopAttitudeStream, withLinkGate } from "../src/api/attitudeLink";
+import { attitudeStopping, SHARES_PORT_WITH_ATTITUDE, STOP_RETRY, stopAttitudeStream, withLinkGate } from "../src/api/attitudeLink";
 import { api, EVENTS, resetBackend, setBackend, type Backend } from "../src/api/commands";
 import { createEmitter, resetEventSource, setEventSource } from "../src/api/events";
 import { resetDemoState } from "../src/api/fallback";
+import { toUiError, uiError } from "../src/errors/codes";
 import { i18n, setLocale } from "../src/i18n";
 import en from "../src/i18n/locales/en.json";
 import he from "../src/i18n/locales/he.json";
@@ -33,6 +34,7 @@ beforeEach(() => {
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
 });
 afterEach(async () => {
+  STOP_RETRY.totalMs = 4000;
   w?.unmount();
   w = null;
   await settle();
@@ -178,6 +180,87 @@ describe("Calibration step: the live view gives the port up for link commands", 
     expect(streaming()).toBe(false);
   });
 
+  it("the stop answers PORT_BUSY, then OK: it is retried, and only then is the calibration sent", async () => {
+    await open();
+    await waitFor(streaming);
+    mock.device.stopBusyLeft = 2;
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done", 4000);
+    expect(mock.device.attitudeStopCalls).toBe(3);
+    expect(mock.device.portBusyRefused).toEqual([]);
+    expect(mock.device.accCalibrations).toBe(1);
+    await waitFor(streaming);
+  });
+
+  it("the stop stays PORT_BUSY: 'The board is busy, try again', no calibration sent, the live view carries on", async () => {
+    STOP_RETRY.totalMs = 400;
+    await open();
+    await waitFor(streaming);
+    mock.device.stopBusyLeft = Infinity;
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed", 3000);
+    const panel = w!.get('[data-error-code="LIVE_VIEW_BUSY"]');
+    expect(panel.text()).toContain("The board is busy");
+    expect(panel.text()).toContain("try again");
+    expect(mock.device.accCalibrations).toBe(0);
+    expect(mock.device.portBusyRefused).toEqual([]); // device_acc_calibrate was never sent
+    expect(mock.device.attitudeStopCalls).toBeGreaterThan(1);
+    expect(streaming()).toBe(true);
+    await settle();
+    expect(w!.find('[data-test="attitude-paused"]').exists()).toBe(false);
+    // The board lets go: Try again calibrates.
+    mock.device.stopBusyLeft = 0;
+    await panel.findAll("button").find((x) => x.text() === "Try again")!.trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done");
+    expect(mock.device.accCalibrations).toBe(1);
+    await waitFor(streaming);
+  });
+
+  it("the stop stays PORT_BUSY before Reboot board: no reboot sent; Try again reboots", async () => {
+    await open("unsaved-ram");
+    await waitFor(streaming);
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "failed");
+    await waitFor(streaming);
+    STOP_RETRY.totalMs = 400;
+    mock.device.stopBusyLeft = Infinity;
+    await w!.get('[data-error-code="PENDING_UNSAVED_CHANGES"]').findAll("button").find((x) => x.text() === "Reboot board")!.trigger("click");
+    await waitFor(() => w!.find('[data-error-code="LIVE_VIEW_BUSY"]').exists(), 3000);
+    expect(mock.device.reboots).toBe(0);
+    expect(streaming()).toBe(true);
+    mock.device.stopBusyLeft = 0;
+    await w!.get('[data-error-code="LIVE_VIEW_BUSY"]').findAll("button").find((x) => x.text() === "Try again")!.trigger("click");
+    await waitFor(() => mock.device.reboots === 1);
+    await waitFor(() => wizard.ui.accCalibration === "idle");
+    await waitFor(streaming);
+  });
+
+  it("the stop answers PORT_BUSY but device://attitude-stopped arrives: that counts as stopped", async () => {
+    await open();
+    await waitFor(streaming);
+    mock.device.stopBusyLeft = Infinity;
+    mock.device.stopBusyStopsAnyway = true;
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => wizard.ui.accCalibration === "done");
+    expect(mock.device.attitudeStopCalls).toBe(1);
+    expect(mock.device.accCalibrations).toBe(1);
+    expect(mock.device.portBusyRefused).toEqual([]);
+  });
+
+  it("Hebrew: the board-busy error", async () => {
+    setLocale("he");
+    STOP_RETRY.totalMs = 300;
+    await open();
+    await waitFor(streaming);
+    mock.device.stopBusyLeft = Infinity;
+    await w!.get('[data-test="calibrate"]').trigger("click");
+    await waitFor(() => w!.find('[data-error-code="LIVE_VIEW_BUSY"]').exists(), 3000);
+    const text = w!.get('[data-error-code="LIVE_VIEW_BUSY"]').text();
+    expect(text).toContain("הלוח עסוק");
+    expect(text).toContain("נסו שוב");
+    expect(mock.device.accCalibrations).toBe(0);
+  });
+
   it("Hebrew: the paused note", async () => {
     setLocale("he");
     await open("happy", undefined, 40);
@@ -232,5 +315,69 @@ describe("attitudeLink: stop and wait, link gate", () => {
     await stop;
     expect(done).toBe(true);
     await attitudeStopping(); // nothing in flight any more
+  });
+
+  /** A backend whose stop answers per call: "busy" (PORT_BUSY), "gone" (DISCONNECTED) or "ok". */
+  function stopScript(next: (n: number) => "busy" | "gone" | "ok") {
+    const emitter = createEmitter();
+    const log: string[] = [];
+    let n = 0;
+    const b = (async (cmd: string) => {
+      log.push(`>${cmd}`);
+      if (cmd === "device_attitude_stream_stop") {
+        const r = next(n++);
+        await new Promise((res) => setTimeout(res, 5));
+        if (r === "busy") throw { ...uiError("PORT_BUSY", "shared call"), details: { port: "COM5", heldBy: "APP" } };
+        if (r === "gone") throw uiError("DISCONNECTED", "not connected");
+      }
+      log.push(`<${cmd}`);
+      return null;
+    }) as unknown as Backend;
+    setBackend(withLinkGate(b));
+    setEventSource(emitter.on);
+    return { emitter, log, calls: () => n };
+  }
+
+  it("PORT_BUSY, PORT_BUSY, OK: retried with backoff; a link command waits until it really stopped", async () => {
+    const { log, calls } = stopScript((n) => (n < 2 ? "busy" : "ok"));
+    const stop = stopAttitudeStream();
+    const cal = api.device.accCalibrate();
+    await stop;
+    await cal;
+    expect(calls()).toBe(3);
+    expect(log.lastIndexOf("<device_attitude_stream_stop")).toBeLessThan(log.indexOf(">device_acc_calibrate"));
+  });
+
+  it("always PORT_BUSY: rejects with LIVE_VIEW_BUSY after the bounded wait (and the gate does not hang)", async () => {
+    STOP_RETRY.totalMs = 300;
+    const { calls } = stopScript(() => "busy");
+    const t0 = Date.now();
+    const err = await stopAttitudeStream().then(() => null, (e) => e);
+    const took = Date.now() - t0;
+    expect(toUiError(err).code).toBe("LIVE_VIEW_BUSY");
+    expect(took).toBeGreaterThanOrEqual(250);
+    expect(took).toBeLessThan(1500);
+    expect(calls()).toBeGreaterThan(2);
+    await attitudeStopping(); // resolves, never rejects
+  });
+
+  it("the default bound is between 3 and 5 seconds", () => {
+    expect(STOP_RETRY.totalMs).toBeGreaterThanOrEqual(3000);
+    expect(STOP_RETRY.totalMs).toBeLessThanOrEqual(5000);
+  });
+
+  it("PORT_BUSY, then device://attitude-stopped during the backoff: done without another try", async () => {
+    const { emitter, calls } = stopScript(() => "busy");
+    const stop = stopAttitudeStream();
+    await new Promise((r) => setTimeout(r, 15));
+    emitter.emit(EVENTS.attitudeStopped, { reason: "REQUESTED", error: null });
+    await stop;
+    expect(calls()).toBe(1);
+  });
+
+  it("any other stop error (not connected, no stream) means there is nothing to stop", async () => {
+    const { calls } = stopScript(() => "gone");
+    await stopAttitudeStream();
+    expect(calls()).toBe(1);
   });
 });
