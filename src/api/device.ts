@@ -8,7 +8,9 @@
  * file. Names, argument shapes and payloads below are copied from #38 verbatim:
  *   - device_* commands without a port (the connection manager holds it, §4.1);
  *   - MotorTestLimits {maxThrottle, watchdogMs}; SCREAMING_SNAKE stop reasons;
- *   - AppError.details: PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail}.
+ *   - AppError.details: PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail};
+ *   - flasher_remove_read_protection {dfuSerial, confirmErase} (§2.3 / §6 step 5): erases the
+ *     whole chip; the backend refuses with ERASE_CONFIRMATION_REQUIRED unless confirmErase.
  */
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type { FcInfo, FcSerialPort } from "../types/model";
@@ -82,6 +84,7 @@ export interface DeviceCommandMap {
   device_motor_test_stop: [None, void];
   device_rc_stream_start: [{ rateHz: number | null }, void];
   device_rc_stream_stop: [None, void];
+  flasher_remove_read_protection: [{ dfuSerial: string | null; confirmErase: boolean }, void];
 }
 export type DeviceCommand = keyof DeviceCommandMap;
 export type DeviceBackend = <K extends DeviceCommand>(cmd: K, args: DeviceCommandMap[K][0]) => Promise<DeviceCommandMap[K][1]>;
@@ -107,6 +110,13 @@ export const device = {
   motorTestStop: () => call("device_motor_test_stop", none),
   rcStreamStart: (rateHz: number | null = null) => call("device_rc_stream_start", { rateHz }),
   rcStreamStop: () => call("device_rc_stream_stop", none),
+};
+
+/** #38 flasher additions (TODO(shared #38): move to api.flasher). */
+export const flasherNext = {
+  /** ERASES THE WHOLE CHIP. Only call after the user explicitly confirmed (ReadProtectedPanel). */
+  removeReadProtection: (dfuSerial: string | null, confirmErase: boolean) =>
+    call("flasher_remove_read_protection", { dfuSerial, confirmErase }),
 };
 
 export const DEVICE_EVENTS = {

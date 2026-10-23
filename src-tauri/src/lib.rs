@@ -17,9 +17,26 @@ pub mod flasher;
 pub mod model;
 pub mod system;
 
+/// Safety net (ARCHITECTURE.md §4.2): stop a running motor test when a window closes or
+/// the app exits, independent of the UI.
+fn emergency_stop<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) {
+    if let Some(mgr) = app.try_state::<device::ConnectionManager>() {
+        mgr.emergency_stop_all();
+    }
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(device::ConnectionManager::default())
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                emergency_stop(window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // device
             device::commands::device_list_ports,
@@ -59,6 +76,14 @@ pub fn run() {
             system::commands::system_install_dfu_driver,
             system::commands::system_app_info,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Betaflight Setup Wizard");
+        .build(tauri::generate_context!())
+        .expect("error while building Betaflight Setup Wizard");
+    app.run(|handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            emergency_stop(handle);
+        }
+    });
 }
