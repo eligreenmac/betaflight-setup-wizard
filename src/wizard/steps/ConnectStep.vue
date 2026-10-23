@@ -4,6 +4,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
+import { demoState, forceDemo } from "../../api/fallback";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
@@ -87,6 +88,13 @@ async function onAction(id: GuidanceActionId): Promise<void> {
   await connect();
 }
 
+/** No board at hand: run every later call on the simulated board (banner stays on). */
+async function useDemo(): Promise<void> {
+  forceDemo();
+  selected.value = "";
+  await connect();
+}
+
 const label = (p: HostPort) => [p.path, p.product ?? p.manufacturer, p.kind === "FC_VCP" ? t("connect.looksLikeFc") : null].filter(Boolean).join(" · ");
 
 onMounted(scan);
@@ -140,6 +148,10 @@ onMounted(scan);
         <button type="button" class="btn" :disabled="busy" @click="scan">{{ t("connect.rescan") }}</button>
       </div>
       <ErrorPanel v-if="error" :error="error" :busy="busy" @action="onAction" />
+      <p v-if="!demoState.forced" class="hint">
+        {{ t("demo.tryHint") }}
+        <button type="button" class="btn btn--small btn--link" :disabled="busy" data-test="use-demo" @click="useDemo">{{ t("demo.try") }}</button>
+      </p>
       <details>
         <summary>{{ t("connect.driverHelpTitle") }}</summary>
         <p>{{ t("connect.driverHelp1") }}</p>

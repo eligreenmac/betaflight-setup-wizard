@@ -15,8 +15,15 @@
     "progress": "Progress",
     "navigation": "Wizard navigation",
     "stepOf": "Step {n} of {total}",
-    "fixBeforeNext": "Before you continue:",
-    "demo": "Demo mode: no real flight controller"
+    "fixBeforeNext": "Before you continue:"
+  },
+  "demo": {
+    "title": "Demo mode.",
+    "bodySome": "Some features are simulated: this app version cannot do them on a real flight controller yet, so nothing is read from or written to the board for them.",
+    "bodyAll": "Everything runs on a simulated flight controller. Nothing is read from or written to a real board.",
+    "which": "Simulated features ({n})",
+    "tryHint": "No flight controller at hand?",
+    "try": "Try the demo"
   },
   "steps": {
     "welcome": {

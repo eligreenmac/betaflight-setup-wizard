@@ -5,6 +5,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import BackupsPanel from "./components/BackupsPanel.vue";
+import DemoBanner from "./components/DemoBanner.vue";
 import IssueList from "./components/IssueList.vue";
 import LanguageToggle from "./components/LanguageToggle.vue";
 import WizardStepper from "./components/WizardStepper.vue";
@@ -13,7 +14,6 @@ import { back, currentIndex, currentStep, isFirst, isLast, issues, nav, next, st
 import { resolveStepComponent } from "./wizard/registry";
 import { markDirty, wizard } from "./wizard/state";
 
-const props = withDefaults(defineProps<{ demo?: boolean }>(), { demo: false });
 const { t } = useI18n();
 const showBackups = ref(false);
 let unbind: (() => void) | null = null;
@@ -35,13 +35,14 @@ onBeforeUnmount(() => unbind?.());
   <div class="app">
     <header class="toolbar">
       <h1>{{ t("app.title") }}</h1>
-      <span v-if="props.demo" class="badge" data-test="demo-badge">{{ t("shell.demo") }}</span>
       <span style="flex: 1" />
       <button v-if="wizard.fc" type="button" class="btn btn--small btn--link" :aria-expanded="showBackups" @click="showBackups = !showBackups">
         {{ t("backups.title") }}
       </button>
       <LanguageToggle />
     </header>
+
+    <DemoBanner />
 
     <WizardStepper />
 
