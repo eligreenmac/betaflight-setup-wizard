@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /** Receiver options offered by the wizard (MVP). */
+import { device, type DeviceFcInfo } from "../api/device";
 import type { FcInfo, RxProtocol } from "../types/model";
+import { compareVersions } from "./version";
 
 /** Serial receiver protocols, most common first. */
 export const SERIAL_RX_PROTOCOLS: RxProtocol[] = ["CRSF", "GHST", "SBUS", "FPORT", "IBUS", "SRXL2", "SUMD", "SPEK2048"];
@@ -9,13 +11,37 @@ export const SERIAL_RX_PROTOCOLS: RxProtocol[] = ["CRSF", "GHST", "SBUS", "FPORT
 export const SPI_RX_PROTOCOLS: RxProtocol[] = ["EXPRESSLRS"];
 
 /**
- * Build options that mean "this board has an onboard SPI ExpressLRS receiver".
- * TODO(device): confirm which token(s) device_identify reports in FcInfo.buildOptions.
+ * Build options that hint at an onboard SPI ExpressLRS receiver. Only a fallback:
+ * MSP cannot tell whether the board *has* an SPI receiver (ARCHITECTURE §4.1).
  */
 export const ONBOARD_ELRS_BUILD_OPTIONS = ["USE_RX_EXPRESSLRS", "USE_RX_SPI_EXPRESSLRS", "RX_EXPRESSLRS"] as const;
 
-export function hasOnboardElrs(fc: FcInfo | null): boolean {
-  return !!fc && fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
+/**
+ * Onboard SPI receiver? `rxSpi.present` (RX_SPI_CS assigned, from device_probe_board)
+ * decides when known; before the probe (`present: null`) fall back to the ELRS pins
+ * and build-option hints. config_plan still refuses non-ExpressLRS SPI protocols.
+ */
+export function hasOnboardElrs(fc: DeviceFcInfo | null): boolean {
+  if (!fc) return false;
+  if (fc.rxSpi && fc.rxSpi.present !== null) return fc.rxSpi.present;
+  return !!fc.rxSpi?.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
+}
+
+/** device_probe_board leaves the CLI without a reboot only on 4.5+ (on 4.4 the FC reboots). */
+export const PROBE_WITHOUT_REBOOT_SINCE = "4.5.0";
+
+/**
+ * Best-effort device_probe_board after identify, to learn `rxSpi.present`.
+ * Skipped before 4.5 and on non-Betaflight firmware; any failure (e.g. NOT_IMPLEMENTED
+ * on an older backend) keeps the identify result.
+ */
+export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<DeviceFcInfo> = () => device.probeBoard()): Promise<DeviceFcInfo> {
+  if (info.fcVariant !== "BTFL" || compareVersions(info.firmwareVersion, PROBE_WITHOUT_REBOOT_SINCE) < 0) return info;
+  try {
+    return await probe();
+  } catch {
+    return info;
+  }
 }
 
 /**

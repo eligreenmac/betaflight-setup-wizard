@@ -5,14 +5,14 @@
 import { listen } from "@tauri-apps/api/event";
 import type { ConfigProgress, FlashProgress } from "../types/model";
 import { EVENTS } from "./commands";
-import { UPCOMING_EVENTS, type MotorTestStopped, type RcChannels, type RcStopped } from "./upcoming";
+import { DEVICE_EVENTS, type MotorTestStopped, type RcChannels, type RcStopped } from "./device";
 
 export interface EventMap {
   [EVENTS.flashProgress]: FlashProgress;
   [EVENTS.configProgress]: ConfigProgress;
-  [UPCOMING_EVENTS.motorTestStopped]: MotorTestStopped;
-  [UPCOMING_EVENTS.rcChannels]: RcChannels;
-  [UPCOMING_EVENTS.rcStopped]: RcStopped;
+  [DEVICE_EVENTS.motorTestStopped]: MotorTestStopped;
+  [DEVICE_EVENTS.rcChannels]: RcChannels;
+  [DEVICE_EVENTS.rcStopped]: RcStopped;
 }
 export type EventName = keyof EventMap;
 export type Unlisten = () => void;

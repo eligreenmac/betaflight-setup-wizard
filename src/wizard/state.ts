@@ -37,7 +37,7 @@ export interface UiState extends RoleOptions {
   batteryOffAck: boolean;
   motorOrderOk: boolean;
   motorDirectionOk: boolean;
-  /** null = not probed yet; false = backend has no motor_test_* commands yet. */
+  /** null = not probed yet; false = backend has no device_motor_test_* commands yet. */
   motorTestAvailable: boolean | null;
   /** Script from config_plan for the current model (Review); exactly what Apply sends. */
   script: CliScript | null;

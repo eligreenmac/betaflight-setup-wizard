@@ -4,22 +4,24 @@
  * Simulates a SpeedyBee F405 V4 on Betaflight 4.5.1 (latest stable 4.5.2) with:
  *   UART2 = serial RX, UART3 = MSP + VTX_MSP (digital VTX), UART6 = plain MSP (foreign).
  *
- * Covers the shared contract (src/api/commands.ts) via createMockBackend() and the
- * agreed-but-not-yet-shared motor/RC commands (src/api/upcoming.ts). The
- * `legacy-backend` scenario behaves like a Phase 0 backend: config_plan,
- * config_list_backups, config_backups_dir, config_restore, config_elrs_uid and the
- * motor/RC commands answer NOT_IMPLEMENTED.
+ * Covers the shared contract (src/api/commands.ts) via createMockBackend(), including
+ * the device_motor_test_* / device_rc_stream_* commands of #38 (no port argument: the
+ * connection manager holds the port; a motor test and the RC stream exclude each
+ * other with PORT_BUSY {heldBy: "APP"}). The `legacy-backend` scenario behaves like a
+ * Phase 0 backend: config_plan, config_list_backups, config_backups_dir,
+ * config_restore, config_elrs_uid, device_probe_board and the motor/RC commands
+ * answer NOT_IMPLEMENTED.
  *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { UpcomingBackend, UpcomingCommand, UpcomingCommandMap } from "../api/upcoming";
+import type { DeviceBackend, DeviceCommand, DeviceCommandMap, DeviceFcInfo } from "../api/device";
 import type { Backup, ClearedPort, CliScript, DroneModel, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
-import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../api/upcoming";
+import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
 export const SCENARIOS = [
   "happy",
@@ -48,7 +50,8 @@ export interface MockOptions {
 
 export interface ScenarioMock {
   backend: Backend;
-  upcoming: UpcomingBackend;
+  /** The #38 device_* commands (src/api/device.ts) until they are in the shared CommandMap. */
+  deviceBackend: DeviceBackend;
   events: Emitter;
   /** Inspectable device state (tests). */
   device: MockDevice;
@@ -64,8 +67,10 @@ interface MockDevice {
   motorsSpinning: Set<number>;
   /** Calls seen by the mock, in order (tests assert on stop / keepalive traffic). */
   motorLog: string[];
-  /** Force the next motor_test_* call to fail with this error (tests). */
+  /** Force the next device_motor_test_* call to fail with this error (tests). */
   motorFailNext: UiError | null;
+  /** device_probe_board ran (fills FcInfo.rxSpi.present). */
+  probed: boolean;
   armed: boolean;
   rcTimer: ReturnType<typeof setInterval> | null;
   backups: { backup: Backup; ports: FcSerialPort[] }[];
@@ -73,6 +78,7 @@ interface MockDevice {
 
 /** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
 const err = (code: ErrorCode, message: string): UiError => uiError(code, message);
+const portBusy = (port: string, heldBy: "APP" | "EXTERNAL", message: string): UiError => ({ ...uiError("PORT_BUSY", message), details: { port, heldBy } });
 const UID = "3a0021000c51333038363834";
 
 export function isScenario(s: string | null | undefined): s is Scenario {
@@ -108,6 +114,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     motorFailNext: null,
     armed: false,
     rcTimer: null,
+    probed: false,
     backups: [],
   };
   const snapshot = (): Backup => {
@@ -161,20 +168,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
             { path: "COM1", vid: null, pid: null, manufacturer: null, product: "Communications Port", kind: "UNKNOWN" },
           ],
     device_connect: ({ path }) => {
-      if (scenario === "port-busy") throw err("PORT_BUSY", `${path}: Access is denied. (os error 5)`);
+      if (scenario === "port-busy") throw portBusy(path, "EXTERNAL", `${path}: Access is denied. (os error 5)`);
       if (path !== "COM5") throw err("SERIAL_ERROR", `${path}: no MSP response`);
     },
     device_disconnect: () => undefined,
-    device_identify: () => ({
-      fcVariant: "BTFL",
-      firmwareVersion: device.firmwareVersion,
-      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : "1.46",
-      boardName: "SPEEDYBEEF405V4",
-      manufacturerId: "SPBE",
-      mcu: "STM32F405",
-      uid: UID,
-      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(scenario === "onboard-elrs" ? ["USE_RX_EXPRESSLRS"] : [])],
-    }),
+    device_identify: () => fcInfo(),
     device_cli_exec: ({ line }) => `# ${line}\n`,
     device_reboot_to_bootloader: () => {
       device.inDfu = true;
@@ -288,18 +286,41 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  const inner = createMockBackend(handlers);
-  const backend: Backend = (async (cmd: CommandName, args: never) => {
-    await sleep(latency);
-    return inner(cmd, args);
-  }) as Backend;
+  function fcInfo(): DeviceFcInfo {
+    const elrs = scenario === "onboard-elrs";
+    return {
+      fcVariant: "BTFL",
+      firmwareVersion: device.firmwareVersion,
+      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : "1.46",
+      boardName: "SPEEDYBEEF405V4",
+      manufacturerId: "SPBE",
+      mcu: "STM32F405",
+      uid: UID,
+      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : [])],
+      serialPorts: device.ports.map((p) => ({ ...p })),
+      // present stays null until device_probe_board ran (ARCHITECTURE §4.1).
+      rxSpi: device.probed
+        ? { present: elrs, expresslrsPins: elrs, protocol: elrs ? "EXPRESSLRS" : null, featureEnabled: elrs, resources: elrs ? ["RX_SPI_CS", "RX_SPI_EXTI", "RX_SPI_BIND", "RX_SPI_LED"] : [] }
+        : { present: null, expresslrsPins: elrs, protocol: null, featureEnabled: null, resources: [] },
+    };
+  }
 
-  const upcomingHandlers: { [K in UpcomingCommand]: (a: UpcomingCommandMap[K][0]) => UpcomingCommandMap[K][1] } = {
-    motor_test_start: ({ motorIndex, throttle, propsOffConfirmed, limits }) => {
+  // ---- motor test / RC stream (device_*, #38). Same gate order as ARCHITECTURE §4.2.
+  const deviceHandlers: { [K in DeviceCommand]: (a: DeviceCommandMap[K][0]) => DeviceCommandMap[K][1] } = {
+    device_probe_board: () => {
+      legacy("device_probe_board");
+      device.probed = true;
+      return fcInfo();
+    },
+    device_motor_test_start: ({ motorIndex, throttle, propsOffConfirmed, limits }) => {
+      legacy("device_motor_test_start");
       device.motorLog.push(`start ${motorIndex} ${throttle}`);
       motorFault();
-      const lim = { maxThrottle: Math.min(limits?.maxThrottle ?? DEFAULT_MAX_TEST_THROTTLE, HARD_MAX_TEST_THROTTLE), watchdog: limits?.watchdog ?? DEFAULT_MOTOR_WATCHDOG_MS };
-      // Same gate order as device::motor::check_gate (DESIGN.md §5).
+      if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
+      const lim = {
+        maxThrottle: Math.min(limits?.maxThrottle ?? DEFAULT_MAX_TEST_THROTTLE, HARD_MAX_TEST_THROTTLE),
+        watchdogMs: Math.min(2000, Math.max(100, limits?.watchdogMs ?? DEFAULT_MOTOR_WATCHDOG_MS)),
+      };
       if (!propsOffConfirmed) throw err("MOTOR_TEST_REFUSED", "props-off not confirmed");
       if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
       if (motorIndex !== null && (motorIndex < 0 || motorIndex > 3)) throw err("MOTOR_TEST_REFUSED", `motor index ${motorIndex} >= motor count 4`);
@@ -307,19 +328,26 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       device.motorsSpinning.clear();
       if (motorIndex === null) [0, 1, 2, 3].forEach((m) => device.motorsSpinning.add(m));
       else device.motorsSpinning.add(motorIndex);
-      return { outputConfig: { motorCount: 4, stopValue: 1000, protocol: "DSHOT600" }, limits: lim };
+      return {
+        outputConfig: { protocol: "DSHOT600", digital: true, feature3d: false, mincommand: 1000, motorCount: 4, stopValue: 1000 },
+        limits: lim,
+      };
     },
-    motor_test_keepalive: () => {
+    device_motor_test_keepalive: () => {
+      legacy("device_motor_test_keepalive");
       device.motorLog.push("keepalive");
       motorFault();
       if (device.motorsSpinning.size === 0) throw err("MOTOR_TEST_NOT_ACTIVE", "no motor test running");
     },
-    motor_test_stop: () => {
+    device_motor_test_stop: () => {
+      legacy("device_motor_test_stop");
       device.motorLog.push("stop");
       device.motorsSpinning.clear();
       motorFault();
     },
-    rc_channels_stream_start: ({ rateHz }) => {
+    device_rc_stream_start: ({ rateHz }) => {
+      legacy("device_rc_stream_start");
+      if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
       if (device.rcTimer) clearInterval(device.rcTimer);
       const hz = Math.min(50, Math.max(1, rateHz ?? 15));
       let seq = 0;
@@ -329,13 +357,14 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         const t = (seq / hz) * 1000;
         const aux1 = Math.floor(t / 3000) % 2 === 0 ? 1000 : 2000;
         const aux2 = [1000, 1500, 2000][Math.floor(t / 2000) % 3]!;
-        events.emit("rc://channels", { seq, timestampMs: Math.round(t), channels: [1500, 1500, 1000, 1500, aux1, aux2, 1000, 1000] });
+        events.emit("device://rc-channels", { seq, timestampMs: Math.round(t), channels: [1500, 1500, 1000, 1500, aux1, aux2, 1000, 1000] });
       }, 1000 / hz);
     },
-    rc_channels_stream_stop: () => {
+    device_rc_stream_stop: () => {
+      legacy("device_rc_stream_stop");
       if (device.rcTimer) clearInterval(device.rcTimer);
       device.rcTimer = null;
-      events.emit("rc://stopped", { reason: "requested", error: null });
+      events.emit("device://rc-stopped", { reason: "REQUESTED", error: null });
     },
   };
   function motorFault(): void {
@@ -345,13 +374,19 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       throw e;
     }
   }
-  const upcoming: UpcomingBackend = (async (cmd: UpcomingCommand, args: never) => {
-    await sleep(latency / 2);
-    if (scenario === "legacy-backend") throw err("NOT_IMPLEMENTED", `mock: ${cmd}`);
-    return (upcomingHandlers[cmd] as (a: unknown) => unknown)(args);
-  }) as UpcomingBackend;
 
-  return { backend, upcoming, events, device };
+  const inner = createMockBackend(handlers);
+  const backend: Backend = (async (cmd: CommandName, args: never) => {
+    await sleep(latency);
+    return inner(cmd, args);
+  }) as Backend;
+
+  const deviceBackend: DeviceBackend = (async (cmd: DeviceCommand, args: never) => {
+    await sleep(latency / 2);
+    return (deviceHandlers[cmd] as (a: unknown) => unknown)(args);
+  }) as DeviceBackend;
+
+  return { backend, deviceBackend, events, device };
 }
 
 const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {

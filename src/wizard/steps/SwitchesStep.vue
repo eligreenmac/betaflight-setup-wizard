@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
-// U5: ARM + a few modes on AUX switches, with live switch detection from rc://channels
+// U5: ARM + a few modes on AUX switches, with live switch detection from device://rc-channels
 // (mocked until the device crate lands; disabled with guidance when unavailable).
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { onEvent, type Unlisten } from "../../api/events";
-import { UPCOMING_EVENTS, upcoming } from "../../api/upcoming";
+import { DEVICE_EVENTS, device } from "../../api/device";
 import { isNotImplemented } from "../../errors/codes";
 import { markDirty, wizard } from "../state";
 import {
@@ -69,10 +69,10 @@ function active(sw: { auxChannel: number; rangeMin: number; rangeMax: number }):
 
 onMounted(async () => {
   if (!wizard.connectedPath) return void (live.value = "unavailable");
-  offs.push(await onEvent(UPCOMING_EVENTS.rcChannels, (p) => ((channels.value = p.channels), (live.value = "on"))));
-  offs.push(await onEvent(UPCOMING_EVENTS.rcStopped, () => (live.value = "stopped")));
+  offs.push(await onEvent(DEVICE_EVENTS.rcChannels, (p) => ((channels.value = p.channels), (live.value = "on"))));
+  offs.push(await onEvent(DEVICE_EVENTS.rcStopped, () => (live.value = "stopped")));
   try {
-    await upcoming.rcChannelsStreamStart(wizard.connectedPath, 15);
+    await device.rcStreamStart(15);
   } catch (e) {
     live.value = isNotImplemented(e) ? "unavailable" : "stopped";
   }
@@ -80,7 +80,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   offs.forEach((o) => o());
   offs = [];
-  if (live.value !== "unavailable") void upcoming.rcChannelsStreamStop().catch(() => undefined);
+  if (live.value !== "unavailable") void device.rcStreamStop().catch(() => undefined);
 });
 </script>
 

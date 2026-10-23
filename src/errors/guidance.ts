@@ -4,7 +4,7 @@
  * (codes from drafts DESIGN.md §6). Text lives in the locales under
  * `errors.<CODE>.{title,body,step1..n}`; tests/i18n.test.ts checks every key exists.
  */
-import { ALL_ERROR_CODES, isErrorCode, toUiError, type ErrorCode, type UiError } from "./codes";
+import { ALL_ERROR_CODES, isErrorCode, isPortBusyDetails, toUiError, type ErrorCode, type UiError } from "./codes";
 
 export { isNotImplemented, toUiError, type UiError } from "./codes";
 
@@ -99,15 +99,35 @@ const TABLE: Record<ErrorCode, Entry> = {
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */
 export const STEP_COUNTS = Object.fromEntries(ALL_ERROR_CODES.map((c) => [c, TABLE[c].steps])) as Record<ErrorCode, number>;
 
+/**
+ * Copy variants chosen from `details` (#38). PORT_BUSY says who holds the port:
+ * APP = this app (another window, or a motor test / RC stream in progress),
+ * EXTERNAL = another program (Betaflight Configurator, Cura, ...). Without details
+ * the generic PORT_BUSY copy is used. Keys: `errors.<variant>.{title,body,stepN}`.
+ */
+export const GUIDANCE_VARIANTS = {
+  PORT_BUSY_APP: { code: "PORT_BUSY", steps: 2 },
+  PORT_BUSY_EXTERNAL: { code: "PORT_BUSY", steps: 2 },
+} as const satisfies Record<string, { code: ErrorCode; steps: number }>;
+export type GuidanceVariant = keyof typeof GUIDANCE_VARIANTS;
+
+function variantOf(err: UiError): GuidanceVariant | null {
+  if (err.code === "PORT_BUSY" && isPortBusyDetails(err.details)) return `PORT_BUSY_${err.details.heldBy}`;
+  return null;
+}
+
 export function guidanceFor(codeOrError: string | UiError): Guidance {
   const raw = typeof codeOrError === "string" ? codeOrError : codeOrError.code;
   const c: ErrorCode = isErrorCode(raw) ? raw : toUiError({ code: raw, message: "" }).code;
   const e = TABLE[c];
+  const variant = typeof codeOrError === "string" ? null : variantOf({ ...codeOrError, code: c });
+  const key = variant ?? c;
+  const steps = variant ? GUIDANCE_VARIANTS[variant].steps : e.steps;
   return {
     code: c,
-    titleKey: `errors.${c}.title`,
-    bodyKey: `errors.${c}.body`,
-    stepKeys: Array.from({ length: e.steps }, (_, i) => `errors.${c}.step${i + 1}`),
+    titleKey: `errors.${key}.title`,
+    bodyKey: `errors.${key}.body`,
+    stepKeys: Array.from({ length: steps }, (_, i) => `errors.${key}.step${i + 1}`),
     actions: e.actions,
     severity: e.warning ? "warning" : "error",
     showMessage: !!e.showMessage,

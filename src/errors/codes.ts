@@ -5,10 +5,13 @@
  * `code` is fine-grained and stable (only ever added), `category` is the broad
  * group used for generic handling, `message` is English detail for "details".
  *
- * TODO(shared): today's src-tauri/src/error.rs still sends the Phase 0 codes
- * (`AppError {code, message}`, codes SERIAL, MSP, ...). They are accepted here as
- * aliases until error.rs / model.ts adopt UiError. No contract change in this PR.
+ * error.rs sends `AppError {code, message, details?}` (#38): the DESIGN.md §6 codes
+ * where the backend has them, plus the Phase 0 codes (SERIAL, MSP, ...), accepted here
+ * as aliases. `details` (PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail})
+ * is kept on the UiError. There is no backend BUSY code; a busy port is PORT_BUSY.
  */
+
+import type { DriverMissingDetails, PortBusyDetails } from "../api/device";
 
 export const ERROR_CATEGORIES = ["Connection", "Device", "Protocol", "Flash", "Network", "Io", "Safety", "Operation"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -74,13 +77,20 @@ export const LEGACY_CODE_ALIASES: Record<string, ErrorCode> = {
   CONFIG: "CONFIG_UNSUPPORTED",
   DRIVER: "DRIVER_MISSING",
   IO: "IO_ERROR",
+  // The UI only calls flasher_remove_read_protection with confirmErase=true, so this is a bug if seen.
+  ERASE_CONFIRMATION_REQUIRED: "INTERNAL",
 };
 
 export interface UiError {
   code: ErrorCode;
   category: ErrorCategory;
   message: string;
+  /** Structured extras from AppError (#38): PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail}. */
+  details?: PortBusyDetails | DriverMissingDetails;
 }
+
+export const isPortBusyDetails = (d: unknown): d is PortBusyDetails =>
+  !!d && typeof d === "object" && ((d as PortBusyDetails).heldBy === "APP" || (d as PortBusyDetails).heldBy === "EXTERNAL");
 
 export function isErrorCode(code: string): code is ErrorCode {
   return (ALL_ERROR_CODES as string[]).includes(code);
@@ -102,10 +112,12 @@ export function uiError(code: ErrorCode, message: string): UiError {
  */
 export function toUiError(e: unknown): UiError {
   if (e && typeof e === "object" && "code" in e && typeof (e as { code: unknown }).code === "string") {
-    const raw = e as { code: string; message?: unknown };
+    const raw = e as { code: string; message?: unknown; details?: unknown };
     const code: ErrorCode = isErrorCode(raw.code) ? raw.code : (LEGACY_CODE_ALIASES[raw.code] ?? "UNKNOWN");
     const message = String(raw.message ?? "");
-    return { code, category: categoryOf(code), message: code === "UNKNOWN" && raw.code !== "UNKNOWN" ? `${raw.code}: ${message}` : message };
+    const out: UiError = { code, category: categoryOf(code), message: code === "UNKNOWN" && raw.code !== "UNKNOWN" ? `${raw.code}: ${message}` : message };
+    if (raw.details && typeof raw.details === "object") out.details = raw.details as UiError["details"];
+    return out;
   }
   if (typeof e === "string" && /command .* not found|unknown command/i.test(e)) return uiError("NOT_IMPLEMENTED", e);
   if (e instanceof Error) return uiError("UNKNOWN", e.message);

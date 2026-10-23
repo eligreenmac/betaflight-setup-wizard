@@ -248,7 +248,7 @@
       "stop": "Stop all motors",
       "idle": "Motors are stopped.",
       "running": "Motor {n} is spinning. Select it again or Stop to stop it.",
-      "usbOnlyNote": "Motors stop when you leave this step or switch windows. Closing the app also stops them, and they stop on their own within half a second if the app stops responding.",
+      "usbOnlyNote": "Motors stop when you leave this step or switch windows, and on their own within half a second if the app stops responding.",
       "orderOk": "The right motor spins for each button.",
       "directionOk": "Every motor spins in the direction shown."
     },
@@ -469,9 +469,21 @@
       "step4": "Check that a light turns on on the board. If nothing lights up, it is not getting power."
     },
     "PORT_BUSY": {
+      "title": "The flight controller's connection is in use",
+      "body": "Another program, or another window of this app, has the connection open.",
+      "step1": "Close other windows of this app, and apps such as Betaflight Configurator or Cura.",
+      "step2": "Unplug and replug the board, then try again."
+    },
+    "PORT_BUSY_APP": {
+      "title": "This app is already using the flight controller",
+      "body": "Another window of this app, or a task still running here (such as a motor test or the live switch check), has the connection.",
+      "step1": "Close the other window of this app, or finish what it is doing.",
+      "step2": "Then try again."
+    },
+    "PORT_BUSY_EXTERNAL": {
       "title": "Another program is using the flight controller",
-      "body": "The connection is open in another program.",
-      "step1": "Close Betaflight Configurator, ESC Configurator and similar apps.",
+      "body": "Another app on this computer has the connection open.",
+      "step1": "Close Betaflight Configurator, Cura or another app that may use the port (for example ESC Configurator or a 3D-printer tool).",
       "step2": "Unplug and replug the board, then try again."
     },
     "DISCONNECTED": {

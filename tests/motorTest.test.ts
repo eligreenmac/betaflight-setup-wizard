@@ -2,11 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick, reactive } from "vue";
 import { createEmitter } from "../src/api/events";
-import { MOTOR_KEEPALIVE_MS, setUpcomingBackend, resetUpcomingBackend } from "../src/api/upcoming";
 import { setEventSource, resetEventSource } from "../src/api/events";
 import { uiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
-import { bindMotorStopTriggers, defaultMotorDeps, MotorTestController, type MotorTestDeps } from "../src/wizard/motorTest";
+import { bindMotorStopTriggers, defaultMotorDeps, MOTOR_KEEPALIVE_MS, MotorTestController, type MotorTestDeps } from "../src/wizard/motorTest";
 
 const ACKS = { propsRemoved: true, batteryDisconnected: true };
 const flush = async () => {
@@ -18,7 +17,7 @@ function fakeDeps() {
   const deps: MotorTestDeps & { log: string[]; failKeepalive: boolean } = {
     log,
     failKeepalive: false,
-    start: vi.fn(async (a) => void log.push(`start ${a.motorIndex} ${a.throttle} ${a.propsOffConfirmed}`)),
+    start: vi.fn(async (a) => void log.push(`start ${a.motorIndex} ${a.throttle} ${a.propsOffConfirmed} ${a.limits?.maxThrottle}/${a.limits?.watchdogMs}`)),
     keepalive: vi.fn(async () => {
       log.push("keepalive");
       if (deps.failKeepalive) throw uiError("DISCONNECTED", "port gone");
@@ -45,12 +44,12 @@ describe("motor test safety gate", () => {
     await expect(c.start(0, { port: null, acks: ACKS })).rejects.toMatchObject({ code: "DISCONNECTED" });
     expect(d.start).not.toHaveBeenCalled();
     await c.start(1, { port: "COM5", acks: ACKS });
-    expect(d.log[0]).toBe("start 1 1100 true");
+    expect(d.log[0]).toBe("start 1 1100 true 1150/500");
   });
 });
 
 describe("keepalive timer", () => {
-  it("sends motor_test_keepalive every 200 ms while running and stops sending after stop", async () => {
+  it("sends device_motor_test_keepalive every 200 ms while running and stops sending after stop", async () => {
     expect(MOTOR_KEEPALIVE_MS).toBe(200);
     const d = fakeDeps();
     const c = new MotorTestController(d);
@@ -189,22 +188,50 @@ describe("stop triggers", () => {
     expect(c.state.lastStop).toBe("unmount");
   });
 
-  it("backend motor-test://stopped (watchdog) ends the session without another stop call", async () => {
+  it("device://motor-test-stopped (WATCHDOG) ends the session and still sends device_motor_test_stop", async () => {
     const em = createEmitter();
     setEventSource(em.on);
     const { d, c } = await running();
     const off = bindMotorStopTriggers(c, { backendEvents: true });
     await flush();
-    em.emit("motor-test://stopped", { reason: "watchdog", error: null });
+    em.emit("device://motor-test-stopped", { reason: "WATCHDOG", error: null });
     await flush();
     expect(c.state.running).toBe(false);
     expect(c.state.lastStop).toBe("backend");
     expect(c.state.error).toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
-    expect(d.stop).not.toHaveBeenCalled();
+    expect(d.stop).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1000);
     expect(d.keepalive).not.toHaveBeenCalled();
     off();
     resetEventSource();
+  });
+
+  it("maps every SCREAMING_SNAKE stop reason; the event's own error wins; REQUESTED while idle is not answered", async () => {
+    const cases = [
+      ["ARMED", "BOARD_ARMED"],
+      ["DISCONNECTED", "DISCONNECTED"],
+      ["ERROR", "UNKNOWN"],
+      ["APP_CLOSING", null],
+      ["REQUESTED", null],
+    ] as const;
+    for (const [reason, code] of cases) {
+      const { d, c } = await running();
+      await c.backendStopped(reason, null);
+      expect(c.state.running, reason).toBe(false);
+      expect(d.stop, reason).toHaveBeenCalledTimes(1);
+      if (code) expect(c.state.error, reason).toMatchObject({ code });
+      else expect(c.state.error, reason).toBeNull();
+    }
+    const { d, c } = await running();
+    await c.backendStopped("ERROR", { code: "SERIAL", message: "write failed" });
+    expect(c.state.error).toMatchObject({ code: "SERIAL_ERROR", message: "write failed" });
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    // An idle controller still answers a real backend stop (releases the session) ...
+    await c.backendStopped("WATCHDOG", null);
+    expect(d.stop).toHaveBeenCalledTimes(2);
+    // ... but not the echo of its own stop.
+    await c.backendStopped("REQUESTED", null);
+    expect(d.stop).toHaveBeenCalledTimes(2);
   });
 
   it("works end-to-end against the scenario mock (start, keepalives, stop on blur)", async () => {
@@ -221,8 +248,16 @@ describe("stop triggers", () => {
     off();
   });
 
-  it("unused helpers stay wired", () => {
-    setUpcomingBackend(async () => undefined as never);
-    resetUpcomingBackend();
+  it("end-to-end: a backend stop event is followed by device_motor_test_stop", async () => {
+    const mock = installMock({ latencyMs: 0 });
+    const c = new MotorTestController(defaultMotorDeps);
+    const off = bindMotorStopTriggers(c, { backendEvents: true });
+    await flush();
+    await c.start(2, { port: "COM5", acks: ACKS });
+    mock.events.emit("device://motor-test-stopped", { reason: "ARMED", error: null });
+    await flush();
+    expect(mock.device.motorLog).toEqual(["start 2 1100", "stop"]);
+    expect(c.state.error).toMatchObject({ code: "BOARD_ARMED" });
+    off();
   });
 });

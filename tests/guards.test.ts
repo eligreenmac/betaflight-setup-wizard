@@ -133,6 +133,14 @@ describe("guards map", () => {
     expect(s.model.receiver.port).toBeNull();
   });
 
+  it("onboard SPI receiver: rxSpi.present decides once probed, build options before", () => {
+    const rx = (present: boolean | null, expresslrsPins = false) => ({ present, expresslrsPins, protocol: null, featureEnabled: null, resources: [] });
+    expect(hasOnboardElrs({ ...fc(), rxSpi: rx(true) })).toBe(true);
+    expect(hasOnboardElrs({ ...fc(), rxSpi: rx(false), buildOptions: ["USE_RX_EXPRESSLRS"] })).toBe(false); // probe wins
+    expect(hasOnboardElrs({ ...fc(), rxSpi: rx(null, true) })).toBe(true);
+    expect(hasOnboardElrs(null)).toBe(false);
+  });
+
   it("onboard SPI ExpressLRS only when the board reports it", () => {
     const s = ready();
     expect(hasOnboardElrs(s.fc)).toBe(false);

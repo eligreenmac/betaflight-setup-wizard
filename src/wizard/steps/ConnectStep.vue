@@ -8,6 +8,7 @@ import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
 import type { DfuDevice, HostPort } from "../../types/model";
+import { probeOnboardReceiver } from "../receiver";
 import { setBoard, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
@@ -49,7 +50,7 @@ async function connect(): Promise<void> {
     const path = autoPick();
     if (!path) throw uiError("BOARD_NOT_FOUND", hostPorts.value.length ? "several serial ports, none looks like a flight controller" : "no serial ports found");
     await api.device.connect(path);
-    const info = await api.device.identify();
+    const info = await probeOnboardReceiver(await api.device.identify());
     // Only Betaflight can report its UARTs; other firmware goes straight to "update".
     const ports = info.fcVariant === "BTFL" ? await api.config.readPorts() : [];
     setBoard(wizard, info, ports, path);

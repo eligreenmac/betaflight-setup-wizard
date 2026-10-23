@@ -1,40 +1,63 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { afterEach, describe, expect, it } from "vitest";
 import { api, EVENTS } from "../src/api/commands";
+import { DEVICE_EVENTS, device, type DeviceFcInfo } from "../src/api/device";
 import { onEvent } from "../src/api/events";
-import { toNotImplemented, upcoming } from "../src/api/upcoming";
 import { toUiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { emptyDroneModel, type ConfigStage } from "../src/types/model";
 
 afterEach(() => uninstallMock());
 
-describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
-  it("maps Tauri's unknown-command string to NOT_IMPLEMENTED", () => {
-    expect(toNotImplemented("motor_test_start", "Command motor_test_start not found")).toMatchObject({ code: "NOT_IMPLEMENTED" });
-    const appErr = { code: "SERIAL", message: "x" };
-    expect(toNotImplemented("motor_test_start", appErr)).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
+describe("device contract (#38) against the scenario mock", () => {
+  it("maps Tauri's unknown-command string to NOT_IMPLEMENTED and keeps AppError details", () => {
+    expect(toUiError("Command device_motor_test_start not found")).toMatchObject({ code: "NOT_IMPLEMENTED" });
+    expect(toUiError({ code: "SERIAL", message: "x" })).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
+    expect(toUiError({ code: "PORT_BUSY", message: "x", details: { port: "COM5", heldBy: "APP" } })).toMatchObject({ details: { heldBy: "APP" } });
+    expect(toUiError({ code: "ERASE_CONFIRMATION_REQUIRED", message: "x" }).code).toBe("INTERNAL");
   });
 
   it("motor test and RC stream work against the mock; legacy backend reports NOT_IMPLEMENTED", async () => {
     const mock = installMock({ latencyMs: 0 });
-    await expect(upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1100, propsOffConfirmed: false })).rejects.toMatchObject({
-      code: "MOTOR_TEST_REFUSED",
-      category: "Safety",
-    });
-    await expect(upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1200, propsOffConfirmed: true })).rejects.toMatchObject({
-      code: "MOTOR_TEST_REFUSED",
-    }); // over the 1150 cap: refused, not clamped
-    const r = await upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1100, propsOffConfirmed: true });
-    expect(r.limits).toEqual({ maxThrottle: 1150, watchdog: 500 });
+    await expect(device.motorTestStart(2, 1100, false)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED", category: "Safety" });
+    await expect(device.motorTestStart(2, 1200, true)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" }); // over the 1150 cap: refused, not clamped
+    const r = await device.motorTestStart(2, 1100, true, { maxThrottle: 1150, watchdogMs: 50 });
+    expect(r.limits).toEqual({ maxThrottle: 1150, watchdogMs: 100 }); // watchdog clamped 100..2000
+    expect(r.outputConfig).toMatchObject({ motorCount: 4, stopValue: 1000, feature3d: false });
     expect(mock.device.motorsSpinning.has(2)).toBe(true);
-    await upcoming.motorTestKeepalive();
-    await upcoming.motorTestStop();
+    await device.motorTestKeepalive();
+    // Motor test and RC stream share the manager's connection.
+    await expect(device.rcStreamStart(15)).rejects.toMatchObject({ code: "PORT_BUSY", details: { heldBy: "APP" } });
+    await device.motorTestStop();
     expect(mock.device.motorsSpinning.size).toBe(0);
-    await expect(upcoming.motorTestKeepalive()).rejects.toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
+    await expect(device.motorTestKeepalive()).rejects.toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
+    const stopped: string[] = [];
+    await onEvent(DEVICE_EVENTS.rcStopped, (p) => stopped.push(p.reason));
+    await device.rcStreamStart(null);
+    await device.rcStreamStop();
+    expect(stopped).toEqual(["REQUESTED"]);
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "legacy-backend" });
-    await expect(upcoming.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+    await expect(device.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+    await expect(device.rcStreamStart(15)).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+  });
+
+  it("device_probe_board fills rxSpi.present; the wizard probes only on 4.5+ and keeps identify on failure", async () => {
+    const { probeOnboardReceiver, hasOnboardElrs } = await import("../src/wizard/receiver");
+    installMock({ latencyMs: 0, scenario: "onboard-elrs" });
+    const id = await api.device.identify();
+    expect((id as DeviceFcInfo).rxSpi?.present).toBeNull();
+    expect((id as DeviceFcInfo).serialPorts?.map((p) => p.name)).toContain("UART2");
+    const probed = await probeOnboardReceiver(id);
+    expect(probed.rxSpi).toMatchObject({ present: true, resources: expect.arrayContaining(["RX_SPI_CS"]) });
+    expect(hasOnboardElrs(probed)).toBe(true);
+    let calls = 0;
+    const probe = async () => (calls++, probed);
+    expect(await probeOnboardReceiver({ ...id, firmwareVersion: "4.4.3" }, probe)).toMatchObject({ firmwareVersion: "4.4.3" });
+    expect(calls).toBe(0); // leaving the CLI reboots 4.4
+    uninstallMock();
+    installMock({ latencyMs: 0, scenario: "legacy-backend" });
+    expect(await probeOnboardReceiver(id)).toBe(id);
   });
 
   it("config_apply emits config://progress stages in order and returns its backup", async () => {
@@ -50,7 +73,7 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
 
   it("scenario mocks raise the agreed detailed error codes", async () => {
     installMock({ latencyMs: 0, scenario: "port-busy" });
-    await expect(api.device.connect("COM5")).rejects.toMatchObject({ code: "PORT_BUSY" });
+    await expect(api.device.connect("COM5")).rejects.toMatchObject({ code: "PORT_BUSY", details: { port: "COM5", heldBy: "EXTERNAL" } });
     uninstallMock();
     const m = installMock({ latencyMs: 0, scenario: "flash-fail" });
     m.device.inDfu = true;

@@ -18,7 +18,7 @@ describe("error codes (DESIGN.md §6)", () => {
     expect(toUiError({ code: "BOARD_ARMED", message: "armed" }).category).toBe("Safety");
     expect(toUiError({ code: "SERIAL", message: "x" })).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
     expect(toUiError({ code: "NOT_IMPLEMENTED", message: "stub" }).code).toBe("NOT_IMPLEMENTED");
-    expect(toUiError("Command motor_test_start not found").code).toBe("NOT_IMPLEMENTED");
+    expect(toUiError("Command device_motor_test_start not found").code).toBe("NOT_IMPLEMENTED");
     expect(toUiError({ code: "SOMETHING_NEW", message: "m" })).toMatchObject({ code: "UNKNOWN", message: "SOMETHING_NEW: m" });
     expect(toUiError(new Error("boom"))).toEqual({ code: "UNKNOWN", category: "Operation", message: "boom" });
     for (const target of Object.values(LEGACY_CODE_ALIASES)) expect(ALL_ERROR_CODES).toContain(target);
@@ -34,6 +34,14 @@ describe("error guidance", () => {
     }
     expect(guidanceFor("MOTOR_TEST_REFUSED").showMessage).toBe(true);
     expect(guidanceFor("VERIFY_MISMATCH").actions[0]!.id).toBe("retryFullErase");
+  });
+
+  it("PORT_BUSY guidance depends on who holds the port (details.heldBy, #38)", () => {
+    const busy = (heldBy?: "APP" | "EXTERNAL") => toUiError({ code: "PORT_BUSY", message: "busy", ...(heldBy ? { details: { port: "COM5", heldBy } } : {}) });
+    expect(guidanceFor(busy("APP"))).toMatchObject({ code: "PORT_BUSY", titleKey: "errors.PORT_BUSY_APP.title", stepKeys: ["errors.PORT_BUSY_APP.step1", "errors.PORT_BUSY_APP.step2"] });
+    expect(guidanceFor(busy("EXTERNAL")).titleKey).toBe("errors.PORT_BUSY_EXTERNAL.title");
+    expect(guidanceFor(busy()).titleKey).toBe("errors.PORT_BUSY.title");
+    expect(guidanceFor("PORT_BUSY").titleKey).toBe("errors.PORT_BUSY.title");
   });
 
   it("maps unknown and legacy codes", () => {

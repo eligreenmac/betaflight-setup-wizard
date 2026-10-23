@@ -6,16 +6,48 @@
  * value stays applied. So the UI:
  *   - refuses to start without BOTH acknowledgements ("props removed" AND
  *     "battery disconnected, USB power only"), without calling the backend;
- *   - sends motor_test_keepalive every 200 ms while a test runs (the backend
- *     watchdog stops motors after 500 ms without one);
- *   - calls motor_test_stop on: window blur, page hide / beforeunload, app close,
- *     step or route navigation, component unmount, and any IPC error.
- * The backend's own watchdog, arming re-check and Drop-stop remain the last line.
+ *   - sends device_motor_test_keepalive every 200 ms while a test runs (the backend
+ *     watchdog stops motors after `limits.watchdogMs`, default 500, without one);
+ *   - calls device_motor_test_stop on: window blur, page hide / beforeunload, step or
+ *     route navigation, component unmount, any IPC error, and after every
+ *     `device://motor-test-stopped` event.
+ * Window close / app exit are handled by the backend (emergency stop in the Tauri run
+ * loop, ARCHITECTURE §4.2), as are its watchdog and arming re-check.
+ * The connection manager owns the port, so no port is passed (ARCHITECTURE §4.1).
  */
 import { reactive, watch } from "vue";
+import { DEVICE_EVENTS, device, type MotorTestLimits, type MotorTestStopReason } from "../api/device";
 import { onEvent, type Unlisten } from "../api/events";
-import { MOTOR_KEEPALIVE_MS, DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, UPCOMING_EVENTS, WIZARD_TEST_THROTTLE, upcoming, type MotorTestStartArgs } from "../api/upcoming";
-import { toUiError, uiError, type UiError } from "../errors/codes";
+import { toUiError, uiError, type ErrorCode, type UiError } from "../errors/codes";
+
+/** UI keepalive period while a motor test runs. */
+export const MOTOR_KEEPALIVE_MS = 200;
+/** Backend watchdog default (clamped 100..2000). */
+export const DEFAULT_MOTOR_WATCHDOG_MS = 500;
+/** Backend default cap; over-cap requests are refused, not clamped. Hard cap 1250. */
+export const DEFAULT_MAX_TEST_THROTTLE = 1150;
+export const HARD_MAX_TEST_THROTTLE = 1250;
+/** What the wizard asks for when the user taps a motor: just enough to see direction. */
+export const WIZARD_TEST_THROTTLE = 1100;
+export const WIZARD_MOTOR_LIMITS: MotorTestLimits = { maxThrottle: DEFAULT_MAX_TEST_THROTTLE, watchdogMs: DEFAULT_MOTOR_WATCHDOG_MS };
+
+export interface MotorTestStartArgs {
+  /** 0-based Betaflight motor index; null = all motors. */
+  motorIndex: number | null;
+  throttle: number;
+  propsOffConfirmed: boolean;
+  limits: MotorTestLimits | null;
+}
+
+/** Error shown for a backend stop reason (null = normal stop, no error). */
+export const STOP_REASON_ERROR: Record<MotorTestStopReason, ErrorCode | null> = {
+  REQUESTED: null,
+  APP_CLOSING: null,
+  WATCHDOG: "MOTOR_TEST_NOT_ACTIVE",
+  ARMED: "BOARD_ARMED",
+  DISCONNECTED: "DISCONNECTED",
+  ERROR: "UNKNOWN",
+};
 
 export interface MotorAcks {
   propsRemoved: boolean;
@@ -34,9 +66,9 @@ export interface MotorTestDeps {
 }
 
 export const defaultMotorDeps: MotorTestDeps = {
-  start: (a) => upcoming.motorTestStart(a),
-  keepalive: () => upcoming.motorTestKeepalive(),
-  stop: () => upcoming.motorTestStop(),
+  start: (a) => device.motorTestStart(a.motorIndex, a.throttle, a.propsOffConfirmed, a.limits),
+  keepalive: () => device.motorTestKeepalive(),
+  stop: () => device.motorTestStop(),
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (h) => globalThis.clearInterval(h as ReturnType<typeof setInterval>),
 };
@@ -74,11 +106,10 @@ export class MotorTestController {
     this.state.error = null;
     try {
       await this.deps.start({
-        port: opts.port,
         motorIndex: motor,
         throttle: opts.throttle ?? WIZARD_TEST_THROTTLE,
         propsOffConfirmed: true,
-        limits: { maxThrottle: DEFAULT_MAX_TEST_THROTTLE, watchdog: DEFAULT_MOTOR_WATCHDOG_MS },
+        limits: WIZARD_MOTOR_LIMITS,
       });
     } catch (e) {
       const ue = toUiError(e);
@@ -123,9 +154,10 @@ export class MotorTestController {
     this.state.running = false;
     this.state.motor = null;
     if (error) this.state.error = error;
-    if (!wasActive) return;
-    this.state.lastStop = trigger;
-    if (trigger === "backend") return; // backend already stopped (watchdog/armed/disconnect)
+    // A backend stop event is always followed by device_motor_test_stop (idempotent),
+    // so the backend's session is released even if the UI thought nothing was running.
+    if (!wasActive && trigger !== "backend") return;
+    if (wasActive) this.state.lastStop = trigger;
     try {
       await this.deps.stop();
     } catch (e) {
@@ -134,9 +166,14 @@ export class MotorTestController {
     }
   }
 
-  /** Backend reported `motor-test://stopped` (watchdog, armed, disconnected, error). */
-  backendStopped(reason: string, error: UiError | null): void {
-    void this.stop("backend", error ?? (reason === "requested" ? undefined : uiError(reason === "armed" ? "BOARD_ARMED" : reason === "watchdog" ? "MOTOR_TEST_NOT_ACTIVE" : "DISCONNECTED", `motor test stopped: ${reason}`)));
+  /** Backend reported `device://motor-test-stopped`; returns the stop it triggered. */
+  backendStopped(reason: MotorTestStopReason, error: unknown): Promise<void> {
+    const active = this.state.active || this.state.running || this.timer !== null;
+    // REQUESTED while idle is the echo of our own stop: answering it could loop.
+    if (reason === "REQUESTED" && !active) return Promise.resolve();
+    const code = STOP_REASON_ERROR[reason];
+    const e = error ? toUiError(error) : code ? uiError(code, `motor test stopped: ${reason}`) : undefined;
+    return this.stop("backend", e);
   }
 }
 
@@ -148,7 +185,7 @@ export interface StopTriggerSources {
   target?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
   /** Wizard step id (or route); any change stops the motors. */
   navigation?: () => unknown;
-  /** Subscribe to backend `motor-test://stopped` events. */
+  /** Subscribe to backend `device://motor-test-stopped` events. */
   backendEvents?: boolean;
 }
 
@@ -174,7 +211,7 @@ export function bindMotorStopTriggers(ctl: MotorTestController, src: StopTrigger
   if (src.backendEvents) {
     let off: Unlisten | null = null;
     let disposed = false;
-    void onEvent(UPCOMING_EVENTS.motorTestStopped, (p) => ctl.backendStopped(p.reason, p.error))
+    void onEvent(DEVICE_EVENTS.motorTestStopped, (p) => void ctl.backendStopped(p.reason, p.error))
       .then((u) => (disposed ? u() : (off = u)))
       .catch(() => undefined);
     disposers.push(() => {

@@ -75,6 +75,16 @@ describe("i18n", () => {
     }
   });
 
+  it("guidance variants (PORT_BUSY held by APP / EXTERNAL) have complete copy", async () => {
+    const { GUIDANCE_VARIANTS } = await import("../src/errors/guidance");
+    for (const [v, { steps }] of Object.entries(GUIDANCE_VARIANTS)) {
+      for (const k of ["title", "body", ...Array.from({ length: steps }, (_, i) => `step${i + 1}`)]) expect(EN, v).toHaveProperty([`errors.${v}.${k}`]);
+      expect(EN, v).not.toHaveProperty([`errors.${v}.step${steps + 1}`]);
+    }
+    expect(EN["errors.PORT_BUSY_APP.body"]).toMatch(/another window of this app/i);
+    expect(EN["errors.PORT_BUSY_EXTERNAL.step1"]).toMatch(/Betaflight Configurator, Cura/);
+  });
+
   it("dynamic key families are complete", () => {
     const need = [
       ...ALL_STEPS.map((s) => s.titleKey),

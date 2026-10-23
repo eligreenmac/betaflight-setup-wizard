@@ -62,6 +62,16 @@ describe("app shell", () => {
     expect(document.documentElement.dir).toBe("ltr");
   });
 
+  it("connect: a port held by another program says to close Betaflight Configurator / Cura", async () => {
+    setLocale("en");
+    await boot("port-busy");
+    await next();
+    await w!.get('[data-test="connect"]').trigger("click");
+    await settle();
+    expect(w!.text()).toContain(i18n.global.t("errors.PORT_BUSY_EXTERNAL.title"));
+    expect(w!.text()).toContain("Betaflight Configurator, Cura");
+  });
+
   it("Next is gated by the step guard and shows why", async () => {
     await boot();
     await next(); // welcome → connect
