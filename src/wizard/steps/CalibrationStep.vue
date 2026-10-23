@@ -12,6 +12,7 @@ import { api } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { sourceMismatch } from "../../api/fallback";
 import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
+import Attitude3D from "../../components/Attitude3D.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
@@ -19,6 +20,7 @@ import { accModeSwitches, calibrationBlock, calibrationWarnings, mayHaveUnsavedC
 import type { BoardAlignment } from "../modelExt";
 import { motorTest } from "../motorTest";
 import { goTo } from "../nav";
+import { ATTITUDE_RATE_HZ, relativeYaw, webglAvailable } from "../attitude3d";
 import { ALIGNMENT_PRESETS, alignedAttitude, sameAlignment, tiltDirection, type Euler } from "../orientation";
 import { markDirty, wizard } from "../state";
 import { modeKeyOf } from "../switches";
@@ -159,13 +161,20 @@ const liveError = ref<UiError | null>(null);
 /** Why the live view stopped on its own (DISCONNECTED / ERROR), for the retry message. */
 const stopReason = ref<string | null>(null);
 const reported = ref<Euler | null>(null);
+/** 3D quad (three.js, lazy) when WebGL works; the 2D side / rear drawings otherwise (and in jsdom). */
+const use3d = ref(webglAvailable());
+/** Heading that counts as "facing away from you" in the 3D view (first sample, or "Face forward again"). */
+const yawRef = ref<number | null>(null);
+/** The stream was stopped because the window was hidden; restart it when visible again. */
+let pausedHidden = false;
 let offs: Unlisten[] = [];
 const attitudeSimulated = computed(() => sourceMismatch(ATTITUDE_START_COMMAND));
 // Keep (null) = the alignment the FC already has.
 const current = computed<BoardAlignment>(() => wizard.ui.sensors?.alignment ?? { roll: 0, pitch: 0, yaw: 0 });
 const preview = computed<BoardAlignment>(() => wizard.ext.boardAlignment ?? current.value);
 // The FC applies its current alignment before reporting; undo it for the preview (0/0/0 if unknown).
-const shown = computed(() => (reported.value ? alignedAttitude(reported.value, preview.value, current.value) : null));
+// The heading is shown relative to yawRef (an earth-frame turn: roll / pitch and the tilt checks are unchanged).
+const shown = computed(() => (reported.value ? alignedAttitude(relativeYaw(reported.value, yawRef.value ?? 0), preview.value, current.value) : null));
 const currentIsPreset = computed(() => ALIGNMENT_PRESETS.some((p) => sameAlignment(current.value, p.align)));
 const direction = computed(() => (shown.value ? tiltDirection(shown.value) : null));
 
@@ -177,7 +186,8 @@ async function startAttitude(): Promise<void> {
   await api.device.rcStreamStop().catch(() => undefined);
   await motorTest.stop("navigation");
   try {
-    await pendingApi.attitudeStreamStart(10);
+    // 30 Hz for a smooth live view, only while this step is on screen (stopped on leave / hidden window).
+    await pendingApi.attitudeStreamStart(ATTITUDE_RATE_HZ);
     live.value = "on";
   } catch (e) {
     const ue = toUiError(e);
@@ -189,6 +199,21 @@ async function stopAttitude(): Promise<void> {
   if (live.value !== "on" && live.value !== "starting") return;
   live.value = "off";
   await pendingApi.attitudeStreamStop().catch(() => undefined);
+}
+
+function resetHeading(): void {
+  if (reported.value) yawRef.value = reported.value.yaw;
+}
+function onVisibility(): void {
+  if (document.visibilityState === "hidden") {
+    if (live.value === "on" || live.value === "starting") {
+      pausedHidden = true;
+      void stopAttitude();
+    }
+  } else if (pausedHidden) {
+    pausedHidden = false;
+    void startAttitude();
+  }
 }
 
 function answer(ok: boolean): void {
@@ -217,7 +242,14 @@ onMounted(async () => {
     live.value = "unavailable";
     return;
   }
-  offs.push(await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => (reported.value = attitudeToEuler(a))));
+  offs.push(
+    await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => {
+      const e = attitudeToEuler(a);
+      if (yawRef.value === null) yawRef.value = e.yaw;
+      reported.value = e;
+    }),
+  );
+  document.addEventListener("visibilitychange", onVisibility);
   offs.push(
     await onEvent(PENDING_EVENTS.attitudeStopped, (s: AttitudeStopped) => {
       if (s.reason === "REQUESTED" || live.value !== "on") return;
@@ -231,6 +263,8 @@ onMounted(async () => {
   await startAttitude();
 });
 onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", onVisibility);
+  pausedHidden = false;
   offs.forEach((o) => o());
   offs = [];
   void stopAttitude();
@@ -365,33 +399,40 @@ onBeforeUnmount(() => {
       </template>
       <template v-else>
         <p>{{ t("calibration.orientation.instructions") }}</p>
-        <div class="attitude" dir="ltr" data-test="attitude-view" :data-direction="direction ?? ''">
-          <figure>
-            <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.sideView')">
-              <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
-              <g :transform="`rotate(${sideAngle})`">
-                <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
-                <polygon points="40,-10 54,0 40,10" class="attitude__nose" />
-                <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
-                <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
-              </g>
-            </svg>
-            <figcaption>{{ t("calibration.orientation.sideView") }}</figcaption>
-          </figure>
-          <figure>
-            <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.rearView')">
-              <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
-              <g :transform="`rotate(${rearAngle})`">
-                <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
-                <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
-                <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
-                <text x="44" y="22" class="attitude__label">R</text>
-                <text x="-50" y="22" class="attitude__label">L</text>
-              </g>
-            </svg>
-            <figcaption>{{ t("calibration.orientation.rearView") }}</figcaption>
-          </figure>
+        <div class="attitude" dir="ltr" data-test="attitude-view" :data-view="use3d ? '3d' : '2d'" :data-direction="direction ?? ''">
+          <Attitude3D v-if="use3d" :attitude="shown" :label="t('calibration.orientation.view3d')" @fallback="use3d = false" />
+          <template v-else>
+            <figure>
+              <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.sideView')">
+                <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
+                <g :transform="`rotate(${sideAngle})`">
+                  <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
+                  <polygon points="40,-10 54,0 40,10" class="attitude__nose" />
+                  <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
+                  <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
+                </g>
+              </svg>
+              <figcaption>{{ t("calibration.orientation.sideView") }}</figcaption>
+            </figure>
+            <figure>
+              <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.rearView')">
+                <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
+                <g :transform="`rotate(${rearAngle})`">
+                  <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
+                  <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
+                  <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
+                  <text x="44" y="22" class="attitude__label">R</text>
+                  <text x="-50" y="22" class="attitude__label">L</text>
+                </g>
+              </svg>
+              <figcaption>{{ t("calibration.orientation.rearView") }}</figcaption>
+            </figure>
+          </template>
         </div>
+        <p v-if="use3d" class="hint attitude3d__heading">
+          {{ t("calibration.orientation.resetHeadingHint") }}
+          <button type="button" class="btn btn--small" data-test="attitude-reset-heading" :disabled="!reported" @click="resetHeading">{{ t("calibration.orientation.resetHeading") }}</button>
+        </p>
         <p class="hint" role="status">
           {{ live === "starting" || !direction ? t("calibration.orientation.waiting") : t(`calibration.orientation.direction.${direction}`) }}
           <span v-if="upsideDown"> {{ t("calibration.orientation.upsideDown") }}</span>

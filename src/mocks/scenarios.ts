@@ -175,6 +175,8 @@ interface MockDevice {
   /** Simulated frame tilt; null = automatic demo cycle. */
   tilt: Euler | null;
   attitudeTimer: ReturnType<typeof setInterval> | null;
+  /** rateHz of every device_attitude_stream_start call, as requested (tests). */
+  attitudeRates: (number | null)[];
   /** Build options the last flash added (its request's requiredOptions). */
   addedOptions: string[];
   /** Build options the last flash left out (droppedOptions). */
@@ -262,6 +264,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     accCalibrated: false,
     tilt: null,
     attitudeTimer: null,
+    attitudeRates: [],
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
@@ -683,6 +686,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
       if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      device.attitudeRates.push(rateHz);
+      // Device clamps to 1..30 today (the cap is being raised to 50).
       const hz = Math.min(30, Math.max(1, rateHz ?? 10));
       let seq = 0;
       device.attitudeTimer = setInterval(() => {
