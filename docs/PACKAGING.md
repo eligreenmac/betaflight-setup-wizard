@@ -117,3 +117,11 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 `.github/workflows/build.yml`: windows-latest (helper build, `npm ci/test/build`,
 `cargo test`, `tauri build` NSIS+MSI, installer check, artifacts) and ubuntu
 (`cargo fmt/check/test`). All actions run on Node 24.
+
+`.github/workflows/nsis-upgrade.yml` (windows-latest) builds NSIS installers for
+0.1.0-1, 0.1.0-2 and 0.1.0 (version via `tauri build --config`). It installs them
+silently (`/S`) one over the other and asserts exactly one uninstall entry, the new
+`DisplayVersion`, and that the installed app exe matches the one inside each installer
+and was replaced. It runs on demand, on `v*` tags, and on PRs that change packaging
+config (`tauri.conf.json`, `Cargo.toml`, `package.json`, NSIS/Windows resources, the
+workflow itself).
