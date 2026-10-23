@@ -148,7 +148,7 @@ pub fn install_script(helper: &str, run_id: &str, devices: &[(u16, u16, String)]
         line("  if ($code -ne 0) { $rc = $code; exit $rc }");
     }
     line(&format!(
-        "}} catch {{ $rc = {EXIT_SCRIPT_ERROR}; exit $rc }}"
+        "}} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); $rc = {EXIT_SCRIPT_ERROR}; exit $rc }}"
     ));
     line("finally {");
     line("  if ($mine -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue }");
@@ -255,6 +255,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn script_runs_on_windows() {
+        use std::os::windows::process::CommandExt;
         let sys = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
         let ps = format!(r"{sys}\System32\WindowsPowerShell\v1.0\powershell.exe");
         let whoami = format!(r"{sys}\System32\whoami.exe");
@@ -264,16 +265,10 @@ mod tests {
 
         let run = |devices: &[(u16, u16, String)]| -> i32 {
             let script = install_script(&whoami, &id, devices);
+            // Exactly the parameters the app passes to the elevated launch.
+            let params = powershell_params(&script).expect("no quotes");
             let out = std::process::Command::new(&ps)
-                .args([
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-Command",
-                    &script,
-                ])
+                .raw_arg(&params)
                 .output()
                 .expect("powershell runs");
             eprintln!("{}", String::from_utf8_lossy(&out.stdout));
