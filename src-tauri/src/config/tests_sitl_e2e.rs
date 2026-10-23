@@ -748,3 +748,207 @@ fn sitl_cli_reader_waits_out_comment_lines() {
     );
     server.join().unwrap();
 }
+
+/// `get name` inside PID profile `profile` (no save; the SITL restarts afterwards).
+fn get_in_profile(fc: &mut SitlFc, profile: u8, name: &str) -> String {
+    fc.enter_cli().unwrap();
+    fc.cli_exec(&format!("profile {profile}")).unwrap();
+    let r = fc.cli_exec(&format!("get {name}")).unwrap();
+    let v = r
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{name} = ")))
+        .unwrap_or_else(|| panic!("get {name}: {r}"))
+        .trim()
+        .to_string();
+    fc.exit_cli(false).unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+    v
+}
+
+/// config_restore_after_flash across a simulated flash: configure the
+/// `BFSW_SITL_FROM_BIN` SITL, take the `diff all` backup like `config_backup`, "flash" by
+/// starting `BFSW_SITL_BIN` in a fresh directory (empty eeprom = full erase, board at
+/// defaults), restore, and check the values on the new firmware. Both may be the same
+/// line. Skipped unless both are set.
+#[test]
+fn sitl_restore_after_flash() {
+    use super::restore;
+    use crate::error::ConfigErrorReason;
+    let (Some(from_bin), Some(to_bin)) = (
+        std::env::var_os("BFSW_SITL_FROM_BIN").map(PathBuf::from),
+        std::env::var_os("BFSW_SITL_BIN").map(PathBuf::from),
+    ) else {
+        eprintln!("BFSW_SITL_FROM_BIN / BFSW_SITL_BIN not set; skipping the SITL restore test");
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("bfsw-sitl-restore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for d in ["from", "to"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    let store = BackupStore::new(root.join("backups"));
+
+    // 1. Old firmware: configure a few settings that are renamed between lines.
+    let mut fc = SitlFc::start(from_bin, root.join("from")).unwrap();
+    let uid = {
+        let q = |fc: &mut SitlFc, c| fc.msp_request(c, &[]).unwrap();
+        let (api, var, ver, board, uid) = (
+            q(&mut fc, msp::MSP_API_VERSION),
+            q(&mut fc, msp::MSP_FC_VARIANT),
+            q(&mut fc, msp::MSP_FC_VERSION),
+            q(&mut fc, msp::MSP_BOARD_INFO),
+            q(&mut fc, msp::MSP_UID),
+        );
+        let info = msp::fc_info(&api, &var, &ver, &board, Some(&uid)).unwrap();
+        info.uid.unwrap_or_else(|| "unknown".into())
+    };
+    let (vi, from) = session::read_version(&mut fc).unwrap();
+    let idle = |d: Dialect| {
+        if d >= Dialect::V2025_12 {
+            "motor_idle"
+        } else {
+            "dshot_idle_value"
+        }
+    };
+    let angle = |d: Dialect| {
+        if d == Dialect::V4_4 {
+            "angle_level_strength"
+        } else {
+            "angle_p_gain"
+        }
+    };
+    let dmax = |d: Dialect| {
+        if d >= Dialect::V2025_12 {
+            "D_MAX"
+        } else {
+            "D_MIN"
+        }
+    };
+    let port = if from.uses_port_names() { "UART3" } else { "2" };
+    // The idle setting is DShot's on 4.x, which the 4.x SITL does not compile in.
+    let has = |fc: &mut SitlFc, name: &str| {
+        !fc.cli_exec(&format!("get {name}"))
+            .unwrap()
+            .contains("###ERROR")
+    };
+    let from_idle = has(&mut fc, idle(from));
+    let mut setup = vec![
+        "set craft_name = RESTORE".into(),
+        format!("set debug_mode = {}", dmax(from)),
+        format!("serial {port} 64 115200 57600 0 115200"),
+        "aux 0 0 0 1700 2100 0 0".into(),
+        "profile 1".into(),
+        "set p_roll = 55".into(),
+        format!("set {} = 60", angle(from)),
+        "profile 0".into(),
+    ];
+    if from_idle {
+        setup.push(format!("set {} = 450", idle(from)));
+    }
+    for l in &setup {
+        let r = fc.cli_exec(l).unwrap();
+        assert!(!r.contains("###ERROR"), "{l}: {r}");
+    }
+    fc.exit_cli(true).unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+    let backup = session::backup(&mut fc, &store, &uid).unwrap();
+    fc.exit_cli(false).unwrap();
+    fc.stop();
+    drop(fc);
+
+    // 2. "Flash": the new firmware starts with an empty eeprom (defaults).
+    let mut fc = SitlFc::start(to_bin, root.join("to")).unwrap();
+    let (to_vi, to) = session::read_version(&mut fc).unwrap();
+    let to_idle = has(&mut fc, idle(to));
+    fc.exit_cli(false).unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+    assert_ne!(
+        get(&mut fc, "craft_name"),
+        "RESTORE",
+        "target must start at defaults"
+    );
+
+    let prepared = restore::prepare(&backup, std::fs::read_to_string(&backup.path)).unwrap();
+
+    // A backup of another board is refused before anything is sent.
+    let e = restore::run(&mut fc, &prepared, "0123456789ABCDEF01234567", &mut |_| {}).unwrap_err();
+    match &e {
+        AppError::ConfigRejected { reason, .. } => {
+            assert_eq!(*reason, ConfigErrorReason::BoardUidMismatch, "{e:?}")
+        }
+        _ if uid == "unknown" => {}
+        _ => panic!("{e:?}"),
+    }
+    fc.exit_cli(false).unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+
+    let mut stages = Vec::new();
+    let r = restore::run(&mut fc, &prepared, &uid, &mut |p| stages.push(p.stage)).unwrap();
+    eprintln!(
+        "SITL restore {} -> {}: applied {}, failed {:?}, skipped {}, warnings {:#?}",
+        vi.version,
+        to_vi.version,
+        r.applied,
+        r.failed,
+        r.skipped.len(),
+        r.warnings
+    );
+    for s in &r.skipped {
+        eprintln!("  skip {:?} {}", s.reason, s.line);
+    }
+    assert!(r.saved);
+    assert_eq!(r.from_version, vi.version);
+    assert_eq!(r.to_version, to_vi.version);
+    assert_eq!(r.line_changed, from != to);
+    assert!(
+        r.failed.is_empty(),
+        "SITL rejected restored lines: {:?}",
+        r.failed
+    );
+    assert!(fc.rebooted_itself, "save rebooted the SITL");
+    assert!(stages.contains(&crate::model::ConfigStage::Reconnected));
+
+    // 3. The values survived the reboot under the new firmware's names.
+    fc.exit_cli(false).unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+    let idle_line = format!("set {} = 450", idle(from));
+    match (from_idle, to_idle) {
+        (true, true) => assert_eq!(get(&mut fc, idle(to)), "450"),
+        (true, false) => {
+            assert!(
+                r.skipped.iter().any(|s| s.line == idle_line
+                    && s.reason == crate::model::RestoreSkipReason::NotInBuild),
+                "{:?}",
+                r.skipped
+            )
+        }
+        _ => {}
+    }
+    assert_eq!(get(&mut fc, "craft_name"), "RESTORE");
+    assert_eq!(get(&mut fc, "debug_mode"), dmax(to));
+    assert_eq!(get_in_profile(&mut fc, 1, "p_roll"), "55");
+    assert_eq!(get_in_profile(&mut fc, 1, angle(to)), "60");
+    assert_eq!(
+        get_in_profile(&mut fc, 0, "p_roll"),
+        get_in_profile(&mut fc, 2, "p_roll")
+    );
+    fc.enter_cli().unwrap();
+    let serial = fc.cli_exec("serial").unwrap();
+    let want = if to.uses_port_names() {
+        "serial UART3 64 "
+    } else {
+        "serial 2 64 "
+    };
+    assert!(serial.contains(want), "{serial}");
+    let aux = fc.cli_exec("aux").unwrap();
+    assert!(aux.contains("aux 0 0 0 1700 2100 0 0"), "{aux}");
+    fc.exit_cli(false).unwrap();
+    fc.stop();
+    drop(fc);
+    assert!(
+        !r.warnings.iter().any(|w| w.starts_with("Read back")),
+        "{:?}",
+        r.warnings
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
