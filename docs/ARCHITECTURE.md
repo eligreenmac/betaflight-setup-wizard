@@ -297,8 +297,11 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   is a single `try_lock`; if the manager is busy the worker stops the motors itself as soon as
   the in-flight exchange returns. After a halt, keepalive/update get `MOTOR_TEST_NOT_ACTIVE`.
 - `MSP_SET_ARMING_DISABLED` is **not** sent. Betaflight has no firmware-side MSP motor timeout:
-  if USB drops mid-test the last value stays applied, so the UI must tell the user to test on
-  USB power with the battery disconnected and props off.
+  if USB drops mid-test the last value stays applied until the FC is power-cycled. The motor test
+  needs the battery connected (ESCs need power), so the UI must collect, before setting
+  `propsOffConfirmed: true`, explicit confirmation that **props are removed**, the **battery is
+  connected**, and **hands are clear**. The backend does not require or check battery state;
+  the throttle cap, disarmed check, watchdog and emergency stop above are what limit the risk.
 - The RC stream (`device_rc_stream_start`) also lends the port to a worker; it polls `MSP_RC`
   at `rateHz` and ends with `device://rc-stopped`. Motor test and RC stream are mutually
   exclusive (the second gets `PORT_BUSY {heldBy: "APP"}`).

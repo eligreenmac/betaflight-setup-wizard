@@ -16,8 +16,10 @@
 //!   set/keepalive within [`DEFAULT_WATCHDOG`], and when the worker's handle is dropped.
 //!
 //! Betaflight itself has no MSP motor timeout: if the USB link dies, the last MSP_SET_MOTOR value
-//! stays applied until the FC is power-cycled. The host can't fix that, so the UI must also
-//! require USB-only power (no battery) or keep the cap low. See DESIGN.md.
+//! stays applied until the FC is power-cycled. The test needs the battery connected (ESCs need
+//! power), so the host can't fix that: the low cap, the disarmed check, the watchdog and the
+//! emergency stop limit the risk, and the UI must confirm props removed, battery connected and
+//! hands clear before passing `props_off_confirmed = true`. See docs/ARCHITECTURE.md §4.2.
 
 use crate::device::error::{DeviceError, MotorTestRefusal, Result};
 use crate::device::msp::{codes, MspClient, MspFrame, MspVersion, Reader};
