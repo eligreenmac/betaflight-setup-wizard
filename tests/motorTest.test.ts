@@ -1,0 +1,220 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nextTick, reactive } from "vue";
+import { createEmitter } from "../src/api/events";
+import { MOTOR_KEEPALIVE_MS, setUpcomingBackend, resetUpcomingBackend } from "../src/api/upcoming";
+import { setEventSource, resetEventSource } from "../src/api/events";
+import { uiError } from "../src/errors/codes";
+import { installMock, uninstallMock } from "../src/mocks/install";
+import { bindMotorStopTriggers, defaultMotorDeps, MotorTestController, type MotorTestDeps } from "../src/wizard/motorTest";
+
+const ACKS = { propsRemoved: true, batteryDisconnected: true };
+const flush = async () => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
+function fakeDeps() {
+  const log: string[] = [];
+  const deps: MotorTestDeps & { log: string[]; failKeepalive: boolean } = {
+    log,
+    failKeepalive: false,
+    start: vi.fn(async (a) => void log.push(`start ${a.motorIndex} ${a.throttle} ${a.propsOffConfirmed}`)),
+    keepalive: vi.fn(async () => {
+      log.push("keepalive");
+      if (deps.failKeepalive) throw uiError("DISCONNECTED", "port gone");
+    }),
+    stop: vi.fn(async () => void log.push("stop")),
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+  };
+  return deps;
+}
+
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  uninstallMock();
+});
+
+describe("motor test safety gate", () => {
+  it("refuses without BOTH acknowledgements and never calls the backend", async () => {
+    const d = fakeDeps();
+    const c = new MotorTestController(d);
+    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: true, batteryDisconnected: false } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
+    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: false, batteryDisconnected: true } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
+    await expect(c.start(0, { port: null, acks: ACKS })).rejects.toMatchObject({ code: "DISCONNECTED" });
+    expect(d.start).not.toHaveBeenCalled();
+    await c.start(1, { port: "COM5", acks: ACKS });
+    expect(d.log[0]).toBe("start 1 1100 true");
+  });
+});
+
+describe("keepalive timer", () => {
+  it("sends motor_test_keepalive every 200 ms while running and stops sending after stop", async () => {
+    expect(MOTOR_KEEPALIVE_MS).toBe(200);
+    const d = fakeDeps();
+    const c = new MotorTestController(d);
+    await c.start(0, { port: "COM5", acks: ACKS });
+    await vi.advanceTimersByTimeAsync(199);
+    expect(d.keepalive).toHaveBeenCalledTimes(0);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(d.keepalive).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(800);
+    expect(d.keepalive).toHaveBeenCalledTimes(5);
+    // switching motor keeps a single timer
+    await c.start(2, { port: "COM5", acks: ACKS });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(d.keepalive).toHaveBeenCalledTimes(6);
+    await c.stop("requested");
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(d.keepalive).toHaveBeenCalledTimes(6);
+    expect(d.log.at(-1)).toBe("stop");
+    expect(c.state.running).toBe(false);
+  });
+
+  it("a keepalive IPC error stops the motors and surfaces the error", async () => {
+    const d = fakeDeps();
+    const c = new MotorTestController(d);
+    await c.start(0, { port: "COM5", acks: ACKS });
+    d.failKeepalive = true;
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    expect(c.state.lastStop).toBe("ipc-error");
+    expect(c.state.error).toMatchObject({ code: "DISCONNECTED" });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(d.keepalive).toHaveBeenCalledTimes(1);
+  });
+
+  it("a start IPC error sends a stop anyway", async () => {
+    const d = fakeDeps();
+    d.start = vi.fn(async () => {
+      throw uiError("BOARD_ARMED", "armed");
+    });
+    const c = new MotorTestController(d);
+    await expect(c.start(0, { port: "COM5", acks: ACKS })).rejects.toMatchObject({ code: "BOARD_ARMED" });
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    expect(c.state.lastStop).toBe("ipc-error");
+  });
+
+  it("a stop during an in-flight start never resumes keepalives", async () => {
+    const d = fakeDeps();
+    let release!: () => void;
+    d.start = vi.fn(() => new Promise<void>((r) => (release = r)));
+    const c = new MotorTestController(d);
+    const p = c.start(0, { port: "COM5", acks: ACKS });
+    await c.stop("blur");
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    release();
+    await p;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(d.keepalive).not.toHaveBeenCalled();
+    expect(c.state.running).toBe(false);
+  });
+
+  it("stop is a no-op (no backend call) when nothing runs", async () => {
+    const d = fakeDeps();
+    const c = new MotorTestController(d);
+    await c.stop("blur");
+    expect(d.stop).not.toHaveBeenCalled();
+  });
+});
+
+describe("stop triggers", () => {
+  async function running() {
+    const d = fakeDeps();
+    const c = new MotorTestController(d);
+    await c.start(3, { port: "COM5", acks: ACKS });
+    return { d, c };
+  }
+
+  for (const ev of ["blur", "pagehide", "beforeunload", "popstate", "hashchange"]) {
+    it(`window ${ev} stops the motors`, async () => {
+      const { d, c } = await running();
+      const target = new EventTarget();
+      const off = bindMotorStopTriggers(c, { target });
+      target.dispatchEvent(new Event(ev));
+      await flush();
+      expect(d.stop).toHaveBeenCalledTimes(1);
+      expect(c.state.running).toBe(false);
+      off();
+      // after dispose, events no longer reach the controller
+      await c.start(3, { port: "COM5", acks: ACKS });
+      target.dispatchEvent(new Event(ev));
+      await flush();
+      expect(c.state.running).toBe(true);
+    });
+  }
+
+  it("step navigation stops the motors", async () => {
+    const { d, c } = await running();
+    const nav = reactive({ currentId: "esc" });
+    const off = bindMotorStopTriggers(c, { navigation: () => nav.currentId });
+    nav.currentId = "switches";
+    await nextTick();
+    await flush();
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    expect(c.state.lastStop).toBe("navigation");
+    off();
+  });
+
+  it("app close stops the motors before the window goes away", async () => {
+    const { d, c } = await running();
+    let closeHandler: (() => Promise<void>) | null = null;
+    const off = bindMotorStopTriggers(c, {
+      onAppClose: async (h) => {
+        closeHandler = h;
+        return () => undefined;
+      },
+    });
+    await flush();
+    await closeHandler!();
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    expect(c.state.lastStop).toBe("app-close");
+    off();
+  });
+
+  it("component unmount stops the motors (Esc step calls stop('unmount'))", async () => {
+    const { d, c } = await running();
+    await c.stop("unmount");
+    expect(d.stop).toHaveBeenCalledTimes(1);
+    expect(c.state.lastStop).toBe("unmount");
+  });
+
+  it("backend motor-test://stopped (watchdog) ends the session without another stop call", async () => {
+    const em = createEmitter();
+    setEventSource(em.on);
+    const { d, c } = await running();
+    const off = bindMotorStopTriggers(c, { backendEvents: true });
+    await flush();
+    em.emit("motor-test://stopped", { reason: "watchdog", error: null });
+    await flush();
+    expect(c.state.running).toBe(false);
+    expect(c.state.lastStop).toBe("backend");
+    expect(c.state.error).toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
+    expect(d.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(d.keepalive).not.toHaveBeenCalled();
+    off();
+    resetEventSource();
+  });
+
+  it("works end-to-end against the scenario mock (start, keepalives, stop on blur)", async () => {
+    const mock = installMock({ latencyMs: 0 });
+    const c = new MotorTestController(defaultMotorDeps);
+    const target = new EventTarget();
+    const off = bindMotorStopTriggers(c, { target });
+    await c.start(0, { port: "COM5", acks: ACKS });
+    await vi.advanceTimersByTimeAsync(400);
+    target.dispatchEvent(new Event("blur"));
+    await flush();
+    expect(mock.device.motorLog).toEqual(["start 0 1100", "keepalive", "keepalive", "stop"]);
+    expect(mock.device.motorsSpinning.size).toBe(0);
+    off();
+  });
+
+  it("unused helpers stay wired", () => {
+    setUpcomingBackend(async () => undefined as never);
+    resetUpcomingBackend();
+  });
+});
