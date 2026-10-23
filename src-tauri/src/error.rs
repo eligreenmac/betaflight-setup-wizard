@@ -2,8 +2,9 @@
 //! `{ "code": "...", "message": "...", "details"?: {...} }`.
 //! `details` is present only for codes that carry structured data (see
 //! docs/ARCHITECTURE.md §2.3): `PORT_BUSY`, `DRIVER_MISSING`, `ACC_NOT_AVAILABLE`,
-//! `BOARD_MOVING`, `PENDING_UNSAVED_CHANGES`, `BUILD_OPTIONS_UNAVAILABLE` and
-//! `REQUIRED_OPTION_UNSUPPORTED`.
+//! `BOARD_MOVING`, `PENDING_UNSAVED_CHANGES`, `BUILD_OPTIONS_UNAVAILABLE`,
+//! `REQUIRED_OPTION_UNSUPPORTED`, and `CONFIG` when it has a machine-readable
+//! reason ([`ConfigErrorReason`]).
 
 use serde::Serialize;
 
@@ -50,6 +51,17 @@ impl std::fmt::Display for UnsavedChangesReason {
     }
 }
 
+/// Machine-readable reason for a `CONFIG` error the UI handles specially (ARCHITECTURE.md
+/// §2.3). Other `CONFIG` errors carry no `details`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConfigErrorReason {
+    /// The model asks for an HD OSD (`osd.videoSystem = HD`), but the FC's firmware build
+    /// has no MSP DisplayPort (`displayport_msp_*` is missing from its dump).
+    #[serde(rename = "OSD_HD_NO_DISPLAYPORT")]
+    OsdHdNoDisplayport,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("not implemented yet: {0}")]
@@ -68,6 +80,13 @@ pub enum AppError {
     Firmware(String),
     #[error("configuration error: {0}")]
     Config(String),
+    /// A `CONFIG` error with `details: { reason }`, so the UI can react without parsing the
+    /// message. Same code and message format as [`AppError::Config`].
+    #[error("configuration error: {message}")]
+    ConfigRejected {
+        message: String,
+        reason: ConfigErrorReason,
+    },
     /// Firmware outside the supported lines (4.4.x, 4.5.x, 2025.12.x).
     #[error("unsupported firmware: {0}")]
     UnsupportedFirmware(String),
@@ -160,7 +179,7 @@ impl AppError {
             AppError::Cli(_) => "CLI",
             AppError::Usb(_) => "USB",
             AppError::Firmware(_) => "FIRMWARE",
-            AppError::Config(_) => "CONFIG",
+            AppError::Config(_) | AppError::ConfigRejected { .. } => "CONFIG",
             AppError::UnsupportedFirmware(_) => "UNSUPPORTED_FIRMWARE",
             AppError::Driver(_) => "DRIVER",
             AppError::BoardNotFound(_) => "BOARD_NOT_FOUND",
@@ -219,6 +238,9 @@ impl AppError {
             }
             AppError::RequiredOptionUnsupported { release, options } => {
                 Some(serde_json::json!({ "release": release, "options": options }))
+            }
+            AppError::ConfigRejected { reason, .. } => {
+                Some(serde_json::json!({ "reason": reason }))
             }
             _ => None,
         }
@@ -347,6 +369,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn config_errors_with_a_reason_carry_details() {
+        let v = serde_json::to_value(AppError::ConfigRejected {
+            message: "HD OSD needs MSP DisplayPort".into(),
+            reason: ConfigErrorReason::OsdHdNoDisplayport,
+        })
+        .unwrap();
+        assert_eq!(v["code"], "CONFIG");
+        assert_eq!(v["details"], json!({ "reason": "OSD_HD_NO_DISPLAYPORT" }));
+        assert_eq!(
+            v["message"],
+            "configuration error: HD OSD needs MSP DisplayPort"
+        );
+        assert_eq!(
+            serde_json::to_value(AppError::Config("x".into()))
+                .unwrap()
+                .get("details"),
+            None
+        );
+    }
+
     /// `src/types/model.ts` (`AppErrorCode`) is the TypeScript source of truth for codes;
     /// every Rust code must appear in it.
     #[test]
@@ -365,6 +408,10 @@ mod tests {
             AppError::Usb(String::new()),
             AppError::Firmware(String::new()),
             AppError::Config(String::new()),
+            AppError::ConfigRejected {
+                message: String::new(),
+                reason: ConfigErrorReason::OsdHdNoDisplayport,
+            },
             AppError::UnsupportedFirmware(String::new()),
             AppError::Driver(String::new()),
             AppError::BoardNotFound(String::new()),

@@ -436,12 +436,18 @@ export interface BuildOptionsUnavailableDetails { release: string }
 /** `details` of REQUIRED_OPTION_UNSUPPORTED: required options the release does not offer. */
 export interface RequiredOptionUnsupportedDetails { release: string; options: string[] }
 
+/** Machine-readable reason on some CONFIG errors (ARCHITECTURE §2.3). OSD_HD_NO_DISPLAYPORT: the model
+ * asks for an HD OSD but the FC's firmware build has no MSP DisplayPort. */
+export type ConfigErrorReason = "OSD_HD_NO_DISPLAYPORT";
+/** `details` of a CONFIG error that has a reason (other CONFIG errors have no details). */
+export interface ConfigErrorDetails { reason: ConfigErrorReason }
+
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
- * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES. */
+ * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES, and CONFIG with a reason. */
 export interface AppError {
   code: string;
   message: string;
-  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails | PendingUnsavedChangesDetails;
+  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails | PendingUnsavedChangesDetails | ConfigErrorDetails;
 }
 
 export function emptyDroneModel(): DroneModel {
