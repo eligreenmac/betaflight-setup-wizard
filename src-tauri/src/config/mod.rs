@@ -8,6 +8,8 @@
 //! - [`serial_functions`]: function bits, port ids per dialect, `isSerialConfigValid` mirror
 //! - [`snapshot`]: parsers for `serial`, `dump all`, `diff all`
 //! - [`modes`]: managed flight modes -> permanent box ids
+//! - [`osd`]: OSD elements per line, `osd_*_pos` encoding, config's default layout
+//! - [`catalog`]: beeper / beacon names per line and `config_firmware_catalog`
 //! - [`generate`]: the per-dialect generator (also used by plan and verify)
 //! - [`session`]: FC operations over `device::Connection` (read ports, plan, backup, apply, verify, rollback)
 //! - [`backup`]: backup files on disk
@@ -16,6 +18,7 @@
 //! - `mock` (tests only): `MockFc` CLI simulator
 
 pub mod backup;
+pub mod catalog;
 pub mod commands;
 pub mod firmware;
 pub mod generate;
@@ -23,6 +26,7 @@ pub mod guard;
 pub mod md5;
 pub mod modes;
 pub mod msp;
+pub mod osd;
 pub mod serial_functions;
 pub mod session;
 pub mod snapshot;

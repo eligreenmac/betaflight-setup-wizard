@@ -60,6 +60,23 @@ pub fn is_managed_id(id: u8, dialect: Dialect) -> bool {
         .any(|(_, i, min)| *i == id && dialect >= *min)
 }
 
+/// Optional modes (AIR MODE, FLIP OVER AFTER CRASH, PREARM): managed only when the model
+/// mentions them (`switches`, `removeModes`, or `airmode` ALWAYS / OFF for AIR MODE).
+pub const OPTIONAL_IDS: [u8; 3] = [28, 35, 36];
+pub const AIR_MODE_ID: u8 = 28;
+
+pub fn is_optional_id(id: u8) -> bool {
+    OPTIONAL_IDS.contains(&id)
+}
+
+/// Stable (canonical) mode names available on `dialect`, in permanent-id order.
+pub fn names(dialect: Dialect) -> impl Iterator<Item = &'static str> {
+    MANAGED_MODES
+        .iter()
+        .filter(move |(_, _, min)| dialect >= *min)
+        .map(|m| m.0)
+}
+
 pub fn name_of(id: u8) -> Option<&'static str> {
     MANAGED_MODES.iter().find(|(_, i, _)| *i == id).map(|m| m.0)
 }

@@ -33,6 +33,9 @@ struct State {
     aux: BTreeMap<u8, AuxSlot>,
     resources: BTreeMap<String, String>,
     vtxtable: VtxTableState,
+    /// `beeper` / `beacon` conditions in table order; None = command not in this build.
+    beepers: Option<Vec<(String, bool)>>,
+    beacons: Option<Vec<(String, bool)>>,
 }
 
 impl State {
@@ -50,6 +53,8 @@ impl State {
             aux,
             resources: s.resources.clone(),
             vtxtable: s.vtxtable.clone().unwrap_or_default(),
+            beepers: s.beepers.clone(),
+            beacons: s.beacons.clone(),
         }
     }
 }
@@ -332,6 +337,17 @@ impl MockFc {
                 o += "\r\n";
             }
         }
+        for (verb, list, def) in [
+            ("beeper", &s.beepers, &d.beepers),
+            ("beacon", &s.beacons, &d.beacons),
+        ] {
+            for (i, (n, on)) in list.iter().flatten().enumerate() {
+                let dflt = def.as_ref().and_then(|l| l.get(i));
+                if !diff || dflt != Some(&(n.clone(), *on)) {
+                    o += &format!("{verb} {}{n}\r\n", if *on { "" } else { "-" });
+                }
+            }
+        }
         for a in s.aux.values() {
             if !diff || d.aux.get(&a.slot) != Some(a) {
                 o += &a.to_cli();
@@ -510,6 +526,32 @@ impl MockFc {
                 Ok(()) => String::new(),
                 Err(e) => err("vtxtable", &e),
             },
+            // cli.c processBeeperCommand: case-insensitive prefix match, first entry wins.
+            "beeper" | "beacon" => {
+                let list = if cmd == "beeper" {
+                    &mut self.live.beepers
+                } else {
+                    &mut self.live.beacons
+                };
+                let Some(list) = list else {
+                    return unknown_command();
+                };
+                let (name, on) = match args.strip_prefix('-') {
+                    Some(n) => (n, false),
+                    None => (args, true),
+                };
+                let up = name.to_ascii_uppercase();
+                match list
+                    .iter_mut()
+                    .find(|(n, _)| !up.is_empty() && n.starts_with(&up))
+                {
+                    Some((n, v)) => {
+                        *v = on;
+                        format!("{} {n}\r\n", if on { "Enabled" } else { "Disabled" })
+                    }
+                    None => err(cmd, &format!("INVALID NAME: {name}")),
+                }
+            }
             "resource" => {
                 let p: Vec<&str> = args.split_whitespace().collect();
                 if p.len() == 3 {

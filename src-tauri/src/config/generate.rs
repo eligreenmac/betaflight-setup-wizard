@@ -2,15 +2,18 @@
 
 use std::collections::BTreeMap;
 
+use super::catalog;
 use super::firmware::Dialect;
 use super::modes;
+use super::osd;
 use super::serial_functions::{self as sf, check_serial_config, functions_in};
 use super::snapshot::{AuxSlot, PortState, Snapshot};
 use super::vtx_table::{self, VtxTableState};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ClearedPort, CliScript, DigitalSystem, DroneModel, ElrsDomain, EscProtocol, GpsProvider,
-    ReceiverKind, RxProtocol, SbasMode, VtxKind, VtxProtocol,
+    Airmode, ClearedPort, CliScript, DigitalSystem, DroneModel, ElrsDomain, EscProtocol,
+    GpsProvider, OsdVideoSystem, ReceiverKind, RxProtocol, SbasMode, VtxKind, VtxProtocol,
+    BOARD_ALIGNMENT_MAX, BOARD_ALIGNMENT_MIN,
 };
 
 fn cfg_err(msg: impl Into<String>) -> AppError {
@@ -120,6 +123,10 @@ pub fn generate_for(
     vtx_section(&mut cx)?;
     craft_name_section(&mut cx)?;
     aux_section(&mut cx)?;
+    beeper_section(&mut cx)?;
+    sensors_section(&mut cx)?;
+    alignment_section(&mut cx)?;
+    osd_section(&mut cx)?;
     Ok(CliScript {
         commands: cx.cmds,
         warnings: cx.warnings,
@@ -467,15 +474,25 @@ fn craft_name_section(cx: &mut Ctx) -> AppResult<()> {
 
 fn vtx_section(cx: &mut Ctx) -> AppResult<()> {
     vtx_table_section(cx)?;
+    // With an OSD video system in the model, osd_section writes these two settings.
+    let osd_owns = cx
+        .model
+        .osd
+        .as_ref()
+        .is_some_and(|o| o.video_system.is_some());
     match cx.model.vtx.kind {
         VtxKind::None => {}
         VtxKind::Analog => {
-            cx.push("set osd_displayport_device = AUTO");
-            cx.push("set vcd_video_system = AUTO");
+            if !osd_owns {
+                cx.push("set osd_displayport_device = AUTO");
+                cx.push("set vcd_video_system = AUTO");
+            }
         }
         VtxKind::Digital => {
-            cx.push("set osd_displayport_device = MSP");
-            cx.push("set vcd_video_system = HD");
+            if !osd_owns {
+                cx.push("set osd_displayport_device = MSP");
+                cx.push("set vcd_video_system = HD");
+            }
             if matches!(cx.model.vtx.digital_system, Some(DigitalSystem::Dji))
                 && !matches!(cx.model.vtx.protocol, Some(VtxProtocol::Msp))
             {
@@ -552,8 +569,83 @@ fn vtx_table_section(cx: &mut Ctx) -> AppResult<()> {
     Ok(())
 }
 
+/// Which optional modes (AIR MODE, FLIP OVER AFTER CRASH, PREARM) the model manages, and
+/// the `feature AIRMODE` line. Validates `airmode` against the AIR MODE switch.
+fn airmode_and_optional(cx: &mut Ctx, switch_ids: &[u8]) -> AppResult<Vec<u8>> {
+    let model = cx.model;
+    let dialect = cx.dialect;
+    let mut managed: Vec<u8> = switch_ids
+        .iter()
+        .copied()
+        .filter(|id| modes::is_optional_id(*id))
+        .collect();
+    for name in &model.remove_modes {
+        let (canon, id) = modes::resolve(name, dialect).map_err(cfg_err)?;
+        if switch_ids.contains(&id) {
+            return Err(cfg_err(format!(
+                "mode '{canon}' is both in removeModes and assigned to a switch"
+            )));
+        }
+        if !modes::is_optional_id(id) {
+            return Err(cfg_err(format!(
+                "removeModes takes only PREARM, FLIP OVER AFTER CRASH and AIR MODE, not '{canon}' (other managed modes are removed when they are not in switches)"
+            )));
+        }
+        // No range for it on the FC: nothing to remove (a no-op, not an error).
+        managed.push(id);
+    }
+    let air_switch = switch_ids.contains(&modes::AIR_MODE_ID);
+    match model.airmode {
+        Some(Airmode::Always) | Some(Airmode::Off) if air_switch => {
+            return Err(cfg_err(
+                "airmode is ALWAYS/OFF but an AIR MODE switch is assigned; use airmode SWITCH",
+            ));
+        }
+        Some(Airmode::Switch) if !air_switch => {
+            return Err(cfg_err(
+                "airmode SWITCH needs an AIR MODE entry in switches",
+            ));
+        }
+        Some(Airmode::Always) => {
+            cx.push("feature AIRMODE");
+            managed.push(modes::AIR_MODE_ID);
+        }
+        Some(Airmode::Off) => {
+            cx.push("feature -AIRMODE");
+            managed.push(modes::AIR_MODE_ID);
+        }
+        Some(Airmode::Switch) => cx.push("feature -AIRMODE"),
+        None if air_switch => {
+            let on = cx
+                .snapshot
+                .and_then(|s| s.features.get("AIRMODE").copied())
+                .unwrap_or(true);
+            if on {
+                cx.warnings.push(
+                    "an AIR MODE switch has no effect while feature AIRMODE is on; set airmode to SWITCH"
+                        .into(),
+                );
+            }
+        }
+        None => {}
+    }
+    managed.sort_unstable();
+    managed.dedup();
+    Ok(managed)
+}
+
 fn aux_section(cx: &mut Ctx) -> AppResult<()> {
     let dialect = cx.dialect;
+    let switches = &cx.model.switches;
+    let mut switch_ids = Vec::with_capacity(switches.len());
+    for sw in switches {
+        let (_, id) = modes::resolve(&sw.mode, dialect).map_err(cfg_err)?;
+        switch_ids.push(id);
+    }
+    let optional = airmode_and_optional(cx, &switch_ids)?;
+    let is_managed = |id: u8| {
+        modes::is_managed_id(id, dialect) && (!modes::is_optional_id(id) || optional.contains(&id))
+    };
     let existing: Vec<AuxSlot> = match cx.snapshot {
         Some(s) => s.aux.clone(),
         None => Vec::new(),
@@ -572,14 +664,16 @@ fn aux_section(cx: &mut Ctx) -> AppResult<()> {
         let a = slot(i);
         if !a.is_used() {
             unused.push(i);
-        } else if modes::is_managed_id(a.mode_id, dialect) {
+        } else if is_managed(a.mode_id) {
             freed.push(i);
         } else {
             kept += 1;
         }
     }
-    let available: Vec<u8> = freed.iter().chain(unused.iter()).copied().collect();
-    let switches = &cx.model.switches;
+    // Lowest slot numbers first, so verify (which regenerates against the applied FC)
+    // assigns the same slots again.
+    let mut available: Vec<u8> = freed.iter().chain(unused.iter()).copied().collect();
+    available.sort_unstable();
     if switches.len() > available.len() {
         return Err(cfg_err(format!(
             "{} switch assignments need more than the {} free aux slots",
@@ -588,8 +682,7 @@ fn aux_section(cx: &mut Ctx) -> AppResult<()> {
         )));
     }
     let mut out: BTreeMap<u8, String> = BTreeMap::new();
-    for (sw, &slot_no) in switches.iter().zip(available.iter()) {
-        let (_, id) = modes::resolve(&sw.mode, dialect).map_err(cfg_err)?;
+    for ((sw, &id), &slot_no) in switches.iter().zip(&switch_ids).zip(available.iter()) {
         if sw.aux_channel > 13 {
             return Err(cfg_err(format!(
                 "{}: AUX{} does not exist",
@@ -615,8 +708,8 @@ fn aux_section(cx: &mut Ctx) -> AppResult<()> {
         };
         out.insert(slot_no, a.to_cli());
     }
-    for &f in freed.iter().skip(switches.len()) {
-        out.insert(f, AuxSlot::empty(f).to_cli());
+    for &f in &freed {
+        out.entry(f).or_insert_with(|| AuxSlot::empty(f).to_cli());
     }
     if kept > 0 {
         cx.warnings.push(format!(
@@ -624,5 +717,252 @@ fn aux_section(cx: &mut Ctx) -> AppResult<()> {
         ));
     }
     cx.cmds.extend(out.into_values());
+    Ok(())
+}
+
+/// `beeper [-]NAME` for every condition the line has (table order), then `beacon [-]NAME`.
+/// A build without the command (no `beeper` / `beacon` lines in its dump) gets a warning.
+fn beeper_section(cx: &mut Ctx) -> AppResult<()> {
+    let Some(b) = &cx.model.beepers else {
+        return Ok(());
+    };
+    let dialect = cx.dialect;
+    if cx.snapshot.is_some_and(|s| s.beepers.is_none()) {
+        cx.warnings
+            .push("this firmware build has no beeper command; beeper settings not written".into());
+    } else {
+        for d in &b.disabled {
+            if catalog::beeper_cli_name(*d, dialect).is_none() {
+                cx.warnings.push(format!(
+                    "beeper condition {} does not exist on Betaflight {}; ignored",
+                    serde_json::to_value(d)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default(),
+                    dialect.as_str()
+                ));
+            }
+        }
+        for c in catalog::BEEPERS {
+            if let Some(name) = catalog::beeper_cli_name(c, dialect) {
+                let off = if b.disabled.contains(&c) { "-" } else { "" };
+                cx.push(format!("beeper {off}{name}"));
+            }
+        }
+    }
+    if let Some(off) = &b.dshot_beacon_disabled {
+        if cx.snapshot.is_some_and(|s| s.beacons.is_none()) {
+            cx.warnings.push(
+                "this firmware build has no DShot beacon (beacon command); not written".into(),
+            );
+        } else {
+            for c in catalog::BEACONS {
+                let neg = if off.contains(&c) { "-" } else { "" };
+                cx.push(format!("beacon {neg}{}", catalog::beacon_cli_name(c)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// acc / baro / mag `*_hardware`: true = AUTO (a specific chip already set is kept),
+/// false = NONE. A sensor the build lacks: CONFIG when enabling, nothing when disabling.
+fn sensors_section(cx: &mut Ctx) -> AppResult<()> {
+    let Some(sn) = cx.model.sensors.clone() else {
+        return Ok(());
+    };
+    let dialect = cx.dialect;
+    if sn.acc == Some(false) {
+        let needs_acc = ["ANGLE", "HORIZON", "ALTHOLD", "POSHOLD", "GPS RESCUE"];
+        for sw in &cx.model.switches {
+            if let Ok((canon, _)) = modes::resolve(&sw.mode, dialect) {
+                if needs_acc.contains(&canon) {
+                    return Err(cfg_err(format!(
+                        "the accelerometer is turned off but {canon} (which needs it) is on a switch"
+                    )));
+                }
+            }
+        }
+    }
+    if sn.baro == Some(false)
+        && cx
+            .model
+            .switches
+            .iter()
+            .any(|sw| modes::resolve(&sw.mode, dialect).is_ok_and(|(c, _)| c == "ALTHOLD"))
+    {
+        cx.warnings
+            .push("ALTHOLD without a barometer holds altitude on GPS only".into());
+    }
+    for (what, key, want) in [
+        ("accelerometer", "acc_hardware", sn.acc),
+        ("barometer", "baro_hardware", sn.baro),
+        ("magnetometer", "mag_hardware", sn.mag),
+    ] {
+        let Some(on) = want else { continue };
+        let current = match cx.snapshot {
+            Some(s) => match s.setting(key) {
+                Some(v) => Some(v.to_ascii_uppercase()),
+                None if on => {
+                    return Err(cfg_err(format!(
+                        "this firmware build has no {what} support ({key})"
+                    )))
+                }
+                None => continue,
+            },
+            None => None,
+        };
+        let value = match (on, current.as_deref()) {
+            (false, _) => "NONE".to_string(),
+            (true, None | Some("AUTO")) => "AUTO".to_string(),
+            (true, Some("NONE")) => {
+                cx.warnings.push(if key == "acc_hardware" {
+                    "accelerometer turned on: calibrate it (level, Configurator or stick command) before flying in self-level modes".to_string()
+                } else {
+                    format!("{what} turned on (AUTO): it is detected at the next boot; without one fitted it stays off")
+                });
+                "AUTO".to_string()
+            }
+            (true, Some(chip)) => chip.to_string(),
+        };
+        cx.push(format!("set {key} = {value}"));
+    }
+    Ok(())
+}
+
+fn alignment_section(cx: &mut Ctx) -> AppResult<()> {
+    let Some(a) = cx.model.board_alignment else {
+        return Ok(());
+    };
+    for (axis, v) in [("roll", a.roll), ("pitch", a.pitch), ("yaw", a.yaw)] {
+        if !(BOARD_ALIGNMENT_MIN..=BOARD_ALIGNMENT_MAX).contains(&v) {
+            return Err(cfg_err(format!(
+                "board alignment {axis} {v} is out of range ({BOARD_ALIGNMENT_MIN}..{BOARD_ALIGNMENT_MAX} degrees)"
+            )));
+        }
+        cx.push(format!("set align_board_{axis} = {v}"));
+    }
+    Ok(())
+}
+
+/// `feature OSD`, displayport / video system (+ HD canvas), then one `osd_<el>_pos` per
+/// listed element (settings order), visible in all 3 OSD profiles when enabled.
+fn osd_section(cx: &mut Ctx) -> AppResult<()> {
+    let Some(o) = cx.model.osd.clone() else {
+        return Ok(());
+    };
+    let dialect = cx.dialect;
+    let snap = cx.snapshot;
+    // Without a snapshot (preview / goldens) assume the firmware line's stock build.
+    let has = |k: &str| snap.is_none_or(|s| s.has_setting(k));
+    if !has("osd_displayport_device") {
+        return Err(cfg_err(
+            "this firmware build has no OSD (osd_displayport_device is missing)",
+        ));
+    }
+    let vtx = cx.model.vtx.kind;
+    let fc_vs = snap
+        .and_then(|s| s.setting("vcd_video_system"))
+        .and_then(osd::parse_video_system);
+    let vs = match (o.video_system, vtx) {
+        (Some(v), _) => v,
+        (None, VtxKind::Digital) => OsdVideoSystem::Hd,
+        (None, VtxKind::Analog) => OsdVideoSystem::Auto,
+        (None, VtxKind::None) => match fc_vs {
+            Some(v) => v,
+            None => {
+                cx.warnings.push(
+                    "OSD video system unknown; element positions checked against the 30x13 AUTO grid"
+                        .into(),
+                );
+                OsdVideoSystem::Auto
+            }
+        },
+    };
+    if vs == OsdVideoSystem::Hd && !has("displayport_msp_col_adjust") {
+        return Err(cfg_err(
+            "HD OSD needs MSP DisplayPort, which this firmware build does not have",
+        ));
+    }
+    if o.video_system.is_some() && !has("vcd_video_system") {
+        return Err(cfg_err(
+            "this firmware build cannot select the OSD video system (vcd_video_system is missing)",
+        ));
+    }
+    match (vtx, vs) {
+        (VtxKind::Digital, OsdVideoSystem::Pal | OsdVideoSystem::Ntsc | OsdVideoSystem::Auto) => {
+            cx.warnings.push(format!(
+                "digital VTX with an analog OSD video system ({}): the OSD uses the 30-column SD grid",
+                osd::video_system_name(vs)
+            ))
+        }
+        (VtxKind::Analog, OsdVideoSystem::Hd) => cx.warnings.push(
+            "analog VTX with an HD OSD: the analog OSD chip is not used; only an MSP DisplayPort device shows it"
+                .into(),
+        ),
+        _ => {}
+    }
+    cx.push("feature OSD");
+    if let Some(v) = o.video_system {
+        let dp = if v == OsdVideoSystem::Hd || matches!(vtx, VtxKind::Digital) {
+            "MSP"
+        } else {
+            "AUTO"
+        };
+        cx.push(format!("set osd_displayport_device = {dp}"));
+        cx.push(format!(
+            "set vcd_video_system = {}",
+            osd::video_system_name(v)
+        ));
+    }
+    let (cols, rows) = vs.grid();
+    // osd_canvas_* exist on 4.4 / 4.5; 2025.12 hides them (OSD_CANVAS_SIZE_DEBUG) and
+    // takes the canvas from the HD device.
+    let canvas = match snap {
+        Some(s) => s.has_setting("osd_canvas_width"),
+        None => dialect < Dialect::V2025_12,
+    };
+    if vs == OsdVideoSystem::Hd && canvas {
+        cx.push(format!("set osd_canvas_width = {cols}"));
+        cx.push(format!("set osd_canvas_height = {rows}"));
+    }
+    let mut lines: Vec<(usize, String)> = Vec::new();
+    for e in &o.elements {
+        let cli = osd::cli_name(&e.name, dialect).map_err(cfg_err)?;
+        let idx = osd::ELEMENTS
+            .iter()
+            .position(|(_, c, _)| *c == cli)
+            .unwrap_or(usize::MAX);
+        if lines.iter().any(|(i, _)| *i == idx) {
+            return Err(cfg_err(format!("OSD element {} is listed twice", e.name)));
+        }
+        let key = format!("osd_{cli}_pos");
+        if !has(&key) {
+            return Err(cfg_err(format!(
+                "OSD element {} is not in this firmware build ({key} is missing)",
+                e.name
+            )));
+        }
+        let stable = osd::ELEMENTS[idx].0;
+        let (dx, dy, _) = osd::default_position(stable, cols, rows);
+        let (x, y) = (e.x.unwrap_or(dx), e.y.unwrap_or(dy));
+        if x >= cols || y >= rows {
+            return Err(cfg_err(format!(
+                "OSD element {} at ({x}, {y}) is outside the {} grid ({cols}x{rows})",
+                e.name,
+                osd::video_system_name(vs)
+            )));
+        }
+        let current = snap
+            .and_then(|s| s.setting(&key))
+            .and_then(|v| v.parse::<u16>().ok())
+            .unwrap_or(0);
+        lines.push((
+            idx,
+            format!("set {key} = {}", osd::encode(x, y, e.enabled, current)),
+        ));
+    }
+    lines.sort_by_key(|(i, _)| *i);
+    cx.cmds.extend(lines.into_iter().map(|(_, l)| l));
     Ok(())
 }

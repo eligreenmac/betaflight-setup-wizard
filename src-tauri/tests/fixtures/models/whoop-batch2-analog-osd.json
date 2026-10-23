@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "CRAZYBEEF4SX1280", "firmwareVersion": "4.4.3", "apiVersion": "1.45" },
+  "receiver": {
+    "kind": "SPI", "protocol": "EXPRESSLRS", "port": null, "telemetry": true,
+    "elrsUid": [30, 182, 235, 65, 136, 241], "elrsDomain": "ISM2400"
+  },
+  "vtx": { "kind": "ANALOG" },
+  "gps": { "enabled": false },
+  "esc": { "protocol": "DSHOT300", "bidirectionalDshot": true, "motorPoles": 12 },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "ANGLE", "auxChannel": 1, "rangeMin": 900, "rangeMax": 1300 }
+  ],
+  "airmode": "ALWAYS",
+  "removeModes": ["FLIP OVER AFTER CRASH"],
+  "sensors": { "baro": true },
+  "boardAlignment": { "roll": 180, "pitch": 0, "yaw": -45 },
+  "osd": {
+    "videoSystem": "PAL",
+    "elements": [
+      { "name": "MAIN_BATT_VOLTAGE", "enabled": true },
+      { "name": "RSSI_VALUE", "enabled": true, "x": 1, "y": 1 },
+      { "name": "CRAFT_NAME", "enabled": true, "x": 0, "y": 15 },
+      { "name": "ITEM_TIMER_1", "enabled": false }
+    ]
+  },
+  "extras": {}
+}

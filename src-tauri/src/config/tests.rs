@@ -44,6 +44,8 @@ const GOLDEN: &[(&str, &[Dialect])] = &[
     ("toothpick-3in-sbus", &[Dialect::V4_4, Dialect::V4_5]),
     ("whoop-65mm-spi-elrs", &Dialect::ALL),
     ("longrange-7in-analog", &Dialect::ALL),
+    ("batch2-freestyle-hd", &Dialect::ALL),
+    ("whoop-batch2-analog-osd", &Dialect::ALL),
 ];
 
 /// Golden files: plan output against the fixture FC for each supported dialect.
@@ -669,7 +671,10 @@ fn model_ext_apply_and_verify_on_every_dialect() {
 #[test]
 fn model_ext_null_keeps_current_values() {
     // The existing models leave every new field null: nothing new is generated.
-    for (name, dialects) in GOLDEN.iter().filter(|(n, _)| *n != "longrange-7in-analog") {
+    for (name, dialects) in GOLDEN
+        .iter()
+        .filter(|(n, _)| *n != "longrange-7in-analog" && !n.contains("batch2"))
+    {
         let m = model(name);
         for &d in *dialects {
             let fc = MockFc::load(firmware_dir(d), board_for(name));
@@ -687,7 +692,22 @@ fn model_ext_null_keeps_current_values() {
                     "motor_output_reordering",
                     "gps_ublox_use_galileo",
                     "gps_sbas_mode",
+                    // batch 2
+                    "beeper",
+                    "beacon",
+                    "AIRMODE",
+                    "_hardware",
+                    "align_board",
+                    "feature OSD",
+                    "osd_",
+                    "vcd_video_system = ",
                 ] {
+                    if key.starts_with("osd_") || key.starts_with("vcd") {
+                        // the VTX section writes displayport / video system from vtx.kind
+                        if c.contains("osd_displayport_device") || c.contains("vcd_video_system") {
+                            continue;
+                        }
+                    }
                     assert!(!c.contains(key), "{name} {d:?}: {c}");
                 }
             }
@@ -794,4 +814,554 @@ fn model_ext_validation() {
     m.vtx.table = None;
     let e = gen(&m, Dialect::V4_5).unwrap_err(); // the fixture's table is empty (0 bands)
     assert!(e.to_string().contains("outside the VTX table"), "{e}");
+}
+
+// ---------------------------------------------------------------- batch 2
+
+/// The fixture dump with every line matching `drop` removed (a build without a feature).
+fn fixture_without(d: Dialect, board: &str, drop: &dyn Fn(&str) -> bool) -> MockFc {
+    let text: String = super::mock::fixture(d.as_str(), board)
+        .lines()
+        .filter(|l| !drop(l.trim()))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    MockFc::from_dump(&text)
+}
+
+fn gen_on(
+    fc: &MockFc,
+    m: &DroneModel,
+    d: Dialect,
+) -> crate::error::AppResult<crate::model::CliScript> {
+    let snap = fc.snapshot();
+    generate_for(m, d, &snap.ports, Some(&snap))
+}
+
+fn cfg_error(r: crate::error::AppResult<crate::model::CliScript>, needle: &str) {
+    let e = r.unwrap_err();
+    assert_eq!(e.code(), "CONFIG", "{e}");
+    assert!(e.to_string().contains(needle), "{needle}: {e}");
+}
+
+#[test]
+fn batch2_apply_and_verify_on_every_dialect() {
+    for name in ["batch2-freestyle-hd", "whoop-batch2-analog-osd"] {
+        let m = model(name);
+        for d in Dialect::ALL {
+            let mut fc = MockFc::load(d.as_str(), board_for(name));
+            // old optional ranges the model removes / replaces
+            fc.preset(&[
+                "aux 5 35 4 1700 2100 0 0",
+                "aux 6 36 5 1700 2100 0 0",
+                "aux 7 28 6 1700 2100 0 0",
+            ]);
+            let store = tmp_store(&format!("b2-{name}-{}", d.as_str()));
+            let script = session::plan(&mut fc, &m).unwrap();
+            let r = session::apply(&mut fc, &script, &store, "UID1", &mut |_| {}).unwrap();
+            assert!(r.saved && r.errors.is_empty(), "{name} {d:?}: {r:?}");
+            let v = session::verify(&mut fc, &m).unwrap();
+            assert!(v.ok, "{name} {d:?}: {:?}", v.mismatches);
+            let snap = fc.snapshot();
+            let used: Vec<u8> = snap
+                .aux
+                .iter()
+                .filter(|a| a.is_used())
+                .map(|a| a.mode_id)
+                .collect();
+            // FLIP OVER AFTER CRASH is removed by both; PREARM only by the freestyle model
+            // (the whoop doesn't mention it, so its range is kept)
+            assert!(!used.contains(&35), "{name} {d:?}: {used:?}");
+            assert_eq!(
+                used.contains(&36),
+                name.starts_with("whoop"),
+                "{name} {d:?}: {used:?}"
+            );
+            if name == "batch2-freestyle-hd" {
+                assert_eq!(snap.features.get("AIRMODE"), Some(&false));
+                assert!(used.contains(&28));
+                let b = snap.beepers.as_ref().unwrap();
+                let crash = if d == Dialect::V2025_12 {
+                    "CRASHFLIP"
+                } else {
+                    "CRASH_FLIP"
+                };
+                assert!(b.contains(&(crash.into(), false)), "{d:?}");
+                assert!(b.contains(&("ON_USB".into(), false)));
+                assert!(b.contains(&("RX_LOST".into(), true)));
+                assert_eq!(
+                    snap.beacons,
+                    Some(vec![("RX_LOST".into(), true), ("RX_SET".into(), false)])
+                );
+                assert_eq!(snap.setting("align_board_yaw"), Some("90"));
+                assert_eq!(snap.setting("baro_hardware"), Some("NONE"));
+                assert_eq!(snap.setting("vcd_video_system"), Some("HD"));
+                assert_eq!(snap.setting("osd_displayport_device"), Some("MSP"));
+                assert_eq!(
+                    snap.setting("osd_canvas_width"),
+                    (d != Dialect::V2025_12).then_some("53")
+                );
+                // CRAFT_NAME at (20, 18), visible in all three profiles
+                let pos: u16 = snap.setting("osd_craft_name_pos").unwrap().parse().unwrap();
+                assert_eq!(super::osd::decode(pos), (20, 18, true));
+                assert_eq!(pos & 0x3800, 0x3800);
+                let pos: u16 = snap
+                    .setting("osd_avg_cell_voltage_pos")
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(super::osd::decode(pos), (45, 2, true));
+                assert_eq!(pos & 0x400, 0x400, "x >= 32 uses bit 10");
+            } else {
+                assert_eq!(snap.features.get("AIRMODE"), Some(&true));
+                assert!(!used.contains(&28));
+                assert_eq!(snap.features.get("OSD"), Some(&true));
+                assert_eq!(snap.setting("vcd_video_system"), Some("PAL"));
+                assert_eq!(snap.setting("align_board_yaw"), Some("-45"));
+                let pos: u16 = snap.setting("osd_craft_name_pos").unwrap().parse().unwrap();
+                assert_eq!(super::osd::decode(pos), (0, 15, true));
+            }
+            // drift is reported per field
+            fc.preset(&["beeper -RX_LOST", "set align_board_pitch = 5"]);
+            if name == "batch2-freestyle-hd" {
+                let v = session::verify(&mut fc, &m).unwrap();
+                let keys: Vec<&str> = v.mismatches.iter().map(|x| x.setting.as_str()).collect();
+                assert_eq!(keys, ["beeper RX_LOST", "set align_board_pitch"], "{d:?}");
+            }
+            let _ = std::fs::remove_dir_all(store.root());
+        }
+    }
+}
+
+#[test]
+fn remove_modes_without_a_range_is_a_no_op() {
+    let mut m = model("batch2-freestyle-hd");
+    m.remove_modes = vec![
+        "PREARM".into(),
+        "flip_over_after_crash".into(),
+        "TURTLE".into(),
+    ];
+    for d in Dialect::ALL {
+        let fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let a = gen_on(&fc, &m, d).unwrap();
+        m.remove_modes.clear();
+        let b = gen_on(&fc, &m, d).unwrap();
+        m.remove_modes = vec!["PREARM".into()];
+        assert_eq!(a.commands, b.commands, "{d:?}");
+        assert_eq!(a.warnings, b.warnings, "{d:?}");
+    }
+    // with ranges: removed; optional modes not mentioned are kept
+    let mut fc = MockFc::load("4.5", "speedybeef405v4");
+    fc.preset(&["aux 0 36 5 1700 2100 0 0", "aux 1 35 4 1700 2100 0 0"]);
+    m.remove_modes = vec!["PREARM".into()];
+    m.airmode = None;
+    m.switches.retain(|s| s.mode != "AIR MODE");
+    let s = gen_on(&fc, &m, Dialect::V4_5).unwrap();
+    assert!(
+        s.commands.contains(&"aux 0 0 0 1700 2100 0 0".to_string()),
+        "{:?}",
+        s.commands
+    );
+    assert!(
+        !s.commands.iter().any(|c| c.starts_with("aux 1 ")),
+        "{:?}",
+        s.commands
+    );
+    assert!(s.warnings.iter().any(|w| w.contains("kept 1 aux")));
+    assert!(!s.commands.iter().any(|c| c.contains("AIRMODE")));
+}
+
+#[test]
+fn airmode_and_remove_modes_validation() {
+    let base = model("batch2-freestyle-hd");
+    let fc = MockFc::load("4.5", "speedybeef405v4");
+    let run = |f: &dyn Fn(&mut DroneModel)| {
+        let mut m = base.clone();
+        f(&mut m);
+        gen_on(&fc, &m, Dialect::V4_5)
+    };
+    cfg_error(
+        run(&|m| m.switches.retain(|s| s.mode != "AIR MODE")),
+        "airmode SWITCH needs",
+    );
+    cfg_error(
+        run(&|m| m.airmode = Some(crate::model::Airmode::Always)),
+        "AIR MODE switch",
+    );
+    cfg_error(
+        run(&|m| m.airmode = Some(crate::model::Airmode::Off)),
+        "AIR MODE switch",
+    );
+    cfg_error(
+        run(&|m| m.remove_modes.push("AIRMODE".into())),
+        "both in removeModes and assigned",
+    );
+    cfg_error(run(&|m| m.remove_modes.push("NOPE".into())), "unknown");
+    cfg_error(
+        run(&|m| m.remove_modes.push("ALTHOLD".into())),
+        "needs Betaflight 2025.12",
+    );
+    cfg_error(
+        run(&|m| m.remove_modes.push("HORIZON".into())),
+        "removeModes takes only",
+    );
+    // OFF: feature off and the AIR MODE range removed
+    let mut fc2 = MockFc::load("4.5", "speedybeef405v4");
+    fc2.preset(&["aux 0 28 5 1700 2100 0 0"]);
+    let mut m = base.clone();
+    m.switches.retain(|s| s.mode != "AIR MODE");
+    m.airmode = Some(crate::model::Airmode::Off);
+    let s = gen_on(&fc2, &m, Dialect::V4_5).unwrap();
+    assert!(s.commands.contains(&"feature -AIRMODE".to_string()));
+    assert!(!s
+        .commands
+        .iter()
+        .any(|c| c.starts_with("aux ") && c.split(' ').nth(2) == Some("28")));
+    // null airmode + AIR MODE switch while the feature is on: a warning
+    let mut m = base.clone();
+    m.airmode = None;
+    let s = gen_on(&fc, &m, Dialect::V4_5).unwrap();
+    assert!(s
+        .warnings
+        .iter()
+        .any(|w| w.contains("feature AIRMODE is on")));
+    assert!(!s.commands.iter().any(|c| c.contains("AIRMODE")));
+}
+
+#[test]
+fn beepers_per_version_and_missing_command() {
+    let m = model("batch2-freestyle-hd");
+    for d in Dialect::ALL {
+        let fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let s = gen_on(&fc, &m, d).unwrap();
+        let beepers: Vec<&String> = s
+            .commands
+            .iter()
+            .filter(|c| c.starts_with("beeper "))
+            .collect();
+        let n = if d == Dialect::V2025_12 { 23 } else { 24 };
+        assert_eq!(beepers.len(), n, "{d:?}");
+        // every name the generator writes exists in the FC's dump, in dump order
+        let dump: Vec<String> = fc
+            .snapshot()
+            .beepers
+            .unwrap()
+            .into_iter()
+            .map(|b| b.0)
+            .collect();
+        let names: Vec<String> = beepers
+            .iter()
+            .map(|c| c[7..].trim_start_matches('-').to_string())
+            .collect();
+        assert_eq!(names, dump, "{d:?}");
+        assert_eq!(
+            s.warnings
+                .iter()
+                .any(|w| w.contains("RC_SMOOTHING_INIT_FAIL")),
+            d == Dialect::V2025_12
+        );
+        // build without beeper / beacon commands: warnings, nothing written
+        let fc = fixture_without(d, "speedybeef405v4", &|l| {
+            l.starts_with("beeper") || l.starts_with("beacon")
+        });
+        let s = gen_on(&fc, &m, d).unwrap();
+        assert!(!s
+            .commands
+            .iter()
+            .any(|c| c.starts_with("beeper") || c.starts_with("beacon")));
+        assert!(s.warnings.iter().any(|w| w.contains("no beeper command")));
+        assert!(s.warnings.iter().any(|w| w.contains("no DShot beacon")));
+    }
+    // the mock CLI answers like cli.c (prefix match, "Disabled NAME", invalid name)
+    let mut fc = MockFc::load("4.5", "speedybeef405v4");
+    use crate::device::Connection;
+    fc.enter_cli().unwrap();
+    assert!(fc
+        .cli_exec("beeper -rx_lost")
+        .unwrap()
+        .contains("Disabled RX_LOST\r\n"));
+    assert!(fc
+        .cli_exec("beeper BOGUS")
+        .unwrap()
+        .contains("###ERROR IN beeper: INVALID NAME: BOGUS###"));
+    let mut fc = fixture_without(Dialect::V4_5, "speedybeef405v4", &|l| {
+        l.starts_with("beeper")
+    });
+    fc.enter_cli().unwrap();
+    assert!(fc
+        .cli_exec("beeper -ON_USB")
+        .unwrap()
+        .contains("UNKNOWN COMMAND"));
+}
+
+#[test]
+fn sensors_and_alignment() {
+    let base = model("batch2-freestyle-hd");
+    let fc = MockFc::load("4.4", "speedybeef405v4");
+    let run = |f: &dyn Fn(&mut DroneModel), fc: &MockFc| {
+        let mut m = base.clone();
+        f(&mut m);
+        gen_on(fc, &m, Dialect::V4_4)
+    };
+    cfg_error(
+        run(&|m| m.sensors.as_mut().unwrap().acc = Some(false), &fc),
+        "ANGLE",
+    );
+    cfg_error(
+        run(&|m| m.board_alignment.as_mut().unwrap().yaw = 361, &fc),
+        "board alignment yaw 361",
+    );
+    cfg_error(
+        run(&|m| m.board_alignment.as_mut().unwrap().roll = -181, &fc),
+        "out of range",
+    );
+    // a specific chip already set is kept; NONE -> AUTO with a calibration warning
+    let mut fc2 = MockFc::load("4.4", "speedybeef405v4");
+    fc2.preset(&["set acc_hardware = BMI270"]);
+    let s = run(&|_| {}, &fc2).unwrap();
+    assert!(s
+        .commands
+        .contains(&"set acc_hardware = BMI270".to_string()));
+    fc2.preset(&["set acc_hardware = NONE"]);
+    let s = run(&|_| {}, &fc2).unwrap();
+    assert!(s.commands.contains(&"set acc_hardware = AUTO".to_string()));
+    assert!(s.warnings.iter().any(|w| w.contains("calibrate")));
+    // a build without a baro: enabling it is CONFIG, disabling it writes nothing
+    let nobaro = fixture_without(Dialect::V4_4, "speedybeef405v4", &|l| {
+        l.starts_with("set baro_")
+    });
+    cfg_error(
+        run(&|m| m.sensors.as_mut().unwrap().baro = Some(true), &nobaro),
+        "no barometer",
+    );
+    let s = run(&|_| {}, &nobaro).unwrap();
+    assert!(!s.commands.iter().any(|c| c.contains("baro_hardware")));
+    // null fields are kept
+    let s = run(&|m| m.sensors = Some(Default::default()), &fc).unwrap();
+    assert!(!s.commands.iter().any(|c| c.contains("_hardware")));
+}
+
+#[test]
+fn osd_validation_and_decisions() {
+    use crate::model::{OsdElement, OsdVideoSystem};
+    let base = model("batch2-freestyle-hd");
+    let fc = MockFc::load("4.5", "speedybeef405v4");
+    let run = |f: &dyn Fn(&mut DroneModel), fc: &MockFc, d: Dialect| {
+        let mut m = base.clone();
+        f(&mut m);
+        gen_on(fc, &m, d)
+    };
+    let el = |name: &str, x: Option<u8>, y: Option<u8>| OsdElement {
+        name: name.into(),
+        enabled: true,
+        x,
+        y,
+    };
+    fn osd(m: &mut DroneModel) -> &mut crate::model::Osd {
+        m.osd.as_mut().unwrap()
+    }
+    cfg_error(
+        run(
+            &|m| osd(m).elements.push(el("BOGUS", None, None)),
+            &fc,
+            Dialect::V4_5,
+        ),
+        "unknown OSD element",
+    );
+    cfg_error(
+        run(
+            &|m| osd(m).elements.push(el("MAIN_BATT_VOLTAGE", None, None)),
+            &fc,
+            Dialect::V4_5,
+        ),
+        "listed twice",
+    );
+    cfg_error(
+        run(
+            &|m| osd(m).elements.push(el("GPS_SATS", Some(53), Some(0))),
+            &fc,
+            Dialect::V4_5,
+        ),
+        "outside the HD grid (53x20)",
+    );
+    cfg_error(
+        run(
+            &|m| {
+                osd(m).video_system = Some(OsdVideoSystem::Pal);
+                osd(m).elements.push(el("GPS_SATS", Some(0), Some(16)));
+            },
+            &fc,
+            Dialect::V4_5,
+        ),
+        "outside the PAL grid (30x16)",
+    );
+    // 2025.12-only element on 4.5
+    let new_in_2025 = super::osd::ELEMENTS
+        .iter()
+        .find(|e| e.2 == Dialect::V2025_12)
+        .unwrap()
+        .0;
+    cfg_error(
+        run(
+            &|m| osd(m).elements.push(el(new_in_2025, None, None)),
+            &fc,
+            Dialect::V4_5,
+        ),
+        "needs Betaflight 2025.12",
+    );
+    // element compiled out of this build
+    let nolq = fixture_without(Dialect::V4_5, "speedybeef405v4", &|l| {
+        l.starts_with("set osd_link_quality_pos")
+    });
+    cfg_error(
+        run(&|_| {}, &nolq, Dialect::V4_5),
+        "osd_link_quality_pos is missing",
+    );
+    // decision 1: HD needs MSP DisplayPort in the dump
+    let nodp = fixture_without(Dialect::V4_5, "speedybeef405v4", &|l| {
+        l.starts_with("set displayport_msp_")
+    });
+    cfg_error(
+        run(&|_| {}, &nodp, Dialect::V4_5),
+        "HD OSD needs MSP DisplayPort",
+    );
+    let noosd = fixture_without(Dialect::V4_5, "speedybeef405v4", &|l| {
+        l.starts_with("set osd_") || l.starts_with("set vcd_")
+    });
+    cfg_error(run(&|_| {}, &noosd, Dialect::V4_5), "has no OSD");
+    // ... while an analog layout on that build is fine
+    let s = run(
+        &|m| {
+            m.vtx = model("whoop-batch2-analog-osd").vtx;
+            m.vtx.kind = crate::model::VtxKind::Analog;
+            m.vtx.protocol = None;
+            m.vtx.port = None;
+            m.receiver.port = Some("UART2".into());
+            osd(m).video_system = Some(OsdVideoSystem::Ntsc);
+            osd(m).elements.retain(|e| e.x.is_none());
+        },
+        &nodp,
+        Dialect::V4_5,
+    )
+    .unwrap();
+    assert!(s
+        .commands
+        .contains(&"set vcd_video_system = NTSC".to_string()));
+    assert!(s
+        .commands
+        .contains(&"set osd_displayport_device = AUTO".to_string()));
+    // decision 2: DIGITAL VTX + analog video system = warning, not error
+    for vs in [
+        OsdVideoSystem::Pal,
+        OsdVideoSystem::Ntsc,
+        OsdVideoSystem::Auto,
+    ] {
+        let s = run(
+            &|m| {
+                osd(m).video_system = Some(vs);
+                osd(m).elements.retain(|e| e.x.is_none());
+            },
+            &fc,
+            Dialect::V4_5,
+        )
+        .unwrap();
+        assert!(
+            s.warnings
+                .iter()
+                .any(|w| w.contains("digital VTX with an analog OSD")),
+            "{vs:?}: {:?}",
+            s.warnings
+        );
+        assert!(s
+            .commands
+            .contains(&"set osd_displayport_device = MSP".to_string()));
+        // the VTX section does not also write HD
+        assert!(!s
+            .commands
+            .contains(&"set vcd_video_system = HD".to_string()));
+        assert!(!s.commands.iter().any(|c| c.contains("osd_canvas")));
+    }
+    // null video system: the grid follows the digital VTX (HD)
+    let s = run(&|m| osd(m).video_system = None, &fc, Dialect::V4_5).unwrap();
+    assert_eq!(
+        s.commands
+            .iter()
+            .filter(|c| c.contains("vcd_video_system"))
+            .count(),
+        1
+    );
+    assert!(s
+        .commands
+        .contains(&"set osd_canvas_width = 53".to_string()));
+    // 2025.12 has no osd_canvas_* settings: none written
+    let fc25 = MockFc::load("2025.12", "speedybeef405v4");
+    let s = run(&|_| {}, &fc25, Dialect::V2025_12).unwrap();
+    assert!(!s.commands.iter().any(|c| c.contains("osd_canvas")));
+    // the element type bits (14-15) on the FC are kept
+    let mut fc3 = MockFc::load("4.5", "speedybeef405v4");
+    fc3.preset(&["set osd_vbat_pos = 49152"]);
+    let s = run(&|_| {}, &fc3, Dialect::V4_5).unwrap();
+    let v: u16 = s
+        .commands
+        .iter()
+        .find_map(|c| c.strip_prefix("set osd_vbat_pos = "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(v & 0xC000, 0xC000);
+}
+
+#[test]
+fn osd_default_layout_and_catalog_commands() {
+    use crate::model::OsdVideoSystem;
+    let rt = tauri::async_runtime::block_on(super::commands::config_osd_default_layout(
+        OsdVideoSystem::Hd,
+        "2025.12.1".into(),
+    ))
+    .unwrap();
+    assert_eq!((rt.cols, rt.rows, rt.elements.len()), (53, 20, 82));
+    let e = tauri::async_runtime::block_on(super::commands::config_osd_default_layout(
+        OsdVideoSystem::Pal,
+        "4.3.2".into(),
+    ))
+    .unwrap_err();
+    assert_eq!(e.code(), "UNSUPPORTED_FIRMWARE");
+    let c =
+        tauri::async_runtime::block_on(super::commands::config_firmware_catalog("4.4.3".into()))
+            .unwrap();
+    assert_eq!((c.beepers.len(), c.osd_elements.len()), (24, 77));
+    // the default layout passes the generator's own validation on every line / grid
+    for d in Dialect::ALL {
+        for vs in [
+            OsdVideoSystem::Auto,
+            OsdVideoSystem::Pal,
+            OsdVideoSystem::Ntsc,
+            OsdVideoSystem::Hd,
+        ] {
+            let mut m = model("batch2-freestyle-hd");
+            m.fc.firmware_version = d.as_str().into();
+            let layout = super::osd::default_layout(vs, d);
+            let fc = MockFc::load(d.as_str(), "speedybeef405v4");
+            let snap = fc.snapshot();
+            m.osd = Some(crate::model::Osd {
+                video_system: Some(vs),
+                elements: layout
+                    .elements
+                    .iter()
+                    .filter(|e| {
+                        snap.has_setting(&format!(
+                            "osd_{}_pos",
+                            super::osd::cli_name(&e.name, d).unwrap()
+                        ))
+                    })
+                    .map(|e| crate::model::OsdElement {
+                        name: e.name.clone(),
+                        enabled: e.enabled,
+                        x: Some(e.x),
+                        y: Some(e.y),
+                    })
+                    .collect(),
+            });
+            gen_on(&fc, &m, d).unwrap_or_else(|e| panic!("{d:?} {vs:?}: {e}"));
+        }
+    }
 }

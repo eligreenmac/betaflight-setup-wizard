@@ -196,8 +196,8 @@ pub async fn config_osd_default_layout(
     video_system: OsdVideoSystem,
     firmware_version: String,
 ) -> AppResult<OsdLayout> {
-    let _ = (video_system, firmware_version);
-    Err(AppError::NotImplemented("config_osd_default_layout"))
+    let dialect = super::firmware::Dialect::from_version(&firmware_version)?;
+    Ok(super::osd::default_layout(video_system, dialect))
 }
 
 /// Per-firmware catalog (beepers, DShot beacon events, OSD elements, stable mode names) so
@@ -205,8 +205,8 @@ pub async fn config_osd_default_layout(
 /// supported lines.
 #[tauri::command]
 pub async fn config_firmware_catalog(firmware_version: String) -> AppResult<FirmwareCatalog> {
-    let _ = firmware_version;
-    Err(AppError::NotImplemented("config_firmware_catalog"))
+    let dialect = super::firmware::Dialect::from_version(&firmware_version)?;
+    Ok(super::catalog::firmware_catalog(dialect))
 }
 
 /// Read-only plan against the connected FC: reads `version`, `serial`, `dump all`
