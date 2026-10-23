@@ -506,14 +506,13 @@ pub struct FcIdentity {
 }
 
 impl FcIdentity {
-    /// MVP gate: Betaflight 4.4+ (API 1.45+).
-    ///
-    /// TODO(config#32): once `feat/config-2026.6` is on main, also gate on the release line
-    /// with `crate::config::firmware::is_supported(&self.fc_version)` (single source of the
-    /// supported lines, `config::firmware::SUPPORTED_LINES`) instead of the API minor alone.
-    /// Until then 2026.6.x (API 1.48) passes here; `Dialect::from_version` is the gate.
+    /// Betaflight (API 1.45+) on a supported release line. The lines come from
+    /// `config::firmware::SUPPORTED_LINES` via [`crate::config::firmware::is_supported`]
+    /// (one source of truth). 2026.12.x and unparseable versions are not supported.
     pub fn is_supported_betaflight(&self) -> bool {
-        self.fc_variant == "BTFL" && self.api_version.at_least(1, 45)
+        self.fc_variant == "BTFL"
+            && self.api_version.at_least(1, 45)
+            && crate::config::firmware::is_supported(&self.fc_version)
     }
 
     /// Merge a CLI probe: RX_SPI becomes authoritative; the CLI serial list is used only when
@@ -633,14 +632,11 @@ pub fn parse_fc_version(p: &[u8]) -> Result<String> {
     }
 }
 
-/// `MCU_TYPE_ID_PROVIDED_BY_NAME` (2026.6 `build/build_config.h`): the MCU type id that
+/// `MCU_TYPE_ID_PROVIDED_BY_NAME` (2026.6 `build/build_config.h`, 254): the MCU type id that
 /// MSP_BOARD_INFO / MSP2_MCU_INFO send instead of a `mcuTypeId_e` value; the name is in
-/// MSP2_MCU_INFO.
-pub const MCU_TYPE_ID_PROVIDED_BY_NAME: u8 = 254;
+/// MSP2_MCU_INFO. Defined once in `config::msp`.
+pub use crate::config::msp::MCU_TYPE_ID_PROVIDED_BY_NAME;
 
-/// MSP2_MCU_INFO (0x300C, 2025.12+): `u8 mcu type id` + length-prefixed MCU name
-/// (2025.12: `getMcuTypeName()` from the `mcuTypeNames` table, e.g. "F40X"; 2026.6: id 254 and
-/// the build's `TARGET_MCU`, e.g. "STM32F405").
 pub fn parse_mcu_info(p: &[u8]) -> Result<(u8, String)> {
     let mut r = Reader::new(codes::MSP2_MCU_INFO, p);
     let id = r.u8()?;
@@ -1416,6 +1412,31 @@ mod tests {
     }
 
     #[test]
+    fn supported_gate_uses_the_config_lines() {
+        let mut id = MspClient::new(fake_fc_2026_6_capture(Some(b"SIMULATOR")))
+            .identify()
+            .unwrap();
+        assert!(id.is_supported_betaflight());
+        for (v, ok) in [
+            ("4.4.3", true),
+            ("4.5.5", true),
+            ("2025.12.5", true),
+            ("2026.6.2", true),
+            ("2026.12.0", false),
+            ("2026.12.0-alpha", false),
+            ("4.3.2", false),
+            ("", false),
+            ("garbage", false),
+        ] {
+            id.fc_version = v.into();
+            assert_eq!(id.is_supported_betaflight(), ok, "{v}");
+        }
+        id.fc_version = "2026.6.2".into();
+        id.fc_variant = "INAV".into();
+        assert!(!id.is_supported_betaflight());
+    }
+
+    #[test]
     fn identify_2026_6_without_mcu_info_keeps_mcu_unknown() {
         // MSP2_MCU_INFO is best effort: an error or an empty name leaves the MCU unknown
         // and identify still succeeds.
@@ -1434,11 +1455,19 @@ mod tests {
         let fc = hex_bytes("1a060208323032362e362e32");
         assert_eq!(parse_fc_version(&fc).unwrap(), "2026.6.2");
         assert_eq!(parse_fc_version(&[4, 5, 2]).unwrap(), "4.5.2");
-        let mut p = vec![254, 9];
+        const BY_NAME: u8 = MCU_TYPE_ID_PROVIDED_BY_NAME;
+        assert_eq!(BY_NAME, 254);
+        let mut p = vec![BY_NAME, 9];
         p.extend(b"STM32F405");
-        assert_eq!(parse_mcu_info(&p).unwrap(), (254, "STM32F405".to_string()));
-        assert_eq!(parse_mcu_info(&[254, 0]).unwrap(), (254, String::new()));
-        assert!(parse_mcu_info(&[254, 9, b'S']).is_err());
+        assert_eq!(
+            parse_mcu_info(&p).unwrap(),
+            (BY_NAME, "STM32F405".to_string())
+        );
+        assert_eq!(
+            parse_mcu_info(&[BY_NAME, 0]).unwrap(),
+            (BY_NAME, String::new())
+        );
+        assert!(parse_mcu_info(&[BY_NAME, 9, b'S']).is_err());
         assert!(parse_mcu_info(&[]).is_err());
     }
 

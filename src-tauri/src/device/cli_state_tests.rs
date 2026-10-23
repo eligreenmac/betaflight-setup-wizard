@@ -32,8 +32,6 @@ enum Fw {
     /// API 1.47 (2025.12): same CLI exit code as 4.5.
     V2025_12,
     /// API 1.48 (2026.6): same CLI exit code (`exit` reboots, `exit noreboot` exists).
-    /// The CLI side reuses the 2025.12 dump. TODO(config#32): switch to a 2026.6 dump
-    /// once Config Engine Dev adds `tests/fixtures/2026.6/`.
     V2026_6,
     /// 4.5 board whose `exit` leaves the CLI without rebooting (what `exit noreboot`
     /// does): recovery must reboot it over MSP so RAM is discarded.
@@ -45,7 +43,8 @@ impl Fw {
         let fw = match self {
             Fw::V4_4 => "4.4",
             Fw::V4_5 | Fw::V4_5NoReboot => "4.5",
-            Fw::V2025_12 | Fw::V2026_6 => "2025.12",
+            Fw::V2025_12 => "2025.12",
+            Fw::V2026_6 => "2026.6",
         };
         fixture(fw, "speedybeef405v4")
     }
