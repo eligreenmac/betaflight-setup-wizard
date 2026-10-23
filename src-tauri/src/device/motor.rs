@@ -59,6 +59,8 @@ pub mod protocol {
     pub const DSHOT600: u8 = 7;
     pub const PROSHOT1000: u8 = 8;
     pub const DISABLED: u8 = 9;
+    /// 2026.6: appended after DISABLED (`motorProtocolTypes_e`, `ENABLE_DRONECAN_ESC` builds).
+    pub const DRONECAN: u8 = 10;
 }
 
 /// Betaflight FEATURE_3D bit in MSP_FEATURE_CONFIG.
@@ -284,6 +286,13 @@ pub fn check_gate(
     }
     if out.protocol == protocol::DISABLED || out.motor_count == 0 {
         return Err(refuse(MotorTestRefusal::MotorsDisabled));
+    }
+    if out.protocol > protocol::DISABLED {
+        // DroneCAN ESCs (2026.6) or a newer protocol: the PWM/DShot stop-value model above
+        // does not describe them, so never spin them from the wizard.
+        return Err(refuse(MotorTestRefusal::UnsupportedProtocol {
+            protocol: out.protocol,
+        }));
     }
     let count = out.motor_count.min(MAX_MOTORS as u8);
     if let Some(i) = req.motor_index {
@@ -849,7 +858,7 @@ pub(crate) mod fake {
         pub cli: Arc<AtomicBool>,
         /// Plain `exit` reboots, as in every Betaflight release (4.4 `cliExit`, 4.5+
         /// `cliExitCmd` without `noreboot`). `false` models an exit that leaves the CLI but
-        /// keeps RAM (what `exit noreboot` does on 4.5+ / 2025.12).
+        /// keeps RAM (what `exit noreboot` does on 4.5, 2025.12 and 2026.6).
         pub exit_reboots: bool,
         /// Unsaved changes live in RAM (any CLI command other than `exit`); a reboot clears it.
         pub ram_dirty: Arc<AtomicBool>,
@@ -1205,6 +1214,19 @@ mod tests {
         assert_eq!(
             code(check_gate(&req(Some(0), 1100, true), &st, &disabled, &lim)),
             "MOTOR_TEST_REFUSED"
+        );
+        // 2026.6 DroneCAN ESCs: not digital, stop value would be mincommand; refused.
+        let can = MotorOutputConfig::new(protocol::DRONECAN, false, 1000, 4);
+        assert!(!can.digital);
+        let e = check_gate(&req(Some(0), 1100, true), &st, &can, &lim).unwrap_err();
+        assert!(
+            matches!(
+                e,
+                DeviceError::MotorTestRefused(MotorTestRefusal::UnsupportedProtocol {
+                    protocol: 10
+                })
+            ),
+            "{e:?}"
         );
     }
 

@@ -1493,9 +1493,9 @@ fn model_limits(l: &motor::MotorTestLimits) -> MotorTestLimits {
     }
 }
 
-/// `motor_pwm_protocol` names (Betaflight `motorProtocolTypes_e`, 4.4 - 2025.12).
+/// `motor_pwm_protocol` names (Betaflight `motorProtocolTypes_e`, 4.4 - 2026.6; DRONECAN is 2026.6+).
 pub fn motor_protocol_name(p: u8) -> String {
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 11] = [
         "PWM",
         "ONESHOT125",
         "ONESHOT42",
@@ -1506,6 +1506,7 @@ pub fn motor_protocol_name(p: u8) -> String {
         "DSHOT600",
         "PROSHOT1000",
         "DISABLED",
+        "DRONECAN", // 2026.6
     ];
     NAMES
         .get(p as usize)
@@ -1525,6 +1526,8 @@ fn output_config(o: &motor::MotorOutputConfig) -> MotorOutputConfig {
 }
 
 /// `mcuTypeNames` from Betaflight cli.c (4.5.5; ids are stable across 4.4 - 2025.12).
+/// 2026.6 sends [`MCU_TYPE_ID_PROVIDED_BY_NAME`](crate::device::msp::MCU_TYPE_ID_PROVIDED_BY_NAME)
+/// (254, no entry here) and the name in MSP2_MCU_INFO (`FcIdentity::mcu_name`).
 pub fn mcu_name(id: u8) -> Option<&'static str> {
     const MCU: [&str; 18] = [
         "SIMULATOR",
@@ -1585,7 +1588,11 @@ pub fn fc_info(id: &FcIdentity) -> FcInfo {
             .or_else(|| non_empty(&b.target_name))
             .unwrap_or_else(|| b.board_identifier.clone()),
         manufacturer_id: non_empty(&b.manufacturer_id),
-        mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
+        mcu: b
+            .mcu_type_id
+            .and_then(mcu_name)
+            .map(str::to_string)
+            .or_else(|| id.mcu_name.clone()),
         uid: id.uid.map(|u| u.mcu_id()),
         build_options: id.build_options.clone(),
         hd_osd_supported: id.hd_osd_supported,
@@ -1943,7 +1950,7 @@ mod tests {
         );
     }
 
-    /// 4.4 `cliExit` (and plain `exit` on 4.5+/2025.12) reboots; a USB VCP re-enumerates.
+    /// 4.4 `cliExit` (and plain `exit` on 4.5 / 2025.12 / 2026.6) reboots; a USB VCP re-enumerates.
     #[test]
     fn stale_cli_exit_reboots_usb_vcp() {
         let fc = FakeFc::default();
@@ -2135,6 +2142,7 @@ mod tests {
             rx_spi: DevRxSpi::from_msp(None, None),
             build_options: vec!["USE_DSHOT".into(), "USE_OSD_HD".into()],
             hd_osd_supported: Some(true),
+            mcu_name: None,
         };
         let info = fc_info(&id);
         assert_eq!(info.build_options, ["USE_DSHOT", "USE_OSD_HD"]);
@@ -2148,6 +2156,48 @@ mod tests {
         assert_eq!(info.board_name, "SPEEDYBEEF405V4");
         assert_eq!(info.mcu.as_deref(), Some("F40X"));
         assert_eq!(info.rx_spi.present, None);
+    }
+
+    #[test]
+    fn fc_info_mcu_2026_6_comes_from_mcu_info() {
+        // 2026.6 MSP_BOARD_INFO always carries MCU_TYPE_ID_PROVIDED_BY_NAME (254).
+        let mut id = FcIdentity {
+            api_version: ApiVersion {
+                protocol: 0,
+                major: 1,
+                minor: 48,
+            },
+            fc_variant: "BTFL".into(),
+            fc_version: "2026.6.2".into(),
+            board_info: BoardInfo {
+                board_identifier: "S405".into(),
+                board_version: 0,
+                board_type: 2,
+                target_capabilities: 0,
+                target_name: "STM32F405".into(),
+                board_name: "SPEEDYBEEF405V4".into(),
+                manufacturer_id: "SPBE".into(),
+                signature: vec![],
+                mcu_type_id: Some(crate::device::msp::MCU_TYPE_ID_PROVIDED_BY_NAME),
+                configuration_state: None,
+                sample_rate_hz: None,
+                configuration_problems: None,
+            },
+            uid: None,
+            serial_config: None,
+            rx_spi: DevRxSpi::from_msp(None, None),
+            build_options: vec![],
+            hd_osd_supported: None,
+            mcu_name: Some("STM32F405".into()),
+        };
+        assert_eq!(fc_info(&id).mcu.as_deref(), Some("STM32F405"));
+        assert_eq!(fc_info(&id).api_version, "1.48");
+        id.mcu_name = None;
+        assert_eq!(fc_info(&id).mcu, None);
+        // A known table id still wins (2025.12 and older never need MSP2_MCU_INFO).
+        id.board_info.mcu_type_id = Some(17);
+        id.mcu_name = Some("ignored".into());
+        assert_eq!(fc_info(&id).mcu.as_deref(), Some("AT32F435"));
     }
 
     #[test]

@@ -402,7 +402,7 @@ pub enum RebootType {
     BootloaderFlash = 4,
 }
 
-/// MSP_API_VERSION. Betaflight 4.4 reports 1.45, 4.5 reports 1.46.
+/// MSP_API_VERSION. Betaflight 4.4 reports 1.45, 4.5 1.46, 2025.12 1.47, 2026.6 1.48.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiVersion {
@@ -498,10 +498,20 @@ pub struct FcIdentity {
     /// `USE_OSD_HD` compiled in; `None` = undetermined (see `device::build_info`).
     #[serde(default)]
     pub hd_osd_supported: Option<bool>,
+    /// MCU name from MSP2_MCU_INFO (e.g. "STM32F405"). Only requested when MSP_BOARD_INFO's
+    /// MCU type id has no name in our table: 2026.6 always sends
+    /// [`MCU_TYPE_ID_PROVIDED_BY_NAME`] there.
+    #[serde(default)]
+    pub mcu_name: Option<String>,
 }
 
 impl FcIdentity {
     /// MVP gate: Betaflight 4.4+ (API 1.45+).
+    ///
+    /// TODO(config#32): once `feat/config-2026.6` is on main, also gate on the release line
+    /// with `crate::config::firmware::is_supported(&self.fc_version)` (single source of the
+    /// supported lines, `config::firmware::SUPPORTED_LINES`) instead of the API minor alone.
+    /// Until then 2026.6.x (API 1.48) passes here; `Dialect::from_version` is the gate.
     pub fn is_supported_betaflight(&self) -> bool {
         self.fc_variant == "BTFL" && self.api_version.at_least(1, 45)
     }
@@ -621,6 +631,22 @@ pub fn parse_fc_version(p: &[u8]) -> Result<String> {
         r.u16()?;
         r.text()
     }
+}
+
+/// `MCU_TYPE_ID_PROVIDED_BY_NAME` (2026.6 `build/build_config.h`): the MCU type id that
+/// MSP_BOARD_INFO / MSP2_MCU_INFO send instead of a `mcuTypeId_e` value; the name is in
+/// MSP2_MCU_INFO.
+pub const MCU_TYPE_ID_PROVIDED_BY_NAME: u8 = 254;
+
+/// MSP2_MCU_INFO (0x300C, 2025.12+): `u8 mcu type id` + length-prefixed MCU name
+/// (2025.12: `getMcuTypeName()` from the `mcuTypeNames` table, e.g. "F40X"; 2026.6: id 254 and
+/// the build's `TARGET_MCU`, e.g. "STM32F405").
+pub fn parse_mcu_info(p: &[u8]) -> Result<(u8, String)> {
+    let mut r = Reader::new(codes::MSP2_MCU_INFO, p);
+    let id = r.u8()?;
+    let len = r.u8()? as usize;
+    let name = latin1(r.bytes(len)?);
+    Ok((id, name))
 }
 
 pub fn parse_board_info(p: &[u8]) -> Result<BoardInfo> {
@@ -780,6 +806,20 @@ impl<S: SerialLink> MspClient<S> {
         let fc_variant = self.fc_variant()?;
         let fc_version = self.fc_version()?;
         let board_info = self.board_info()?;
+        let mcu_name = if board_info
+            .mcu_type_id
+            .and_then(crate::device::manager::mcu_name)
+            .is_some()
+        {
+            None
+        } else {
+            best_effort(
+                self.request(codes::MSP2_MCU_INFO, &[])
+                    .and_then(|p| parse_mcu_info(&p)),
+            )?
+            .map(|(_, name)| name)
+            .filter(|n| !n.is_empty())
+        };
         let uid = match self.uid() {
             Ok(u) => Some(u),
             Err(DeviceError::MspUnsupported(_)) => None,
@@ -806,6 +846,7 @@ impl<S: SerialLink> MspClient<S> {
             rx_spi,
             build_options,
             hd_osd_supported,
+            mcu_name,
         })
     }
 
@@ -1180,7 +1221,8 @@ mod tests {
         assert_eq!(json["rxSpi"]["hasRxSpi"], serde_json::Value::Null);
     }
 
-    /// Fake FC for the HD OSD decision: `api_minor` 45 = 4.4, 46 = 4.5, 47 = 2025.12.
+    /// Fake FC for the HD OSD decision: `api_minor` 45 = 4.4, 46 = 4.5, 47 = 2025.12,
+    /// 48 = 2026.6.
     /// `None` replies are MSP errors (command not compiled in).
     fn fake_fc_osd(
         api_minor: u8,
@@ -1237,8 +1279,8 @@ mod tests {
         };
         let hd_build = build_info_reply(&[4097, 8231, SD, HD]);
         let sd_build = build_info_reply(&[4097, 8231, SD]);
-        for minor in [46, 47] {
-            // 4.5 / 2025.12: the build option list decides; canvas not needed.
+        for minor in [46, 47, 48] {
+            // 4.5 / 2025.12 / 2026.6: the build option list decides; canvas not needed.
             let i = id(minor, Some(hd_build.clone()), None);
             assert_eq!(i.hd_osd_supported, Some(true));
             assert_eq!(
@@ -1277,6 +1319,134 @@ mod tests {
         let mut i = id(46, Some(hd_build), None);
         i.apply_cli_probe(&probe);
         assert_eq!(i.hd_osd_supported, Some(true));
+    }
+
+    /// Replays the 2026.6.2 SITL capture (`tests/fixtures/device/2026.6.2/msp.txt`), plus
+    /// an MSP2_MCU_INFO reply carrying `mcu`, which the capture does not include.
+    fn fake_fc_2026_6_capture(mcu: Option<&'static [u8]>) -> MockSerial {
+        let capture = include_str!("../../tests/fixtures/device/2026.6.2/msp.txt");
+        let replies: std::collections::HashMap<u16, Vec<u8>> = capture
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split_whitespace();
+                let _name = f.next()?;
+                let code = f.next()?.parse().ok()?;
+                let hex = f.next().unwrap_or("");
+                let bytes = (0..hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                    .collect();
+                Some((code, bytes))
+            })
+            .collect();
+        let mut parser = MspParser::default();
+        let mut m = MockSerial::new(move |w| {
+            let mut out = Vec::new();
+            for ev in parser.feed(w) {
+                let MspEvent::Frame(f) = ev else { continue };
+                let payload = match f.code {
+                    codes::MSP2_MCU_INFO => mcu.map(|n| {
+                        let mut p = vec![MCU_TYPE_ID_PROVIDED_BY_NAME, n.len() as u8];
+                        p.extend(n);
+                        p
+                    }),
+                    c => replies.get(&c).cloned(),
+                };
+                out.extend(match payload {
+                    Some(p) => MspFrame::response(f.version, f.code, &p).encode().unwrap(),
+                    None => MspFrame {
+                        version: f.version,
+                        direction: Direction::Error,
+                        flag: 0,
+                        code: f.code,
+                        payload: vec![],
+                    }
+                    .encode()
+                    .unwrap(),
+                });
+            }
+            out
+        });
+        m.chunk = 5;
+        m
+    }
+
+    #[test]
+    fn identify_2026_6_2_sitl_capture() {
+        let id = MspClient::new(fake_fc_2026_6_capture(Some(b"SIMULATOR")))
+            .identify()
+            .unwrap();
+        assert_eq!(id.fc_variant, "BTFL");
+        assert_eq!(id.fc_version, "2026.6.2");
+        assert_eq!(id.api_version.to_string(), "1.48.0");
+        assert!(id.api_version.at_least(1, 46));
+        assert!(id.is_supported_betaflight());
+        assert_eq!(id.board_info.board_identifier, "SITL");
+        assert_eq!(
+            id.board_info.mcu_type_id,
+            Some(MCU_TYPE_ID_PROVIDED_BY_NAME)
+        );
+        assert_eq!(id.mcu_name.as_deref(), Some("SIMULATOR"));
+        assert_eq!(
+            crate::device::manager::fc_info(&id).mcu.as_deref(),
+            Some("SIMULATOR")
+        );
+        // 16427 (FLIGHT_PLAN) is sent twice by 2026.6.2; listed once, order kept.
+        assert_eq!(
+            id.build_options,
+            [
+                "USE_SERIALRX_CRSF",
+                "USE_SERIALRX_FPORT",
+                "USE_SERIALRX_GHST",
+                "USE_SERIALRX_IBUS",
+                "USE_SERIALRX_SBUS",
+                "USE_SERIALRX_SPEKTRUM",
+                "USE_TELEMETRY_SMARTPORT",
+                "USE_ALTITUDE_HOLD",
+                "USE_FLIGHT_PLAN",
+                "USE_GPS",
+                "USE_MAG",
+                "USE_POSITION_HOLD",
+                "USE_PWM_OUTPUT",
+            ]
+        );
+        // No USE_OSD_HD option: a definite "no HD OSD" from the option list.
+        assert_eq!(id.hd_osd_supported, Some(false));
+        assert_eq!(id.uid.unwrap().mcu_id(), "000000000000000100000002");
+    }
+
+    #[test]
+    fn identify_2026_6_without_mcu_info_keeps_mcu_unknown() {
+        // MSP2_MCU_INFO is best effort: an error or an empty name leaves the MCU unknown
+        // and identify still succeeds.
+        for mcu in [None, Some(&b""[..])] {
+            let id = MspClient::new(fake_fc_2026_6_capture(mcu))
+                .identify()
+                .unwrap();
+            assert_eq!(id.fc_version, "2026.6.2");
+            assert_eq!(id.mcu_name, None);
+            assert_eq!(crate::device::manager::fc_info(&id).mcu, None);
+        }
+    }
+
+    #[test]
+    fn parse_2026_6_version_and_mcu_info() {
+        let fc = hex_bytes("1a060208323032362e362e32");
+        assert_eq!(parse_fc_version(&fc).unwrap(), "2026.6.2");
+        assert_eq!(parse_fc_version(&[4, 5, 2]).unwrap(), "4.5.2");
+        let mut p = vec![254, 9];
+        p.extend(b"STM32F405");
+        assert_eq!(parse_mcu_info(&p).unwrap(), (254, "STM32F405".to_string()));
+        assert_eq!(parse_mcu_info(&[254, 0]).unwrap(), (254, String::new()));
+        assert!(parse_mcu_info(&[254, 9, b'S']).is_err());
+        assert!(parse_mcu_info(&[]).is_err());
+    }
+
+    fn hex_bytes(h: &str) -> Vec<u8> {
+        (0..h.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]

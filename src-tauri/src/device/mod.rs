@@ -26,6 +26,8 @@ pub mod rx_spi;
 pub mod sensors;
 pub mod serial;
 pub mod serial_ports;
+#[cfg(test)]
+mod sitl_smoke_tests;
 pub mod usb_ids;
 
 pub use manager::ConnectionManager;

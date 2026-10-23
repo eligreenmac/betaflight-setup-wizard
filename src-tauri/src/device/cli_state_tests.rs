@@ -29,8 +29,12 @@ enum Fw {
     V4_4,
     /// API 1.46: plain `exit` reboots too (`cliExitCmd` without `noreboot`).
     V4_5,
-    /// API 1.47 (2025.12), same CLI exit code as 4.5.
+    /// API 1.47 (2025.12): same CLI exit code as 4.5.
     V2025_12,
+    /// API 1.48 (2026.6): same CLI exit code (`exit` reboots, `exit noreboot` exists).
+    /// The CLI side reuses the 2025.12 dump. TODO(config#32): switch to a 2026.6 dump
+    /// once Config Engine Dev adds `tests/fixtures/2026.6/`.
+    V2026_6,
     /// 4.5 board whose `exit` leaves the CLI without rebooting (what `exit noreboot`
     /// does): recovery must reboot it over MSP so RAM is discarded.
     V4_5NoReboot,
@@ -41,7 +45,7 @@ impl Fw {
         let fw = match self {
             Fw::V4_4 => "4.4",
             Fw::V4_5 | Fw::V4_5NoReboot => "4.5",
-            Fw::V2025_12 => "2025.12",
+            Fw::V2025_12 | Fw::V2026_6 => "2025.12",
         };
         fixture(fw, "speedybeef405v4")
     }
@@ -50,9 +54,16 @@ impl Fw {
             Fw::V4_4 => 45,
             Fw::V4_5 | Fw::V4_5NoReboot => 46,
             Fw::V2025_12 => 47,
+            Fw::V2026_6 => 48,
         }
     }
-    const ALL: [Fw; 4] = [Fw::V4_4, Fw::V4_5, Fw::V2025_12, Fw::V4_5NoReboot];
+    const ALL: [Fw; 5] = [
+        Fw::V4_4,
+        Fw::V4_5,
+        Fw::V2025_12,
+        Fw::V2026_6,
+        Fw::V4_5NoReboot,
+    ];
 }
 
 /// Config's MockFc as the fake FC's CLI.
@@ -302,7 +313,7 @@ fn config_exit_and_discard_clear_cli_state() {
     assert!(r.msp_reboots().is_empty());
 
     // 4.5+: discard = `exit noreboot` + MSP_SET_REBOOT, then reconnect.
-    for fw in [Fw::V4_5, Fw::V2025_12] {
+    for fw in [Fw::V4_5, Fw::V2025_12, Fw::V2026_6] {
         let r = rig(fw);
         r.verify();
         r.m.with_link(|l| {
@@ -501,6 +512,7 @@ fn probe_board_reports_hd_osd_per_version() {
         (Fw::V4_4, None),
         (Fw::V4_5, Some(true)),
         (Fw::V2025_12, Some(true)),
+        (Fw::V2026_6, Some(true)),
     ] {
         let r = rig(fw);
         let info = r.m.identify().unwrap();

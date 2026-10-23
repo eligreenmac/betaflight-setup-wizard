@@ -51,7 +51,9 @@ pub const SERIAL_FUNCTIONS: &[(u8, &str)] = &[
     (16, "FRSKY_OSD"),
     (17, "VTX_MSP"),
     (18, "GIMBAL"),
-    (19, "OSD_CUSTOM_TEXT"),
+    // 2026.6 (`io/serial.h`); bits 19+ do not exist on 4.4 / 4.5 / 2025.12.
+    (19, "LIDAR_NL"),
+    (20, "OSD_CUSTOM_TEXT"),
 ];
 
 pub const FUNCTION_MSP: u32 = 1 << 0;
@@ -469,6 +471,15 @@ mod tests {
         assert!(parse_msp2_serial_config(&[0]).unwrap().is_empty());
         assert!(parse_msp2_serial_config(&[2, 1, 2, 3]).is_err());
         assert!(parse_msp2_serial_config(&[]).is_err());
+    }
+
+    #[test]
+    fn function_bits_2026_6() {
+        // 2026.6 added LIDAR_NL (bit 19) and OSD_CUSTOM_TEXT (bit 20).
+        let (names, unknown) = decode_function_mask((1 << 18) | (1 << 19) | (1 << 20) | (1 << 25));
+        assert_eq!(names, ["GIMBAL", "LIDAR_NL", "OSD_CUSTOM_TEXT"]);
+        assert_eq!(unknown, 1 << 25);
+        assert_eq!(label_for(65, IdentifierScheme::UartBase50), Some("UART15"));
     }
 
     #[test]

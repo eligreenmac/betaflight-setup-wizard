@@ -1,0 +1,15 @@
+{
+ "cloudBuild": true,
+ "releaseType": "Stable",
+ "release": "2026.6.2",
+ "tag": "2026.6.X",
+ "releaseUrl": "https://github.com/betaflight/betaflight/releases/tag/2026.6.2",
+ "url": "/api/builds",
+ "date": "16-Sep-2026 00:00",
+ "target": "SPEEDYBEEF405V4",
+ "manufacturer": "SPBE",
+ "mcu": "STM32F405",
+ "configuration": [],
+ "configHash": "sha256_7a95491001afa775b933dd9b628525bd28f7ed93e982a2a42f08319b86d5335c",
+ "extension": "hex"
+}

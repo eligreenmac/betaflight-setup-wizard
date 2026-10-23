@@ -417,10 +417,15 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   Example: payload `2b 00 33 00 0b 51 38 31 33 37 38 32` → `0033002b3138510b32383733`.
   Fixed width, so it is unambiguous as a key (Configurator's unpadded `toString(16)` form is
   not; it is not used). → backup folder `<boardUid>`; reconnect compares the raw words.
+- **`FcInfo.mcu`** (display only). On 4.4 to 2025.12 it is the `mcuTypeNames` entry for the
+  MSP_BOARD_INFO mcu type id (e.g. `F40X`). 2026.6 always sends id 254
+  (`MCU_TYPE_ID_PROVIDED_BY_NAME`), so `device_identify` then reads `MSP2_MCU_INFO` (0x300C:
+  u8 id + pstring) and reports that name (e.g. `STM32F405`, `SIMULATOR` on SITL). It is best
+  effort: `null` if the request fails.
 - **Serial port list** (`FcInfo.serialPorts`): read by `device_identify` with
   `MSP2_COMMON_SERIAL_CONFIG` (0x1009), falling back to `MSP_CF_SERIAL_CONFIG` (54).
   `identifier` is exactly what the board sent (never remapped); `name` is derived from the
-  firmware enum (§5 table; 2025.12 also has UART0=50 and PIOUART0..9=70..79; unknown ids →
+  firmware enum (§5 table; 2025.12+ also has UART0=50 and PIOUART0..9=70..79; unknown ids →
   `PORT<id>`). Writes must use `identifier`. An invalid serial layout makes the firmware reset
   all ports at boot, so any writer must validate first (config's job).
   `device::serial_ports` exposes the MSP/CLI parsers for config (C2) to reuse.
@@ -433,11 +438,12 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   It leaves the CLI with `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC
   (the manager reconnects) — prefer running it where a reboot is expected anyway.
 - **Build options** (`FcInfo.buildOptions`): `device_identify` reads MSP_BUILD_INFO (5). From
-  API 1.46 (4.5, 2025.12) the reply is `date[11] time[8] gitRev[7]` followed by the compiled-in
+  API 1.46 (4.5, 2025.12, 2026.6) the reply is `date[11] time[8] gitRev[7]` followed by the compiled-in
   option ids as u16 LE until the end of the payload (firmware `msp/msp_build_info.c`
   `sbufWriteBuildInfoFlags`). Ids are mapped to Build API defines (`msp/msp_build_info.h`,
   e.g. 16416 `USE_OSD_SD`, 16417 `USE_OSD_HD`, 4097 `USE_SERIALRX_CRSF`); unknown ids are
-  dropped. 4.4 (API 1.45) sends only date/time/gitRev → `[]`.
+  dropped, and duplicates are listed once (2026.6.2 sends 16427 `USE_FLIGHT_PLAN` twice). 4.4
+  (API 1.45) sends only date/time/gitRev → `[]`.
 - **HD OSD support** (`FcInfo.hdOsdSupported`): whether the build has `USE_OSD_HD` (without it
   the firmware forces `vcd_video_system` HD → AUTO, `io/displayport_msp.c`). First firm answer wins:
   1. MSP_BUILD_INFO option list (4.5+, non-empty): `true` iff it contains 16417 `USE_OSD_HD`,

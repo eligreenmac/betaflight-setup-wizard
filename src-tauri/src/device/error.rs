@@ -20,6 +20,8 @@ pub enum MotorTestRefusal {
     Mode3d,
     #[error("motor output is disabled (no ESC protocol configured)")]
     MotorsDisabled,
+    #[error("the wizard does not motor-test this ESC protocol (id {protocol}, e.g. DroneCAN)")]
+    UnsupportedProtocol { protocol: u8 },
 }
 
 /// Everything that can go wrong talking to a flight controller.

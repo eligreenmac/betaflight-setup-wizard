@@ -393,7 +393,9 @@ mod tests {
     use crate::flasher::build_api::tests::MockHttp;
     use crate::flasher::dfu::sim::SimDfu;
     use crate::flasher::hex::to_intel_hex;
-    use crate::flasher::options::tests::{OPTIONS_2025_12_2, OPTIONS_4_4_3, OPTIONS_4_5_2};
+    use crate::flasher::options::tests::{
+        OPTIONS_2025_12_2, OPTIONS_2026_6_2, OPTIONS_4_4_3, OPTIONS_4_5_2,
+    };
 
     fn svc(http: MockHttp, dir: &Path) -> FirmwareService<MockHttp> {
         FirmwareService::new(
@@ -439,6 +441,69 @@ mod tests {
         assert_eq!(offline.list_targets().unwrap()[0].target, "STM32F405");
         assert_eq!(offline.list_releases("STM32F405").unwrap().len(), 2);
         assert!(offline.list_releases("OTHER").is_err());
+    }
+
+    /// Live Build API replies fetched 2026-10-23 (tests/fixtures/build-api/README.md).
+    #[test]
+    fn live_2026_6_release_list_and_target_detail_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = svc(
+            MockHttp::default().reply(
+                200,
+                include_str!("../../tests/fixtures/build-api/target-SPEEDYBEEF405V4.json"),
+            ),
+            dir.path(),
+        );
+        let r = s.list_releases("SPEEDYBEEF405V4").unwrap();
+        let find = |v: &str| r.iter().find(|x| x.release == v);
+        assert!(!find("2026.6.2").unwrap().prerelease);
+        assert!(!find("2026.6.1").unwrap().prerelease);
+        assert!(find("2026.12.0-alpha").unwrap().prerelease);
+        assert!(!find("2025.12.5").unwrap().prerelease);
+        // Newest first, as the API lists them.
+        assert_eq!(r[0].release, "2026.12.0-alpha");
+        assert_eq!(r[1].release, "2026.6.2");
+
+        let d: crate::flasher::build_types::TargetDetail = serde_json::from_str(include_str!(
+            "../../tests/fixtures/build-api/build-2026.6.2-SPEEDYBEEF405V4.json"
+        ))
+        .unwrap();
+        assert_eq!(d.release.as_deref(), Some("2026.6.2"));
+        assert_eq!(d.cloud_build, Some(true));
+        assert_eq!(d.mcu.as_deref(), Some("STM32F405"));
+        assert_eq!(d.url.as_deref(), Some("/api/builds"));
+    }
+
+    #[test]
+    fn fetch_2026_6_2_with_2026_board_options() {
+        let board: Vec<String> = options::offered(&serde_json::from_str(OPTIONS_2026_6_2).unwrap())
+            .into_iter()
+            .collect();
+        let board: Vec<&str> = board.iter().map(String::as_str).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let s = svc(
+            build_replies(MockHttp::default().reply(200, OPTIONS_2026_6_2)),
+            dir.path(),
+        );
+        let img = s
+            .fetch(
+                &req_with(
+                    "2026.6.2",
+                    &board,
+                    &["USE_SERIALRX_SPEKTRUM", "USE_RX_PPM", "USE_OSD_HD"],
+                ),
+                &mut |_| {},
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert!(img.dropped_options.is_empty());
+        assert_eq!(
+            s.api_calls()[0],
+            "GET https://build.example/api/options/2026.6.2"
+        );
+        let sent = posted_options(&s);
+        assert!(sent.iter().any(|o| o == "USE_FLIGHT_PLAN"));
+        assert_eq!(sent.len(), board.len());
     }
 
     #[test]
