@@ -23,7 +23,8 @@ pub mod sensor_bits {
 }
 
 /// `ARMING_DISABLED_CALIBRATING` (runtime_config.h): set while any sensor calibrates.
-pub const ARMING_DISABLED_CALIBRATING: u32 = 1 << 12;
+/// Bit 12 on every line, 4.4 through 2026.6 (see [`crate::device::arming`]).
+pub const ARMING_DISABLED_CALIBRATING: u32 = 1 << crate::device::arming::CALIBRATING_BIT;
 /// MSP_BOARD_INFO configuration problem `PROBLEM_ACC_NEEDS_CALIBRATION`.
 pub const PROBLEM_ACC_NEEDS_CALIBRATION: u32 = 1 << 0;
 /// `ACC_NONE` / `BARO_NONE` / `MAG_NONE`: the sensor is disabled in the config.
@@ -411,8 +412,8 @@ pub fn hardware_name(kind: SensorKind, api_minor: u8, id: u8) -> Option<String> 
         (SensorKind::Acc, 46) => ACC_45,
         (SensorKind::Gyro, 47) => GYRO_2025,
         (SensorKind::Acc, 47) => ACC_2025,
-        (SensorKind::Baro, 47) => BARO_45,
-        (SensorKind::Mag, 47) => MAG_45,
+        (SensorKind::Baro, 46 | 47) => BARO_45,
+        (SensorKind::Mag, 46 | 47) => MAG_45,
         (SensorKind::Gyro, _) => GYRO_2026,
         (SensorKind::Acc, _) => ACC_2026,
         (SensorKind::Baro, _) => BARO_2026,
@@ -951,9 +952,19 @@ mod tests {
         assert_eq!(n(Baro, 47, 10), "LPS22DF");
         assert_eq!(n(Mag, 45, 6), "LIS3MDL");
         assert_eq!(n(Mag, 46, 6), "LIS2MDL");
+        // 4.5 keeps the 4.5 baro/mag tables (regression: not the 2026.6 ones).
+        assert_eq!(n(Baro, 46, 11), "VIRTUAL");
+        assert_eq!(n(Mag, 46, 5), "QMC5883");
+        assert_eq!(n(Mag, 47, 5), "QMC5883");
         assert_eq!(n(Mag, 47, 1), "NONE");
         assert_eq!(n(Mag, 47, 99), "UNKNOWN_99");
         // 2026.6 (API 1.48): new parts appended before VIRTUAL, which therefore moved.
+        // gyro is NONE=0 / AUTO=1 (GYRO_NONE, GYRO_DEFAULT); acc/baro/mag are AUTO=0 / NONE=1.
+        assert_eq!(n(Gyro, 48, 0), "NONE");
+        assert_eq!(n(Gyro, 48, 1), "AUTO");
+        assert_eq!(n(Acc, 48, 0), "AUTO");
+        assert_eq!(n(Baro, 48, 1), "NONE");
+        assert_eq!(n(Mag, 48, 1), "NONE");
         assert_eq!(n(Gyro, 48, 15), "BMI270");
         assert_eq!(n(Gyro, 48, 26), "ICM56686");
         assert_eq!(n(Gyro, 48, 27), "VIRTUAL");

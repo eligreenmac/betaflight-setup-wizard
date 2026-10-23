@@ -121,6 +121,9 @@ impl<C: HttpClient> FirmwareService<C> {
         Ok(r.releases
             .into_iter()
             .filter(|r| !r.withdrawn)
+            // Only lines the config engine can configure (one source of truth:
+            // `config::firmware::SUPPORTED_LINES`). Drops e.g. 2026.12.0-alpha and <= 4.3.
+            .filter(|r| crate::config::firmware::is_supported(&r.release))
             .map(|r| FirmwareRelease {
                 prerelease: !r.is_stable(),
                 release: r.release,
@@ -443,6 +446,32 @@ mod tests {
         assert!(offline.list_releases("OTHER").is_err());
     }
 
+    #[test]
+    fn release_list_keeps_only_supported_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = svc(
+            MockHttp::default().reply(
+                200,
+                r#"{"releases":[
+                {"release":"2026.12.0","type":"Stable"},
+                {"release":"2026.6.2","type":"Stable"},
+                {"release":"2025.12.5","type":"Stable"},
+                {"release":"4.5.5","type":"Stable"},
+                {"release":"4.4.3","type":"Stable"},
+                {"release":"4.3.2","type":"Stable"},
+                {"release":"nightly","type":"Unstable"}]}"#,
+            ),
+            dir.path(),
+        );
+        let r: Vec<String> = s
+            .list_releases("T")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.release)
+            .collect();
+        assert_eq!(r, ["2026.6.2", "2025.12.5", "4.5.5", "4.4.3"]);
+    }
+
     /// Live Build API replies fetched 2026-10-23 (tests/fixtures/build-api/README.md).
     #[test]
     fn live_2026_6_release_list_and_target_detail_parse() {
@@ -458,11 +487,15 @@ mod tests {
         let find = |v: &str| r.iter().find(|x| x.release == v);
         assert!(!find("2026.6.2").unwrap().prerelease);
         assert!(!find("2026.6.1").unwrap().prerelease);
-        assert!(find("2026.12.0-alpha").unwrap().prerelease);
         assert!(!find("2025.12.5").unwrap().prerelease);
+        // 2026.12.0-alpha is outside the supported lines (config::firmware::is_supported).
+        assert!(find("2026.12.0-alpha").is_none());
+        // 2025.12.0-KAACK (Unstable) is on a supported line: listed as a prerelease.
+        assert!(find("2025.12.0-KAACK").unwrap().prerelease);
+        assert_eq!(r.len(), 10);
         // Newest first, as the API lists them.
-        assert_eq!(r[0].release, "2026.12.0-alpha");
-        assert_eq!(r[1].release, "2026.6.2");
+        assert_eq!(r[0].release, "2026.6.2");
+        assert_eq!(r.last().unwrap().release, "2025.12.0-KAACK");
 
         let d: crate::flasher::build_types::TargetDetail = serde_json::from_str(include_str!(
             "../../tests/fixtures/build-api/build-2026.6.2-SPEEDYBEEF405V4.json"

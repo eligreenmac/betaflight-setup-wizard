@@ -77,13 +77,8 @@ pub async fn flasher_list_targets(app: AppHandle) -> AppResult<Vec<BoardTarget>>
     blocking(move || firmware_service(&app)?.list_targets()).await
 }
 
-/// Releases available for a target (withdrawn releases are hidden).
-///
-/// TODO(config#32): once `feat/config-2026.6` is on main, also hide (or mark) releases outside
-/// the supported lines with `crate::config::firmware::is_supported(&release.release)`, the one
-/// source of truth (`config::firmware::SUPPORTED_LINES`); do not copy the list here. The Build
-/// API already lists `2026.12.0-alpha` (Unstable) for current targets, which the config engine
-/// cannot configure.
+/// Releases available for a target: withdrawn releases and releases outside the supported
+/// lines (`config::firmware::is_supported`, e.g. 2026.12.0-alpha) are hidden.
 #[tauri::command]
 pub async fn flasher_list_releases(
     app: AppHandle,

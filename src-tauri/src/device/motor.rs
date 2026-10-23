@@ -121,6 +121,15 @@ impl FcStatus {
     pub fn is_armed(&self) -> bool {
         self.mode_flags & 1 != 0
     }
+
+    /// Set arming-disable flag names for the firmware line (`api`); empty without STATUS_EX.
+    /// The bit layout differs per line (2026.6 inserted AUTOPILOT_SW at bit 28 and moved
+    /// ARM_SWITCH to 29); see [`crate::device::arming`].
+    pub fn arming_disabled_names(&self, api: crate::device::msp::ApiVersion) -> Vec<&'static str> {
+        self.arming_disable_flags
+            .map(|f| crate::device::arming::decode(f, api).0)
+            .unwrap_or_default()
+    }
 }
 
 pub fn parse_status(p: &[u8]) -> Result<FcStatus> {

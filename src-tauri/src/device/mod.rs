@@ -6,6 +6,7 @@
 //!   - `ConnectionManager` (Tauri managed state, device PR) lends `&mut dyn FcLink`
 //!     (`Connection` + `Reconnect`, below) to config/flasher; see ARCHITECTURE.md §4.1.
 
+pub mod arming;
 pub mod attitude;
 pub mod build_info;
 pub mod cli;
