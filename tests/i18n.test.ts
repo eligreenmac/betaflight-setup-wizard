@@ -32,6 +32,14 @@ function sourceFiles(dir: string): string[] {
 const SRC = sourceFiles(join(__dirname, "../src")).map((f) => readFileSync(f, "utf8"));
 
 describe("i18n", () => {
+  it("no 'USB power only' / 'battery disconnected' motor-test wording remains (en, he)", () => {
+    const banned = [/usb power only/i, /usb only/i, /battery (is )?disconnected/i, /battery unplugged/i, /do not connect the battery/i, /USB בלבד/, /הסוללה מנותקת/, /אל תחברו את הסוללה/];
+    for (const [k, v] of [...Object.entries(EN), ...Object.entries(HE)]) for (const re of banned) expect(re.test(v), `${k}: ${v}`).toBe(false);
+    expect(EN["esc.motorTest.ackBattery"]).toBe("The battery is connected.");
+    expect(HE["esc.motorTest.ackBattery"]).toBe("הסוללה מחוברת.");
+    expect(Object.keys(EN).some((k) => /usbOnly|batteryChecks/.test(k))).toBe(false);
+  });
+
   it("he and en have the same keys", () => {
     expect(Object.keys(HE).sort()).toEqual(Object.keys(EN).sort());
   });

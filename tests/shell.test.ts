@@ -123,13 +123,78 @@ describe("steps", () => {
     expect(mock.device.motorsSpinning.size).toBe(0);
   });
 
+  for (const ack of ["ack-props", "ack-battery"] as const) {
+    it(`esc: unticking ${ack} stops spinning motors and disables the buttons again`, async () => {
+      await boot();
+      await toComponents();
+      nav.currentId = "esc";
+      await settle();
+      await w!.get('[data-test="ack-props"]').setValue(true);
+      await w!.get('[data-test="ack-battery"]').setValue(true);
+      await w!.get('[data-motor="1"]').trigger("click");
+      await settle();
+      expect(mock.device.motorsSpinning.has(1)).toBe(true);
+      await w!.get(`[data-test="${ack}"]`).setValue(false);
+      await settle();
+      expect(motorTest.state.active).toBe(false);
+      expect(motorTest.state.lastStop).toBe("acks-withdrawn");
+      expect(mock.device.motorsSpinning.size).toBe(0);
+      expect(w!.get('[data-motor="1"]').attributes("disabled")).toBeDefined();
+    });
+  }
+
+  it("esc: either acknowledgement alone is not enough (no backend call)", async () => {
+    await boot();
+    await toComponents();
+    nav.currentId = "esc";
+    await settle();
+    const before = mock.device.motorLog.length;
+    for (const [props, battery] of [[true, false], [false, true]] as const) {
+      wizard.ui.propsOffAck = props;
+      wizard.ui.batteryOnAck = battery;
+      await settle();
+      expect(w!.get('[data-motor="0"]').attributes("disabled")).toBeDefined();
+      await expect(motorTest.start(0, { port: wizard.connectedPath, acks: { propsRemoved: props, batteryConnected: battery } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
+    }
+    expect(mock.device.motorLog.length).toBe(before);
+    expect(mock.device.motorsSpinning.size).toBe(0);
+  });
+
+  for (const locale of ["en", "he"] as const) {
+    it(`esc: battery-connected wording, safety warning and the 'Motors not spinning?' hint (${locale})`, async () => {
+      setLocale(locale);
+      await boot();
+      await toComponents();
+      nav.currentId = "esc";
+      await settle();
+      const tr = (k: string) => i18n.global.t(k);
+      expect(w!.get('[data-test="ack-battery"]').element.parentElement!.textContent).toContain(tr("esc.motorTest.ackBattery"));
+      expect(w!.get('[data-test="motor-safety"]').text()).toBe(tr("esc.motorTest.keepClear"));
+      expect(tr("esc.motorTest.keepClear")).toContain(locale === "he" ? "שיער" : "hair");
+      expect(w!.find('[data-test="no-spin-hint"]').exists()).toBe(false);
+      wizard.ui.propsOffAck = true;
+      wizard.ui.batteryOnAck = true;
+      await settle();
+      await w!.get('[data-motor="0"]').trigger("click");
+      await settle();
+      const hint = w!.get('[data-test="no-spin-hint"]').text();
+      expect(hint).toContain(tr("esc.motorTest.noSpinTitle"));
+      expect(hint).toContain(locale === "he" ? "שהסוללה מחוברת" : "the battery is connected");
+      // Seeing the right motor spin hides the hint.
+      wizard.ui.motorOrderOk = true;
+      await settle();
+      expect(w!.find('[data-test="no-spin-hint"]').exists()).toBe(false);
+      setLocale("en");
+    });
+  }
+
   it("esc: leaving the step stops a running motor test", async () => {
     await boot();
     await toComponents();
     nav.currentId = "esc";
     await settle();
     wizard.ui.propsOffAck = true;
-    wizard.ui.batteryOffAck = true;
+    wizard.ui.batteryOnAck = true;
     await settle();
     await w!.get('[data-motor="2"]').trigger("click");
     await settle();
@@ -140,12 +205,13 @@ describe("steps", () => {
     expect(mock.device.motorsSpinning.size).toBe(0);
   });
 
-  it("esc: battery-powered checks are a disabled phase-2 stub with a warning", async () => {
+  it("esc: only the advanced ESC checks remain a disabled phase-2 stub", async () => {
     await boot();
     await toComponents();
     nav.currentId = "esc";
     await settle();
-    expect(w!.text()).toContain("These checks need the battery connected");
+    expect(w!.text()).toContain("Advanced ESC checks");
+    expect(w!.text()).toContain("Bidirectional DShot RPM check");
     const stubs = w!.findAll(".disabled-stub input");
     expect(stubs.length).toBeGreaterThan(0);
     for (const s of stubs) expect(s.attributes("disabled")).toBeDefined();
