@@ -1,0 +1,48 @@
+diff all
+
+# version
+# Betaflight / SITL (SITL) 2026.6.2 Oct 23 2026 / 17:42:13 (norevision) MSP API: 1.48
+
+# start the command batch
+batch start
+
+# reset configuration to default settings
+defaults nosave
+
+mcu_id 000000000000000100000002
+signature 
+
+profile 0
+
+profile 1
+
+profile 2
+
+profile 3
+
+# restore original profile selection
+profile 0
+
+rateprofile 0
+
+rateprofile 1
+
+rateprofile 2
+
+rateprofile 3
+
+battery_profile 0
+
+battery_profile 1
+
+battery_profile 2
+
+# restore original rateprofile selection
+rateprofile 0
+
+# restore original battery_profile selection
+battery_profile 0
+
+# save configuration
+save
+# 

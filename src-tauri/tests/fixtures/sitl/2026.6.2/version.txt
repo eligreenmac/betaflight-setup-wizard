@@ -1,0 +1,4 @@
+version
+# Betaflight / SITL (SITL) 2026.6.2 Oct 23 2026 / 17:42:13 (norevision) MSP API: 1.48
+
+# 

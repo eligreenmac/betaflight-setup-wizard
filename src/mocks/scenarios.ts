@@ -44,6 +44,12 @@
  * BUILD_OPTIONS_UNAVAILABLE; Try again works. `fw-option-unsupported`: only 2025.12.0-RC1
  * can be built with the requirements (REQUIRED_OPTION_UNSUPPORTED otherwise).
  *
+ * Firmware lines: like the real config engine, config_firmware_catalog and
+ * config_osd_default_layout answer UNSUPPORTED_FIRMWARE outside MOCK_CONFIG_LINES (the UI
+ * learns the supported lines from that, wizard/firmwareSupport.ts). `fw-too-new`: the board
+ * runs Betaflight 2026.6.2, a line the config engine can't set up yet (what v0.1.0-2 saw);
+ * the releases include 2026.6.x, which the wizard marks and won't pick.
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
@@ -90,6 +96,7 @@ export const SCENARIOS = [
   "fw-dropped-options",
   "fw-options-unavailable",
   "fw-option-unsupported",
+  "fw-too-new",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -181,13 +188,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const events = createEmitter();
 
   const device: MockDevice = {
-    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : scenario === "fw-2025" ? "2025.12.0" : "4.5.1",
+    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : scenario === "fw-2025" ? "2025.12.0" : scenario === "fw-too-new" ? "2026.6.2" : "4.5.1",
     // 4.x: UART1 = 0; 2025.12+: UART1 = 51. The UI must only use the names.
     ports: [
       { name: "VCP", identifier: 20, functionMask: FN.MSP, isConnectionPort: true },
       ...[0, FN.RX_SERIAL, FN.MSP | FN.VTX_MSP, 0, 0, FN.MSP].map((functionMask, i) => ({
         name: `UART${i + 1}`,
-        identifier: (scenario === "fw-2025" ? 51 : 0) + i,
+        identifier: (scenario === "fw-2025" || scenario === "fw-too-new" ? 51 : 0) + i,
         functionMask,
         isConnectionPort: false,
       })),
@@ -315,6 +322,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     },
     flasher_list_targets: () => [{ target: "SPEEDYBEEF405V4", manufacturer: "SPBE", mcu: "STM32F405" }],
     flasher_list_releases: () => [
+      ...(scenario === "fw-too-new"
+        ? [
+            { release: "2026.6.2", prerelease: false },
+            { release: "2026.6.1", prerelease: false },
+            { release: "2025.12.1", prerelease: false },
+          ]
+        : []),
       { release: "2025.12.0-RC1", prerelease: true },
       { release: "4.5.2", prerelease: false },
       { release: "4.5.1", prerelease: false },
@@ -424,9 +438,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       return Array.from({ length: 6 }, (_, i) => [...phrase].reduce((h, c) => (h * 31 + c.charCodeAt(0) + i) & 0xff, 7));
     },
     // Shared #66 (real in config, #67): demo answers only. Pure (no board I/O), so safe next to a real board.
-    config_firmware_catalog: ({ firmwareVersion }) => mockFirmwareCatalog(firmwareVersion),
+    config_firmware_catalog: ({ firmwareVersion }) => {
+      mockCheckLine(firmwareVersion);
+      return mockFirmwareCatalog(firmwareVersion);
+    },
     config_osd_default_layout: ({ videoSystem, firmwareVersion }) => {
       legacy("config_osd_default_layout");
+      mockCheckLine(firmwareVersion);
       if (!["AUTO", "PAL", "NTSC", "HD"].includes(videoSystem)) throw err("CONFIG_UNSUPPORTED", `unknown video system ${String(videoSystem)}`);
       return mockOsdLayout(videoSystem, firmwareVersion);
     },
@@ -680,6 +698,20 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
   IRC_TRAMP: "VTX_TRAMP",
   VTX_MSP: "VTX_MSP",
 };
+
+/**
+ * Lines the mock config engine can set up: a copy of the real backend's gate
+ * (config::firmware::Dialect::from_version) for the demo only. The UI never reads this; it
+ * asks config_firmware_catalog. Add a line here when Config adds it.
+ */
+export const MOCK_CONFIG_LINES = ["4.4", "4.5", "2025.12"];
+
+/** UNSUPPORTED_FIRMWARE for a parseable version outside MOCK_CONFIG_LINES (empty / unparseable = lenient, the 4.5 lists). */
+function mockCheckLine(firmwareVersion: string): void {
+  const m = /^\s*(\d+)\.(\d+)/.exec(firmwareVersion ?? "");
+  if (m && !MOCK_CONFIG_LINES.includes(`${+m[1]}.${+m[2]}`))
+    throw err("UNSUPPORTED_FIRMWARE", `Betaflight ${firmwareVersion.trim()} is not supported; supported lines are ${MOCK_CONFIG_LINES.map((l) => `${l}.x`).join(", ")}`);
+}
 
 const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
 

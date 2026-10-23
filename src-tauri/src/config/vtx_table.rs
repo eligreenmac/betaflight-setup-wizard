@@ -1,5 +1,5 @@
 //! `vtxtable` state as Betaflight keeps it (cli.c `cliVtxTable` / `printVtxTable`,
-//! identical in 4.4.3, 4.5.5 and 2025.12.5). Used to render the generator's commands,
+//! identical in 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2). Used to render the generator's commands,
 //! parse the table out of `dump all` for verify, and simulate it in MockFc.
 
 use crate::model::VtxTable;

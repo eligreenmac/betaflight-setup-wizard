@@ -16,6 +16,7 @@ All Betaflight material is GPL-3.0-only, the same licence as this app.
 | 4.4.3 | `4.4.3` | `738127e7e11da587f63b9531ec732a37bdb436b0` |
 | 4.5.5 | `4.5.5` | `4adbd3ef7cb546947600e5f747bd5453c9573063` |
 | 2025.12.5 | `2025.12.5` | `7348054f268f0058574719c134e9f149565bb8ea` |
+| 2026.6.2 | `2026.6.2` | `e0b7bb01b17b21351057e9ead2d1ab39dd44fa16` |
 
 Source: https://github.com/betaflight/betaflight (GPL-3.0). Built with
 `tests/sitl/build-sitl.sh <tag>`, which builds `TARGET=SITL` and appends the wizard
@@ -41,12 +42,18 @@ Findings that tests now pin (`src/config/tests_sitl.rs`):
   `unavailable` (4.x) / `Unavailable GPS` (2025.12) **without** `###ERROR`.
 - `batch end` after an error prints
   `###ERROR IN batch: ERRORS WERE DETECTED - PLEASE REVIEW BEFORE CONTINUING###`.
-- **`save` after a failed batch still saves** (all three versions). The engine therefore
+- **`save` after a failed batch still saves** (all four versions). The engine therefore
   sends `exit`, never `save`, once any command failed. MockFc models this.
 - 2025.12 `MSP_FC_VERSION` is `yy month patch` + a length-prefixed version string
   (`19 0c 05 09 "2025.12.5"`); decoders must use the string.
 - `MSP_UID` is three LE u32 words; rendered `%08x` × 3 it equals the CLI `mcu_id`.
-- `dshot_idle_value` (4.x) only exists with DSHOT; 2025.12 has `motor_idle` always.
+- `dshot_idle_value` (4.x) only exists with DSHOT; 2025.12+ has `motor_idle` always.
+- 2026.6: MSP API 1.48 (`00 01 30`); `MSP_BOARD_INFO` MCU type is `fe` (254,
+  `MCU_TYPE_ID_PROVIDED_BY_NAME`, build/build_config.h), the name comes from
+  `MSP2_MCU_INFO`. `dump all` / `diff all` have `battery_profile 0..2` sections and a
+  `# restore original battery_profile selection` block; the SITL build (USE_FLIGHT_PLAN,
+  common_post.h) also prints `waypoint` lines and `ap_*` settings. `feature` lists `RX_MSP`
+  again and adds `RX_UDP`. `capture.py` accepts the new sections.
   `resource` is not compiled into SITL (it is on every F4/F7 build).
 
 ## 2. Board definitions: `boards/`
@@ -54,12 +61,12 @@ Findings that tests now pin (`src/config/tests_sitl.rs`):
 | File | Source | Revision |
 |---|---|---|
 | `boards/unified-targets/SPBE-SPEEDYBEEF405V4.config`, `HAMO-CRAZYBEEF4SX1280.config` | https://github.com/betaflight/unified-targets `configs/default/` | `2ac098da` (2026-07-15) |
-| `boards/config/SPEEDYBEEF405V4/config.h`, `CRAZYBEEF4SX1280/config.h` | https://github.com/betaflight/config `configs/` | `7b1f01a25d8c` (2026-07-18, branches `4.5-config` = `2025.12-config`; identical to the 2025.12.5 submodule pin `92c695af` for these boards) |
+| `boards/config/SPEEDYBEEF405V4/config.h`, `CRAZYBEEF4SX1280/config.h` | https://github.com/betaflight/config `configs/` | `7b1f01a25d8c` (2026-07-18, branches `4.5-config` = `2025.12-config`; identical to the 2025.12.5 submodule pin `92c695af` and to the 2026.6.2 `src/config/configs/{SPBE/SPEEDYBEEF405V4,HAMO/CRAZYBEEF4SX1280}/config.h` for these boards) |
 
-Verbatim, GPL-3.0. 4.4 builds use the unified-target `.config`; 4.5 and 2025.12 build
-the board from `config.h`.
+Verbatim, GPL-3.0. 4.4 builds use the unified-target `.config`; 4.5, 2025.12 and 2026.6
+build the board from `config.h`.
 
-## 3. Composed board dumps: `4.4/`, `4.5/`, `2025.12/` `*.dump.txt`
+## 3. Composed board dumps: `4.4/`, `4.5/`, `2025.12/`, `2026.6/` `*.dump.txt`
 
 Written by `tests/sitl/compose.py`, three layers:
 
@@ -78,7 +85,7 @@ Batch 2 (beepers, OSD) adds to the overlay, each from the firmware source:
 
 - `beeper` / `beacon` sections (`io/beeper.c` `beeperTable`, all beepers on, both DShot
   beacon conditions off). 2025.12 prints `CRASHFLIP` (4.x: `CRASH_FLIP`) and has no
-  `RC_SMOOTHING_INIT_FAIL`: 24 / 24 / 23 lines.
+  `RC_SMOOTHING_INIT_FAIL`: 24 / 24 / 23 / 23 lines (2026.6 = 2025.12).
 - every `osd_<element>_pos` the board's build has (`cli/settings.c`, defaults from
   `osd/osd.c` `pgResetFn_osdElementConfig`). Defaults are hidden at the centre of the
   default canvas: 4.4 SD (15,7), e.g. `osd_vbat_pos = 234`; 4.5 / 2025.12 HD (26,10),
@@ -86,9 +93,16 @@ Batch 2 (beepers, OSD) adds to the overlay, each from the firmware source:
   at (centre-6, centre+3): 14665 / 14772. `gps_lap_*` need `USE_GPS_LAP_TIMER` (cloud-build option, not included);
   `lidar_dist` needs `USE_RANGEFINDER`, which 2025.12 enables only with >= 1024 KB flash
   (F405 yes, F411 no).
-- `osd_displayport_device`: AUTO on 4.4, **MSP on 4.5 / 2025.12** (`USE_OSD_HD` is in
+- 2026.6 adds `osd_custom_serial_text_pos` (every OSD build), `osd_battery_profile_name_pos`
+  (`USE_PROFILE_NAMES`) and `osd_pos_hold_ready_pos` (`USE_POSITION_HOLD`, >= 1024 KB flash:
+  F405 yes, F411 no). `osd_wp_*` / `osd_nav_map_pos` need `USE_FLIGHT_PLAN` (SITL / cloud
+  builds only), so the board dumps drop them, together with the SITL-only `waypoint` lines
+  and `ap_*` settings (`SITL_ONLY_*` in compose.py). Other defaults are the 2025.12 ones
+  (osd.c 438-472). DShot default is DSHOT600 on F405/F411 (pg/motor.c:66); the GPS provider
+  default is UBLOX on boards (VIRTUAL only on SITL, pg/gps.c).
+- `osd_displayport_device`: AUTO on 4.4, **MSP on 4.5 / 2025.12 / 2026.6** (`USE_OSD_HD` is in
   `common_pre.h`), the earlier fixtures had AUTO there. `osd_canvas_width/height` 53/20
-  exist on 4.4 / 4.5 only (2025.12: `#ifdef OSD_CANVAS_SIZE_DEBUG`).
+  exist on 4.4 / 4.5 only (2025.12+: `#ifdef OSD_CANVAS_SIZE_DEBUG`).
   `vcd_video_system = AUTO`, `displayport_msp_col/row_adjust = 0`.
 
 Consequences now covered by tests: the SpeedyBee F405 V4 ships with UART2 = RX_SERIAL,
@@ -110,6 +124,11 @@ the default ESC-sensor function on UART5 when the model has no ESC telemetry (go
 - MockFc BOARD_INFO / BUILD_INFO carry fixed hardware revision, capabilities, signature,
   gyro rate and an empty build-option list.
 - Only two boards (F405 UART RX, F411 SPI ELRS).
+- The composed dumps keep some SITL-build settings a board build would not have
+  (e.g. `pos_hold_*` on the F411, `gps_*` everywhere, `mag_hardware`), as for the older lines.
+- MockFc prints the 2026.6 `battery_profile 0..2` section headers and accepts
+  `battery_profile N`, but keeps one flat settings map (no per-profile values) and does not
+  model `waypoint`.
 - MockFc `beeper` / `beacon` answer like `cli.c` (`Enabled X` / `Disabled X`, prefix match
   in table order, `INVALID NAME`); `beeper` without arguments and `beeper list` are not
   modelled.
@@ -124,10 +143,10 @@ BFSW_SITL_BIN=<elf> cargo test sitl_end_to_end -- --test-threads=1
 `src/config/tests_sitl_e2e.rs`: MSP identification, apply (backup, batch, `save`, process
 restart), a rejected command (nothing saved), rollback to the first backup, and the
 model-extension lines (`vtxtable`, `vtx_band/channel/power`, `craft_name`,
-`motor_output_reordering`, 2025.12 `motor_idle`) read back from `dump all`. GPS and DShot
+`motor_output_reordering`, 2025.12+ `motor_idle`) read back from `dump all`. GPS and DShot
 are not in SITL, so `gps_sbas_mode`, `gps_ublox_use_galileo` and `dshot_idle_value` are
 checked by MockFc and goldens only. Skipped when `BFSW_SITL_BIN` is unset. Passes locally
-on 4.4.3, 4.5.5 and 2025.12.5.
+on 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2.
 
 Step 9 (batch 2) runs plan → apply → verify for `batch2-freestyle-hd` (airmode SWITCH,
 removeModes with an old PREARM range, a kept unmanaged range, sensors, board alignment).
@@ -136,7 +155,7 @@ beepers and fail with CONFIG for the OSD; serial / DShot / GPS lines are left ou
 applied script. Beeper and OSD lines are covered by MockFc and the goldens.
 
 SITL quirk: an 8-character VTX band name reads back with its last character replaced by
-a space (`BOSCAM_A` → `BOSCAM_`) on all three versions, although
+a space (`BOSCAM_A` → `BOSCAM_`) on all four versions, although
 `VTX_TABLE_BAND_NAME_LENGTH` is 8 and real dumps show `BOSCAM_A` / `RACEBAND`. The e2e
 test uses 7-character names; the generator keeps the 8-character limit.
 

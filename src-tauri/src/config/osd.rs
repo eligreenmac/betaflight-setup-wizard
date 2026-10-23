@@ -1,14 +1,19 @@
 //! OSD elements per firmware line, the `osd_*_pos` encoding and config's default layout.
 //!
-//! Sources: Betaflight `src/main` at 4.4.3, 4.5.5 and 2025.12.5: `osd/osd.h` (encoding,
-//! `osd_items_e`), `cli/settings.c` (`osd_<name>_pos`), `osd/osd.c` (firmware defaults).
+//! Sources: Betaflight `src/main` at 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2: `osd/osd.h`
+//! (encoding, `osd_items_e`), `cli/settings.c` (`osd_<name>_pos`), `osd/osd.c` (firmware
+//! defaults).
 
 use super::firmware::Dialect;
 use crate::model::{OsdLayout, OsdLayoutElement, OsdVideoSystem};
 
 /// (stable name = `osd_items_e` without `OSD_`, CLI name in `osd_<cli>_pos`, first line).
-/// CLI names are identical on all three lines; later lines only add elements.
-/// Order: `cli/settings.c`.
+/// CLI names are identical on all four lines; later lines only add elements.
+/// Order: `cli/settings.c`. 2026.6.2 additions (settings.c:1614, 1642, 1700-1716) are
+/// build-dependent: POS_HOLD_READY needs USE_POSITION_HOLD (flash >= 1024 KB), CUSTOM_SERIAL_TEXT
+/// ENABLE_OSD_CUSTOM_TEXT (every USE_OSD build), WP_* USE_GPS && ENABLE_FLIGHT_PLAN and NAV_MAP
+/// USE_OSD_NAV_MAP (flight plan is a cloud-build option, on in SITL); the generator checks the
+/// board's `dump all` for each `osd_<cli>_pos` it writes.
 pub const ELEMENTS: &[(&str, &str, Dialect)] = &[
     ("MAIN_BATT_VOLTAGE", "vbat", Dialect::V4_4),
     ("RSSI_VALUE", "rssi", Dialect::V4_4),
@@ -65,6 +70,7 @@ pub const ELEMENTS: &[(&str, &str, Dialect)] = &[
     ("NUMERICAL_HEADING", "nheading", Dialect::V4_4),
     ("UP_DOWN_REFERENCE", "up_down_reference", Dialect::V4_4),
     ("READY_MODE", "ready_mode", Dialect::V4_4),
+    ("POS_HOLD_READY", "pos_hold_ready", Dialect::V2026_6),
     ("NUMERICAL_VARIO", "nvario", Dialect::V4_4),
     ("ESC_TMP", "esc_tmp", Dialect::V4_4),
     ("ESC_RPM", "esc_rpm", Dialect::V4_4),
@@ -78,6 +84,11 @@ pub const ELEMENTS: &[(&str, &str, Dialect)] = &[
     ("STICK_OVERLAY_RIGHT", "stick_overlay_right", Dialect::V4_4),
     ("RATE_PROFILE_NAME", "rate_profile_name", Dialect::V4_4),
     ("PID_PROFILE_NAME", "pid_profile_name", Dialect::V4_4),
+    (
+        "BATTERY_PROFILE_NAME",
+        "battery_profile_name",
+        Dialect::V2026_6,
+    ),
     ("PROFILE_NAME", "profile_name", Dialect::V4_4),
     ("RC_CHANNELS", "rcchannels", Dialect::V4_4),
     ("CAMERA_FRAME", "camera_frame", Dialect::V4_4),
@@ -96,6 +107,16 @@ pub const ELEMENTS: &[(&str, &str, Dialect)] = &[
     ("SYS_VTX_TEMP", "sys_vtx_temp", Dialect::V4_4),
     ("SYS_FAN_SPEED", "sys_fan_speed", Dialect::V4_4),
     ("LIDAR_DIST", "lidar_dist", Dialect::V2025_12),
+    ("CUSTOM_SERIAL_TEXT", "custom_serial_text", Dialect::V2026_6),
+    ("WP_NUMBER", "wp_number", Dialect::V2026_6),
+    ("WP_CURRENT_LAT", "wp_current_lat", Dialect::V2026_6),
+    ("WP_CURRENT_LON", "wp_current_lon", Dialect::V2026_6),
+    ("WP_CURRENT_ALT", "wp_current_alt", Dialect::V2026_6),
+    ("WP_DISTANCE", "wp_distance", Dialect::V2026_6),
+    ("WP_DIRECTION", "wp_direction", Dialect::V2026_6),
+    ("WP_NEXT_NUMBER", "wp_next_number", Dialect::V2026_6),
+    ("WP_ETA", "wp_eta", Dialect::V2026_6),
+    ("NAV_MAP", "nav_map", Dialect::V2026_6),
 ];
 
 /// Elements that exist on `dialect`, in settings order.
@@ -124,7 +145,7 @@ pub fn cli_name(name: &str, dialect: Dialect) -> Result<&'static str, String> {
     }
 }
 
-/// `osd/osd.h` (identical on 4.4 / 4.5 / 2025.12): x bits 0-4 and bit 10 (x <= 63),
+/// `osd/osd.h` (identical on 4.4 / 4.5 / 2025.12 / 2026.6, osd.h:67-94): x bits 0-4 and bit 10 (x <= 63),
 /// y bits 5-9, bits 11-13 = visible in OSD profile 1/2/3, bits 14-15 = element type.
 pub const PROFILE_BITS: u16 = 0x3800;
 pub const TYPE_BITS: u16 = 0xC000;
@@ -241,6 +262,13 @@ mod tests {
         assert_eq!(elements(Dialect::V4_4).count(), 77);
         assert_eq!(elements(Dialect::V4_5).count(), 80);
         assert_eq!(elements(Dialect::V2025_12).count(), 82);
+        assert_eq!(elements(Dialect::V2026_6).count(), 94);
+        assert!(cli_name("NAV_MAP", Dialect::V2025_12).is_err());
+        assert_eq!(cli_name("osd_nav_map", Dialect::V2026_6), Ok("nav_map"));
+        assert_eq!(
+            cli_name("BATTERY_PROFILE_NAME", Dialect::V2026_6),
+            Ok("battery_profile_name")
+        );
         assert_eq!(cli_name("main_batt_voltage", Dialect::V4_4), Ok("vbat"));
         assert_eq!(cli_name("OSD_ITEM_TIMER_2", Dialect::V4_5), Ok("tim_2"));
         assert!(cli_name("GPS_LAP_TIME_BEST3", Dialect::V4_4).is_err());

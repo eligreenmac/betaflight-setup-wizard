@@ -190,7 +190,7 @@ pub async fn config_elrs_uid(phrase: String) -> AppResult<[u8; 6]> {
 
 /// Config's default OSD layout for a video system on a firmware line (every element the
 /// line has, with x/y and default visibility). Pure, no FC I/O; UNSUPPORTED_FIRMWARE
-/// outside 4.4.x / 4.5.x / 2025.12.x.
+/// outside 4.4.x / 4.5.x / 2025.12.x / 2026.6.x.
 #[tauri::command]
 pub async fn config_osd_default_layout(
     video_system: OsdVideoSystem,

@@ -14,6 +14,7 @@ import { toUiError, uiError, type UiError } from "../../errors/codes";
 import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
 import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
 import { calibrationWarnings } from "../guards";
+import { rxProtocolLabel } from "../receiver";
 import { modeKeyOf } from "../switches";
 import { wizard } from "../state";
 
@@ -24,7 +25,7 @@ function isHdNoDisplayport(e: UiError): boolean {
   const reason = e.details && typeof e.details === "object" ? (e.details as { reason?: unknown }).reason : undefined;
   return reason === "OSD_HD_NO_DISPLAYPORT" || isHdOsdPlanError(e);
 }
-const { t } = useI18n();
+const { t, te } = useI18n();
 const plan = ref<CliScript | null>(null);
 const previewOnly = ref(false);
 const error = ref<unknown>(null);
@@ -76,7 +77,7 @@ function onError(id: string): void {
 const rows = computed(() => {
   const r: [string, string][] = [
     [t("review.board"), `${wizard.fc?.boardName ?? "?"} · ${wizard.fc?.firmwareVersion ?? "?"}`],
-    [t("review.receiver"), m.value.receiver.kind === "NONE" ? t("review.none") : `${t(`receiver.protocols.${m.value.receiver.protocol ?? "CRSF"}`)}`],
+    [t("review.receiver"), m.value.receiver.kind === "NONE" ? t("review.none") : rxProtocolLabel(m.value.receiver.protocol ?? "CRSF", t, te)],
     [t("review.vtx"), m.value.vtx.kind === "NONE" ? t("review.none") : t(`components.vtxKind.${m.value.vtx.kind}`)],
     [t("review.gps"), m.value.gps.enabled ? t("review.yes") : t("review.none")],
     [t("review.esc"), t(`esc.protocols.${m.value.esc.protocol}`)],

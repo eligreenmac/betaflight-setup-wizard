@@ -9,7 +9,7 @@ use super::msp;
 use super::snapshot::parse_dump;
 use crate::device::Connection;
 
-const VERSIONS: [&str; 3] = ["4.4.3", "4.5.5", "2025.12.5"];
+const VERSIONS: [&str; 4] = ["4.4.3", "4.5.5", "2025.12.5", "2026.6.2"];
 
 fn sitl(version: &str, file: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -35,7 +35,7 @@ fn msp_capture(version: &str, name: &str) -> Vec<u8> {
 
 #[test]
 fn msp_decoders_read_real_sitl_replies() {
-    for (v, api) in VERSIONS.iter().zip(["1.45", "1.46", "1.47"]) {
+    for (v, api) in VERSIONS.iter().zip(["1.45", "1.46", "1.47", "1.48"]) {
         assert_eq!(
             msp::decode_api_version(&msp_capture(v, "API_VERSION")).as_deref(),
             Some(api)
@@ -52,7 +52,13 @@ fn msp_decoders_read_real_sitl_replies() {
         assert_eq!(b.identifier, "SITL", "{v}");
         assert_eq!(b.target_name, "SITL", "{v}");
         assert_eq!(b.board_name, "", "{v}: SITL has no board config");
-        assert_eq!(b.mcu_type_id, Some(0), "{v}: SIMULATOR");
+        // 2026.6 reports MCU_TYPE_ID_PROVIDED_BY_NAME; the name is in MSP2_MCU_INFO.
+        let want = if v.starts_with("2026") {
+            msp::MCU_TYPE_ID_PROVIDED_BY_NAME
+        } else {
+            0 // SIMULATOR
+        };
+        assert_eq!(b.mcu_type_id, Some(want), "{v}");
         // MSP_UID renders exactly like the CLI `mcu_id` of the same build.
         let dump = sitl(v, "dump_all.txt");
         let mcu_id = dump
@@ -70,7 +76,7 @@ fn msp_decoders_read_real_sitl_replies() {
 
 #[test]
 fn mock_msp_matches_real_layouts() {
-    for (v, dir) in VERSIONS.iter().zip(["4.4", "4.5", "2025.12"]) {
+    for (v, dir) in VERSIONS.iter().zip(["4.4", "4.5", "2025.12", "2026.6"]) {
         let mut fc = MockFc::load(dir, "speedybeef405v4");
         let mut q = |c| fc.msp_request(c, &[]).unwrap();
         let (api, var, ver, board, uid) = (
@@ -117,7 +123,7 @@ fn parse_dump_reads_real_sitl_dump_all() {
         assert_eq!(s.features.get("ANTI_GRAVITY"), Some(&true), "{v}");
         // 2025.12 renamed the idle setting to `motor_idle` and compiles it without DSHOT;
         // 4.x `dshot_idle_value` only exists with USE_DSHOT, which SITL lacks.
-        let v2025 = v.starts_with("2025");
+        let v2025 = !v.starts_with("4.");
         assert_eq!(s.setting("motor_idle").is_some(), v2025, "{v}");
         assert!(s.setting("dshot_idle_value").is_none(), "{v}");
     }
@@ -150,7 +156,10 @@ fn mock_lines(fc: &mut MockFc, cmd: &str) -> Vec<String> {
 fn mock_cli_answers_like_real_sitl() {
     for v in VERSIONS {
         let mut fc = MockFc::from_dump(&sitl(v, "dump_all.txt"));
-        fc.unavailable_features = vec!["GPS".into()]; // compiled out of SITL
+        if !v.starts_with("2026") {
+            // compiled out of SITL before 2026.6 (its SITL target enables GPS + flight plan)
+            fc.unavailable_features = vec!["GPS".into()];
+        }
         fc.enter_cli().unwrap();
         for (cmd, real) in transcript(v, "transcript.txt") {
             if cmd == "resource" {
@@ -204,10 +213,13 @@ fn mock_save_semantics_match_real_sitl() {
 
 #[test]
 fn real_sitl_diff_all_replays_through_the_guard() {
-    for v in ["4.4.3", "4.5.5", "2025.12.5"] {
+    for v in VERSIONS {
         let lines = super::guard::replay_lines(&sitl(v, "diff_all.txt"))
             .unwrap_or_else(|e| panic!("{v}: {e}"));
-        let want: Vec<String> = [
+        let v2026 = v.starts_with("2026");
+        // SITL defaults: GPS is off before 2026.6 (so `feature -GPS` is in the diff) and on
+        // in the 2026.6 SITL target; 2026.6 also lists its 3 battery profiles.
+        let mut want: Vec<String> = [
             "defaults nosave",
             "feature -GPS",
             "profile 0",
@@ -224,6 +236,21 @@ fn real_sitl_diff_all_replays_through_the_guard() {
         .iter()
         .map(|s| s.to_string())
         .collect();
+        if v2026 {
+            want.retain(|l| l != "feature -GPS");
+            let rp = want.len() - 1; // before "rateprofile 0" (restore)
+            for (i, l) in [
+                "battery_profile 0",
+                "battery_profile 1",
+                "battery_profile 2",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                want.insert(rp + i, l.into());
+            }
+            want.push("battery_profile 0".into());
+        }
         assert_eq!(lines, want, "{v}");
     }
 }

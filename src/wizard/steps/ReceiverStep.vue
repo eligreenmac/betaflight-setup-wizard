@@ -8,7 +8,7 @@ import ReflashOffer from "../../components/ReflashOffer.vue";
 import { missingOptions, reflashBlock } from "../reflash";
 import { optionList } from "../optionNames";
 import type { RxProtocol } from "../../types/model";
-import { asksTelemetry, SERIAL_RX_PROTOCOLS } from "../receiver";
+import { asksTelemetry, rxProtocolLabel, SERIAL_RX_PROTOCOLS } from "../receiver";
 import { markDirty, setReceiverProtocol, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
@@ -68,21 +68,21 @@ function setFlag(k: "inverted" | "halfDuplex", v: boolean): void {
         <legend>{{ t("receiver.protocol") }}</legend>
         <label v-for="p in SERIAL_RX_PROTOCOLS" :key="p" class="choice">
           <input type="radio" name="rx-protocol" :checked="rx.protocol === p" :data-protocol="p" @change="setReceiverProtocol(wizard, p as RxProtocol)" />
-          <span>{{ t(`receiver.protocols.${p}`) }}</span>
+          <span>{{ rxProtocolLabel(p, t, te) }}</span>
         </label>
       </fieldset>
       <PortPicker role="receiver" />
     </template>
 
     <div v-if="missing" class="callout callout--warn" role="alert" data-test="rx-option-missing">
-      <p>{{ t("receiver.optionMissing", { protocol: rx.protocol ? t(`receiver.protocols.${rx.protocol}`) : "", options: optionList(missing, t, te) }) }}</p>
+      <p>{{ t("receiver.optionMissing", { protocol: rxProtocolLabel(rx.protocol, t, te), options: optionList(missing, t, te) }) }}</p>
       <template v-if="!block">
         <p>{{ t("receiver.optionMissingChoices") }}</p>
         <ReflashOffer return-to="receiver" :requirements="rxReq" />
       </template>
       <!-- No update possible: another protocol is the only way on; say so plainly. -->
       <p v-else data-test="rx-option-no-update">
-        <strong>{{ t(block === "applied" ? "receiver.optionMissingApplied" : "receiver.optionMissingNoUpdate", { protocol: rx.protocol ?? "" }) }}</strong>
+        <strong>{{ t(block === "applied" ? "receiver.optionMissingApplied" : "receiver.optionMissingNoUpdate", { protocol: rxProtocolLabel(rx.protocol, t, te) }) }}</strong>
       </p>
     </div>
 

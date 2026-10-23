@@ -3,7 +3,7 @@
 //!
 //! The fixtures are composed from real public sources (Betaflight SITL `dump all` plus
 //! the board's unified-target / config.h; see `tests/fixtures/README.md`). Responses
-//! follow what Betaflight 4.4.3 / 4.5.5 / 2025.12.5 SITL actually print
+//! follow what Betaflight 4.4.3 / 4.5.5 / 2025.12.5 / 2026.6.2 SITL actually print
 //! (`tests/fixtures/sitl/<version>/transcript.txt`): every line is echoed, then
 //! `serialrx_provider set to CRSF`, `Enabled RX_MSP`, `###ERROR IN set: INVALID NAME: foo = 1###`,
 //! `###ERROR IN input: UNKNOWN COMMAND, TRY 'HELP'###`, and so on.
@@ -145,7 +145,10 @@ fn allowed_values(
         ("serialrx_provider", _) => Some(match dialect {
             Dialect::V4_4 => [&["SPEK1024"][..], &RX].concat(),
             Dialect::V4_5 => [&["NONE"][..], &RX, &["SPEK1024"]].concat(),
-            Dialect::V2025_12 => [&["NONE"][..], &RX, &["SPEK1024", "MAVLINK"]].concat(),
+            // Identical lookupTableSerialRX on 2025.12.5 and 2026.6.2 (cli/settings.c).
+            Dialect::V2025_12 | Dialect::V2026_6 => {
+                [&["NONE"][..], &RX, &["SPEK1024", "MAVLINK"]].concat()
+            }
         }),
         ("gps_sbas_mode", _) => Some(vec!["AUTO", "EGNOS", "WAAS", "MSAS", "GAGAN", "NONE"]),
         (_, Some("ON" | "OFF")) => Some(vec!["OFF", "ON"]),
@@ -168,7 +171,7 @@ impl MockFc {
             .version
             .clone()
             .expect("fixture needs a version banner");
-        let dialect = Dialect::from_version(&version).unwrap_or(Dialect::V2025_12);
+        let dialect = Dialect::from_version(&version).unwrap_or(Dialect::V2026_6);
         let st = State::from_snapshot(&snap);
         let banner_line = dump
             .lines()
@@ -293,7 +296,13 @@ impl MockFc {
                 pstr(&mut o, &self.board_name);
                 pstr(&mut o, &self.manufacturer_id);
                 o.extend_from_slice(&[0; 32]); // signature
-                o.push(msp::mcu_type_id(&self.mcu));
+                                               // 2026.6: MCU_TYPE_ID_PROVIDED_BY_NAME (build/build_config.h:42); the name
+                                               // comes from MSP2_MCU_INFO instead.
+                o.push(if self.dialect >= Dialect::V2026_6 {
+                    msp::MCU_TYPE_ID_PROVIDED_BY_NAME
+                } else {
+                    msp::mcu_type_id(&self.mcu)
+                });
                 o.push(2); // configuration state: CONFIGURED
                 o.extend_from_slice(&8000u16.to_le_bytes()); // gyro sample rate
                 o.extend_from_slice(&0u32.to_le_bytes()); // configuration problems
@@ -367,6 +376,14 @@ impl MockFc {
                 o += &format!("set {k} = {v}\r\n");
             }
         }
+        if self.dialect.has_battery_profiles() {
+            // 2026.6 `printConfig` always lists the battery profiles (cli.c
+            // cliDumpBatteryProfile); their settings live in the flat map above.
+            for i in 0..3 {
+                o += &format!("\r\nbattery_profile {i}\r\n\r\n# battery_profile {i}\r\n");
+            }
+            o += "\r\n# restore original battery_profile selection\r\nbattery_profile 0\r\n";
+        }
         o += "\r\n# end the command batch\r\nbatch end\r\n";
         o
     }
@@ -414,6 +431,11 @@ impl MockFc {
                 String::new()
             }
             "board_name" => String::new(),
+            // 2026.6 cliBatteryProfile: 0..BATTERY_PROFILE_COUNT-1 (3), RAM only.
+            "battery_profile" if self.dialect.has_battery_profiles() => match args.parse::<u8>() {
+                Ok(i) if i < 3 => format!("battery_profile {i}\r\n"),
+                _ => err("battery_profile", "BATTERY PROFILE OUTSIDE OF [0..2]"),
+            },
             "dump" => self.render(false),
             "diff" => self.render(true),
             "serial" if args.is_empty() => self
@@ -430,9 +452,9 @@ impl MockFc {
                     }
                     echo
                 }
-                // Real firmware: 2025.12 cannot parse an unknown port name; 4.x rejects an
+                // Real firmware: 2025.12+ cannot parse an unknown port name; 4.x rejects an
                 // unknown numeric identifier as an argument-count error.
-                _ if self.dialect == Dialect::V2025_12 => err("serial", "PARSING FAILED"),
+                _ if self.dialect.uses_port_names() => err("serial", "PARSING FAILED"),
                 _ => err("serial", "INVALID ARGUMENT COUNT"),
             },
             "feature" => {
@@ -441,16 +463,26 @@ impl MockFc {
                     None => (args, true),
                 };
                 if self.unavailable_features.iter().any(|f| f == name) {
-                    return if self.dialect == Dialect::V2025_12 {
+                    return if self.dialect >= Dialect::V2025_12 {
                         format!("Unavailable {name}\r\n")
                     } else {
                         "unavailable\r\n".into()
                     };
                 }
+                let modern = self.dialect >= Dialect::V2025_12;
                 match self.live.features.get_mut(name) {
                     Some(v) => {
+                        // 2025.12+ cliFeature: `AlreadyEnabled` / `AlreadyDisabled` when
+                        // nothing changes (cli.c, verified on 2026.6.2 SITL).
+                        let same = modern && *v == on;
                         *v = on;
-                        format!("{} {name}\r\n", if on { "Enabled" } else { "Disabled" })
+                        let verb = match (on, same) {
+                            (true, false) => "Enabled",
+                            (true, true) => "AlreadyEnabled",
+                            (false, false) => "Disabled",
+                            (false, true) => "AlreadyDisabled",
+                        };
+                        format!("{verb} {name}\r\n")
                     }
                     None => err("feature", &format!("INVALID NAME: {name}")),
                 }

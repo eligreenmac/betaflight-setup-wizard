@@ -7,7 +7,7 @@
 //! `session` (`batch start` / `save` / `exit`), never by the script or the backup.
 //!
 //! Apply ([`validate_script`]) accepts only the verbs the generator emits. Rollback
-//! ([`replay_lines`]) accepts the verbs `diff all` emits on 4.4 / 4.5 / 2025.12
+//! ([`replay_lines`]) accepts the verbs `diff all` emits on 4.4 / 4.5 / 2025.12 / 2026.6
 //! (`printConfig` in `src/main/cli/cli.c`) with the rules documented on [`replay_lines`].
 
 use crate::error::{AppError, AppResult};
@@ -20,6 +20,10 @@ pub const APPLY_VERBS: &[&str] = &[
 
 /// Verbs `diff all` emits that restore configuration (cli.c `printConfig`, identical in
 /// 4.4.3, 4.5.5 and 2025.12.5), besides the ones [`replay_lines`] handles specially.
+/// 2026.6.2 adds `battery_profile N` (per-profile battery settings, cli.c
+/// `cliDumpBatteryProfile`; selects the profile in RAM like `profile`) and `waypoint clear` /
+/// `waypoint insert ...` (flight plan, cli.c `printWaypoint`; RAM only, no save). Older
+/// firmware never emits them, so allowing them for every line is harmless.
 pub const REPLAY_VERBS: &[&str] = &[
     "resource",
     "timer",
@@ -45,6 +49,8 @@ pub const REPLAY_VERBS: &[&str] = &[
     "set",
     "profile",
     "rateprofile",
+    "battery_profile",
+    "waypoint",
 ];
 
 /// Board identity lines in a `diff all`. Never replayed: `board_name`, `manufacturer_id`
@@ -133,7 +139,7 @@ pub fn validate_script(lines: &[String]) -> AppResult<()> {
 /// - the echoed `diff all` command, if it is the first line;
 /// - `batch start`, only before the first command;
 /// - a final `save`, then a final `batch end` before it (`diff all` ends with `save` on
-///   4.4 / 4.5 / 2025.12; older captures with `batch end` + `save`);
+///   4.4 / 4.5 / 2025.12 / 2026.6; older captures with `batch end` + `save`);
 /// - `board_name`, `manufacturer_id`, `mcu_id`, `signature` (any arguments) – see
 ///   [`BOARD_IDENTITY_VERBS`].
 ///
