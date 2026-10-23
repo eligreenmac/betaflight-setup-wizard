@@ -6,8 +6,24 @@
     "next": "Next",
     "back": "Back",
     "language": "Language",
-    "notImplemented": "This step is not implemented yet.",
+    "phase2": "Coming later",
     "propsOffWarning": "Remove all propellers before connecting the battery."
+  },
+  "shell": {
+    "language": "Language",
+    "steps": "Wizard steps",
+    "progress": "Progress",
+    "navigation": "Wizard navigation",
+    "stepOf": "Step {n} of {total}",
+    "fixBeforeNext": "Before you continue:"
+  },
+  "demo": {
+    "title": "Demo mode.",
+    "bodySome": "Some features are simulated: this app version cannot do them on a real flight controller yet, so nothing is read from or written to the board for them.",
+    "bodyAll": "Everything runs on a simulated flight controller. Nothing is read from or written to a real board.",
+    "which": "Simulated features ({n})",
+    "tryHint": "No flight controller at hand?",
+    "try": "Try the demo"
   },
   "steps": {
     "welcome": {
@@ -15,37 +31,644 @@
       "body": "This wizard flashes Betaflight and configures your flight controller step by step, no website needed."
     },
     "connect": {
-      "title": "Connect"
+      "title": "Connect",
+      "description": "Plug the flight controller into the computer with a USB data cable."
     },
     "firmware": {
-      "title": "Firmware"
+      "title": "Firmware",
+      "description": "Check that the board runs a recent Betaflight version, and update it if needed."
     },
     "components": {
-      "title": "What is connected?"
+      "title": "What is connected?",
+      "description": "Tell us what is wired to the flight controller. We only ask about the parts you have."
     },
     "receiver": {
-      "title": "Receiver"
+      "title": "Receiver",
+      "description": "The receiver gets the commands from your radio."
     },
     "vtx": {
-      "title": "Video transmitter"
+      "title": "Video transmitter",
+      "description": "Lets the flight controller change video channel and power from your radio or goggles."
     },
     "gps": {
-      "title": "GPS"
+      "title": "GPS",
+      "description": "Used for rescue mode and position on the OSD."
     },
     "esc": {
-      "title": "ESC & motors"
+      "title": "ESC & motors",
+      "description": "How the flight controller talks to the motors."
     },
     "switches": {
-      "title": "Switches"
+      "title": "Switches",
+      "description": "Choose which switch on your radio arms the quad and turns on flight modes."
     },
     "review": {
-      "title": "Review"
+      "title": "Review",
+      "description": "Check everything before it is written to the board. Nothing has been changed yet."
     },
     "apply": {
-      "title": "Apply"
+      "title": "Apply",
+      "description": "Write the settings to the flight controller and check that they stuck."
     },
     "done": {
       "title": "Done"
+    }
+  },
+  "welcome": {
+    "needTitle": "You will need:",
+    "need1": "The flight controller, with all propellers removed.",
+    "need2": "A USB cable that carries data (not a charge-only cable).",
+    "need3": "Your radio, bound to the receiver, if you have one.",
+    "time": "This takes about 10 minutes."
+  },
+  "connect": {
+    "step1": "Plug in the flight controller. Do not connect the battery.",
+    "step2": "Choose it in the list, or let the wizard find it.",
+    "choosePort": "Port",
+    "auto": "Find it for me",
+    "noPorts": "No USB devices found yet.",
+    "looksLikeFc": "looks like a flight controller",
+    "searching": "Looking for the flight controller…",
+    "connect": "Connect",
+    "rescan": "Search again",
+    "found": "Found: {board}",
+    "board": "Board",
+    "firmware": "Firmware",
+    "mcu": "Processor",
+    "port": "Port",
+    "disconnect": "Disconnect",
+    "dfuTitle": "The board is in flashing (DFU) mode",
+    "dfuBody": "It can be flashed, but not configured, in this mode. Continue to the firmware step, or unplug and replug it to start it normally.",
+    "driverHelpTitle": "The board does not show up?",
+    "driverHelp1": "Try another cable or USB port. Many cables only charge.",
+    "driverHelp2": "On Windows a driver may be missing. The wizard can install it for you."
+  },
+  "firmware": {
+    "current": "Installed",
+    "latest": "Latest",
+    "unknown": "Unknown",
+    "unsupportedTitle": "This firmware is too old for the wizard",
+    "unsupportedBody": "The wizard supports Betaflight {min} and newer. Update the firmware to continue.",
+    "upToDate": "Your firmware is up to date.",
+    "release": "Version",
+    "prerelease": "test version",
+    "showPrerelease": "Show test versions",
+    "releasesUnavailable": "The list of versions is not available offline. You can keep the current firmware.",
+    "releasesFailed": "Could not load the list of versions.",
+    "updateTo": "Update to {version}",
+    "keep": "Keep the current firmware",
+    "backupNote": "Your current settings are backed up before the update.",
+    "doNotUnplug": "Do not unplug the board until this finishes.",
+    "done": "Betaflight {version} is installed.",
+    "stages": {
+      "download": "Download the firmware",
+      "backup": "Back up your settings",
+      "bootloader": "Restart into flashing mode",
+      "flash": "Install the firmware",
+      "reconnect": "Reconnect"
+    },
+    "flashStage": {
+      "DOWNLOADING": "Downloading…",
+      "ENTERING_BOOTLOADER": "Restarting into flashing mode…",
+      "WAITING_FOR_DEVICE": "Waiting for the board…",
+      "ERASING": "Erasing…",
+      "WRITING": "Writing…",
+      "VERIFYING": "Checking…",
+      "REBOOTING": "Restarting…",
+      "DONE": "Done",
+      "FAILED": "Failed"
+    }
+  },
+  "components": {
+    "receiver": "Receiver",
+    "vtx": "Video transmitter",
+    "other": "Other parts",
+    "rxKind": {
+      "SERIAL": "Separate receiver on a UART",
+      "SPI": "Receiver built into the board (ExpressLRS)",
+      "NONE": "No receiver yet"
+    },
+    "rxKindHint": {
+      "SERIAL": "For example ExpressLRS, Crossfire, TBS, FrSky or FlySky receivers.",
+      "SPI": "Your board reports a built-in ExpressLRS receiver.",
+      "NONE": "You need a receiver to fly. You can come back later."
+    },
+    "vtxKind": {
+      "DIGITAL": "Digital (DJI, Walksnail, HDZero)",
+      "ANALOG": "Analog",
+      "NONE": "None or not controlled"
+    },
+    "vtxKindHint": {
+      "DIGITAL": "Shows the OSD in your goggles.",
+      "ANALOG": "Change channel and power from the OSD menu.",
+      "NONE": "The video transmitter is not connected to a UART."
+    },
+    "gps": "GPS module",
+    "gpsHint": "Enables GPS rescue and position on the OSD.",
+    "escTelemetry": "ESC telemetry wire",
+    "escTelemetryHint": "Only if a telemetry wire from the ESC goes to a UART. Not needed with bidirectional DShot.",
+    "softSerialNote": "Soft serial ports are not supported in this version."
+  },
+  "receiver": {
+    "protocol": "Receiver type",
+    "telemetryQuestion": "Send telemetry (battery, signal) back to the radio?",
+    "telemetryYes": "Yes (recommended)",
+    "telemetryNo": "No",
+    "telemetryHint": "Telemetry shows battery voltage and link quality on your radio.",
+    "elrsHint": "With ExpressLRS, the arm switch must be on AUX1.",
+    "advanced": "Advanced",
+    "inverted": "Inverted signal",
+    "halfDuplex": "Half duplex (one wire)",
+    "onboardTitle": "Built-in ExpressLRS receiver",
+    "onboardBody": "No UART is needed. Bind it to your radio after setup.",
+    "protocols": {
+      "CRSF": "CRSF (ExpressLRS, Crossfire, Tracer)",
+      "GHST": "Ghost (GHST)",
+      "SBUS": "SBUS (FrSky, Futaba)",
+      "FPORT": "FPort (FrSky)",
+      "IBUS": "iBUS (FlySky)",
+      "SRXL2": "SRXL2 (Spektrum)",
+      "SPEK1024": "Spektrum 1024",
+      "SPEK2048": "Spektrum 2048",
+      "SUMD": "SUMD (Graupner)",
+      "EXPRESSLRS": "ExpressLRS (built in)",
+      "FRSKY_D": "FrSky D",
+      "FRSKY_X": "FrSky X",
+      "FRSKY_X_LBT": "FrSky X LBT"
+    }
+  },
+  "vtx": {
+    "protocol": "Control protocol",
+    "system": "Digital system",
+    "digitalHint": "Digital systems use MSP DisplayPort for the OSD.",
+    "protocols": {
+      "SMARTAUDIO": "SmartAudio (TBS, most analog VTXs)",
+      "TRAMP": "Tramp (ImmersionRC)",
+      "MSP": "MSP"
+    },
+    "systems": {
+      "DJI": "DJI (O3, O4, Vista)",
+      "WALKSNAIL": "Walksnail / Avatar",
+      "HDZERO": "HDZero",
+      "OTHER": "Other"
+    }
+  },
+  "gps": {
+    "provider": "GPS protocol",
+    "hint": "Most modules use UBLOX. Wire GPS TX to the UART RX pad and GPS RX to TX.",
+    "providers": {
+      "UBLOX": "UBLOX (recommended)",
+      "NMEA": "NMEA"
+    }
+  },
+  "esc": {
+    "protocol": "ESC protocol",
+    "protocolHint": "DShot600 suits most modern ESCs.",
+    "bidir": "Bidirectional DShot",
+    "bidirHint": "Needs ESC firmware that supports it (BLHeli_32, Bluejay, AM32).",
+    "poles": "Motor poles",
+    "polesHint": "Count the magnets on the motor bell. Most 5 inch motors have 14.",
+    "propsOut": "Props out (reversed motor direction)",
+    "propsOutHint": "Only if your frame setup uses props out.",
+    "reverse": "Reverse a single motor",
+    "reverseHint": "Changing the spin direction of one motor will be added later.",
+    "protocols": {
+      "DSHOT600": "DShot600",
+      "DSHOT300": "DShot300",
+      "DSHOT150": "DShot150",
+      "ONESHOT125": "OneShot125",
+      "MULTISHOT": "MultiShot",
+      "PWM": "PWM"
+    },
+    "motorTest": {
+      "title": "Motor test",
+      "warning": "Motors can spin. Confirm both before testing:",
+      "ackProps": "All propellers are removed.",
+      "ackBattery": "The battery is disconnected. The board is on USB power only.",
+      "ackBatteryHint": "Many ESCs cannot spin motors on USB power. That is expected and safe.",
+      "unavailable": "The motor test is not available in this version yet. You can skip it and check the motors later in Betaflight Configurator, with the propellers removed.",
+      "diagram": "Motor layout, seen from above, front at the top",
+      "front": "Front",
+      "cw": "clockwise",
+      "ccw": "counter-clockwise",
+      "spinMotor": "Spin motor {n} (should turn {dir})",
+      "stop": "Stop all motors",
+      "idle": "Motors are stopped.",
+      "running": "Motor {n} is spinning. Select it again or Stop to stop it.",
+      "usbOnlyNote": "Motors stop when you leave this step or switch windows, and on their own within half a second if the app stops responding.",
+      "orderOk": "The right motor spins for each button.",
+      "directionOk": "Every motor spins in the direction shown."
+    },
+    "batteryChecks": {
+      "title": "Checks that need the battery",
+      "warning": "These checks need the battery connected, so they are turned off in this version. Do them later with the propellers removed.",
+      "bidir": "Bidirectional DShot RPM check",
+      "esc": "ESC check and motor direction under battery power"
+    }
+  },
+  "switches": {
+    "namesNew": "Mode names for Betaflight {version} and newer.",
+    "namesLegacy": "Mode names for Betaflight {version}.",
+    "liveHint": "Flip the switches on your radio: the active mode lights up.",
+    "liveUnavailable": "Live switch display is not available yet. Choose the switches from the lists.",
+    "liveStopped": "The live switch display stopped. Check the connection.",
+    "boxName": "Called {name} in Betaflight {version}.",
+    "channel": "Switch channel",
+    "position": "Switch position",
+    "custom": "Custom ({min} to {max})",
+    "positions": {
+      "low": "Low",
+      "mid": "Middle",
+      "high": "High"
+    },
+    "on": "On",
+    "off": "Off",
+    "remove": "Remove",
+    "armHint": "Arming starts the motors. Use a switch that is hard to flip by accident.",
+    "modes": {
+      "arm": "Arm",
+      "angle": "Angle (self-level)",
+      "beeper": "Beeper",
+      "turtle": "Turtle mode (flip over after crash)",
+      "altHold": "Altitude hold",
+      "posHold": "Position hold"
+    }
+  },
+  "review": {
+    "loading": "Preparing the changes…",
+    "clearingsTitle": "These ports will be cleared first",
+    "noClearings": "No existing port settings will be cleared.",
+    "clearing": "{port}: remove {functions}",
+    "clearingsHint": "Only roles the wizard manages are removed. Other port settings stay as they are.",
+    "summary": "Your setup",
+    "board": "Board",
+    "receiver": "Receiver",
+    "vtx": "Video transmitter",
+    "gps": "GPS",
+    "esc": "ESC",
+    "switches": "Switches",
+    "none": "None",
+    "yes": "Yes",
+    "warnings": "Warnings",
+    "commands": "Show the commands ({n})",
+    "nothingWritten": "Nothing is written until you select Apply on the next step.",
+    "planUnavailableTitle": "This app version cannot apply settings yet",
+    "planUnavailableBody": "The board connection in this version can only show a preview of the changes, so Apply is turned off. Update the app to apply settings. Nothing has been changed on the board.",
+    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes."
+  },
+  "apply": {
+    "ready": "{n} settings are ready to write.",
+    "apply": "Apply to the board",
+    "reapply": "Apply again",
+    "doNotUnplug": "Do not unplug the board until this finishes.",
+    "verifying": "Checking the settings on the board…",
+    "verified": "All settings were saved and checked.",
+    "verifiedBody": "{n} settings were written.",
+    "noScript": "Go back to Review first.",
+    "cliErrors": "The board rejected some settings",
+    "command": "Command",
+    "response": "Board response",
+    "notSaved": "The settings were sent but not saved. Nothing changed on the board.",
+    "failedHint": "A backup was made before applying. You can restore it below.",
+    "restoreTitle": "Backups and restore",
+    "stages": {
+      "BACKUP": "Back up the current settings",
+      "SENDING": "Send the settings",
+      "SAVING": "Save",
+      "REBOOTING": "Restart the board",
+      "RECONNECTED": "Reconnect"
+    },
+    "mismatch": {
+      "title": "Some settings did not stick",
+      "body": "The board was read back after saving, and these values are different:",
+      "setting": "Setting",
+      "expected": "Expected",
+      "actual": "On the board",
+      "step1": "Select Apply again. A second try often fixes it.",
+      "step2": "If the same setting fails again, your firmware may not support it. Update the firmware and try again.",
+      "step3": "You can restore the backup below to undo all changes."
+    },
+    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Unplug the USB cable, plug it back in, and connect again to check them."
+  },
+  "done": {
+    "success": "{board} is set up.",
+    "notApplied": "The settings were not applied.",
+    "nextTitle": "Next steps",
+    "next1": "Bind your receiver to your radio if you have not already.",
+    "next2": "Check that the arm switch and modes react on your radio.",
+    "next3": "Do a short hover test outdoors, away from people.",
+    "help": "Help",
+    "linkDocs": "Betaflight documentation",
+    "linkIssues": "Report a problem with the wizard",
+    "startOver": "Set up another quad"
+  },
+  "backups": {
+    "title": "Backups",
+    "intro": "Backups for this board, newest first.",
+    "sessionOnly": "Backups made in this session. Older backups are in the backups folder.",
+    "openFolder": "Open backups folder",
+    "refresh": "Refresh",
+    "folderFallback": "The folder could not be opened. It is here:",
+    "loading": "Loading…",
+    "none": "No backups yet.",
+    "item": "{board}, Betaflight {version}, {date}",
+    "restore": "Restore",
+    "otherBoard": "From another board",
+    "confirmTitle": "Restore this backup?",
+    "confirmBody": "All settings on the board are replaced with the backup from {date}. The board restarts.",
+    "confirmYes": "Restore",
+    "confirmNo": "Cancel",
+    "restoring": "Restoring…",
+    "restored": "The backup from {date} was restored."
+  },
+  "ports": {
+    "choose": "Choose a port",
+    "currently": "now: {functions}",
+    "noneFree": "No free port. Free one up on another step, or check the wiring.",
+    "whyMissing": "Why are some ports missing?",
+    "question": {
+      "receiver": "Which UART is the receiver wired to?",
+      "vtx": "Which UART is the video transmitter wired to?",
+      "gps": "Which UART is the GPS wired to?",
+      "escTelemetry": "Which UART is the ESC telemetry wire on?"
+    },
+    "wiring": {
+      "receiver": "Receiver TX goes to the UART RX pad, receiver RX to TX.",
+      "vtx": "The VTX control wire goes to the UART TX pad.",
+      "gps": "GPS TX goes to the UART RX pad, GPS RX to TX.",
+      "escTelemetry": "The ESC telemetry wire goes to the UART RX pad."
+    },
+    "reason": {
+      "reserved_usb": "USB connection",
+      "softserial_mvp": "Soft serial is not supported yet",
+      "assigned_elsewhere": "Already chosen for another part",
+      "in_use": "Used for: {functions}"
+    }
+  },
+  "roles": {
+    "receiver": "Receiver",
+    "vtx": "Video transmitter",
+    "gps": "GPS",
+    "escTelemetry": "ESC telemetry"
+  },
+  "serialFunctions": {
+    "RX_SERIAL": "receiver",
+    "GPS": "GPS",
+    "ESC_SENSOR": "ESC telemetry",
+    "VTX_SMARTAUDIO": "video transmitter control (SmartAudio)",
+    "VTX_TRAMP": "video transmitter control (Tramp)",
+    "VTX_MSP": "digital video link (MSP)",
+    "MSP": "MSP link"
+  },
+  "stageState": {
+    "done": "done",
+    "active": "in progress",
+    "failed": "failed"
+  },
+  "links": {
+    "fallback": "Open this address in your browser:"
+  },
+  "actions": {
+    "tryAgain": "Try again",
+    "reconnect": "Reconnect",
+    "retryFlash": "Try flashing again",
+    "retryFullErase": "Flash again with full erase",
+    "installDriver": "Install the driver",
+    "goFirmware": "Go to the firmware step",
+    "openFirmwareHelp": "Firmware help",
+    "reportIssue": "Report a problem",
+    "technicalDetails": "Technical details",
+    "editComponents": "Change components"
+  },
+  "validation": {
+    "noBoard": "Connect a flight controller first.",
+    "firmwareUnsupported": "Update the firmware to Betaflight {min} or newer.",
+    "firmwareDecide": "Choose to update or keep the current firmware.",
+    "noConfig": "The board did not report its ports. Reconnect and try again.",
+    "receiverRequired": "Choose a receiver. You need one to fly.",
+    "noOnboardReceiver": "This board has no built-in receiver.",
+    "vtxProtocolRequired": "Choose how the video transmitter is controlled.",
+    "rxProtocolRequired": "Choose the receiver type.",
+    "digitalSystemRequired": "Choose the digital system.",
+    "gpsProviderRequired": "Choose the GPS protocol.",
+    "portMissing": "{role}: choose a UART.",
+    "portConflict": "{role}: {port} cannot be used. Choose another port.",
+    "bidirNeedsDshot": "Bidirectional DShot needs a DShot protocol.",
+    "motorPolesInvalid": "Motor poles must be an even number between 2 and 64.",
+    "armRequired": "Add an arm switch.",
+    "armAlwaysOn": "The arm switch needs an off position.",
+    "armOverlap": "Arm and {mode} use the same switch position.",
+    "modeUnknown": "{mode} is not a mode this wizard can set.",
+    "modeNeedsFirmware": "{mode} needs Betaflight {version} or newer. Remove it or update the firmware.",
+    "elrsArmAux1": "With ExpressLRS, arm must be on AUX1.",
+    "modeDuplicate": "{mode} is set twice.",
+    "modeRangeInvalid": "The switch position for {mode} is not valid.",
+    "auxInvalid": "The switch channel for {mode} is not valid.",
+    "notGenerated": "Wait for the preview to finish.",
+    "notApplied": "Apply the settings and wait for the check to finish.",
+    "planUnavailable": "This app version cannot apply settings yet. Update the app."
+  },
+  "errors": {
+    "BOARD_NOT_FOUND": {
+      "title": "No flight controller found",
+      "body": "The computer does not see a flight controller. This is usually the cable or the USB port.",
+      "step1": "Unplug the USB cable and plug it back in. Wait a few seconds.",
+      "step2": "Try another cable. Many USB cables only charge.",
+      "step3": "Plug straight into the computer, not through a hub.",
+      "step4": "Check that a light turns on on the board. If nothing lights up, it is not getting power."
+    },
+    "PORT_BUSY": {
+      "title": "The flight controller's connection is in use",
+      "body": "Another program, or another window of this app, has the connection open.",
+      "step1": "Close other windows of this app, and apps such as Betaflight Configurator or Cura.",
+      "step2": "Unplug and replug the board, then try again."
+    },
+    "PORT_BUSY_APP": {
+      "title": "This app is already using the flight controller",
+      "body": "Another window of this app, or a task still running here (such as a motor test or the live switch check), has the connection.",
+      "step1": "Close the other window of this app, or finish what it is doing.",
+      "step2": "Then try again."
+    },
+    "PORT_BUSY_EXTERNAL": {
+      "title": "Another program is using the flight controller",
+      "body": "Another app on this computer has the connection open.",
+      "step1": "Close Betaflight Configurator, Cura or another app that may use the port (for example ESC Configurator or a 3D-printer tool).",
+      "step2": "Unplug and replug the board, then try again."
+    },
+    "DISCONNECTED": {
+      "title": "The flight controller was disconnected",
+      "body": "The connection to the board was lost.",
+      "step1": "Check that the USB cable is firmly plugged in.",
+      "step2": "Select Reconnect. Your answers so far are kept."
+    },
+    "TIMEOUT": {
+      "title": "The flight controller stopped responding",
+      "body": "The board did not answer in time.",
+      "step1": "Check the cable, then select Try again.",
+      "step2": "If it keeps happening, unplug and replug the board."
+    },
+    "SERIAL_ERROR": {
+      "title": "Could not talk to the board",
+      "body": "The USB connection reported an error.",
+      "step1": "Unplug and replug the board.",
+      "step2": "Try another USB port or cable."
+    },
+    "DRIVER_MISSING": {
+      "title": "Windows needs a driver for this board",
+      "body": "Windows sees the board but has no driver for it. This is common on a new computer.",
+      "step1": "Select Install the driver. It takes a minute.",
+      "step2": "Unplug and replug the board, then try again."
+    },
+    "USB_ERROR": {
+      "title": "USB error",
+      "body": "The computer reported a USB problem while talking to the board.",
+      "step1": "Unplug and replug the board.",
+      "step2": "Try another USB port, straight on the computer."
+    },
+    "UNSUPPORTED_FIRMWARE": {
+      "title": "This firmware is not supported",
+      "body": "The wizard only sets up recent Betaflight versions.",
+      "step1": "Go to the firmware step and update.",
+      "step2": "Then continue the setup."
+    },
+    "MSP_UNSUPPORTED": {
+      "title": "The board does not support this",
+      "body": "The firmware on the board does not know this request.",
+      "step1": "Update the firmware and try again."
+    },
+    "MSP_BAD_RESPONSE": {
+      "title": "Unexpected answer from the board",
+      "body": "The board sent an answer the wizard did not understand.",
+      "step1": "Try again. If it repeats, reconnect the board."
+    },
+    "CLI_ERROR": {
+      "title": "The board rejected a command",
+      "body": "A settings command failed on the board. The board message is shown below.",
+      "step1": "Try again. If the same command fails, report the problem."
+    },
+    "DFU_NOT_FOUND": {
+      "title": "The board did not enter flashing mode",
+      "body": "The board restarts into a special mode (DFU) to install firmware. It did not show up in that mode.",
+      "step1": "Select Try flashing again.",
+      "step2": "If that fails, the DFU driver may be missing. Select Install the driver.",
+      "step3": "Or unplug the board, hold the BOOT button, plug it in while holding it, then release."
+    },
+    "FLASH_FAILED": {
+      "title": "The firmware install did not finish",
+      "body": "Something interrupted the install. The board is not damaged and you can flash again.",
+      "step1": "Leave the board plugged in and do not touch the cable.",
+      "step2": "Select Try flashing again.",
+      "step3": "If it fails again, try another cable and port."
+    },
+    "VERIFY_MISMATCH": {
+      "title": "The firmware check failed",
+      "body": "The firmware read back from the board does not match what was written.",
+      "step1": "Select Flash again with full erase.",
+      "step2": "If it fails again, try another cable and port."
+    },
+    "READ_PROTECTED": {
+      "title": "The board is read protected",
+      "body": "The chip is locked, so it cannot be flashed normally.",
+      "step1": "Flash again with full erase. This removes the lock.",
+      "step2": "If that fails, follow the firmware help."
+    },
+    "REPLUG_REQUIRED": {
+      "title": "Unplug and replug the board",
+      "body": "The board needs a fresh start to continue.",
+      "step1": "Unplug the USB cable, wait 3 seconds and plug it back in.",
+      "step2": "Then select Try again."
+    },
+    "FIRMWARE_TOO_LARGE": {
+      "title": "The firmware does not fit",
+      "body": "This firmware is too large for the board.",
+      "step1": "Choose another version, or report the problem."
+    },
+    "INVALID_FIRMWARE": {
+      "title": "The firmware file is not valid",
+      "body": "The firmware file is damaged or not for this board.",
+      "step1": "Try again. The file is downloaded again."
+    },
+    "NO_FLASH_LAYOUT": {
+      "title": "Unknown memory layout",
+      "body": "The wizard does not know how to flash this chip.",
+      "step1": "Report the problem with the technical details."
+    },
+    "NETWORK_ERROR": {
+      "title": "No internet connection",
+      "body": "The wizard could not reach the Betaflight servers.",
+      "step1": "Check that the computer is online.",
+      "step2": "Try again in a minute."
+    },
+    "BUILD_API_ERROR": {
+      "title": "The build server had a problem",
+      "body": "The Betaflight build server returned an error.",
+      "step1": "Wait a minute and try again."
+    },
+    "BUILD_FAILED": {
+      "title": "The firmware build failed",
+      "body": "The build server could not build firmware for this board. The server message is shown below.",
+      "step1": "Choose another version, or report the problem."
+    },
+    "IO_ERROR": {
+      "title": "Could not read or write a file",
+      "body": "A file on this computer could not be read or written.",
+      "step1": "Check that the disk is not full, then try again."
+    },
+    "DATA_ERROR": {
+      "title": "Unexpected data",
+      "body": "Some data could not be read.",
+      "step1": "Try again. If it repeats, report the problem."
+    },
+    "MOTOR_TEST_REFUSED": {
+      "title": "The motor test was not started",
+      "body": "Safety checks stopped the motor test. The reason is shown below.",
+      "step1": "Confirm that the propellers are removed and the battery is disconnected."
+    },
+    "BOARD_ARMED": {
+      "title": "The board is armed",
+      "body": "Motors cannot be tested while the board is armed.",
+      "step1": "Flip the arm switch on your radio to off."
+    },
+    "MOTOR_TEST_NOT_ACTIVE": {
+      "title": "The motor test stopped",
+      "body": "The motors stopped on their own, for safety.",
+      "step1": "Start the test again if needed."
+    },
+    "CANCELLED": {
+      "title": "Cancelled",
+      "body": "The action was cancelled.",
+      "step1": "Start it again when you are ready."
+    },
+    "BUSY": {
+      "title": "Please wait",
+      "body": "Another action is still running.",
+      "step1": "Wait for it to finish, then try again."
+    },
+    "INVALID_ARGUMENT": {
+      "title": "Invalid request",
+      "body": "The wizard sent something the app could not use.",
+      "step1": "Report the problem with the technical details."
+    },
+    "INTERNAL": {
+      "title": "Something went wrong",
+      "body": "An unexpected error happened in the app.",
+      "step1": "Report the problem with the technical details."
+    },
+    "NOT_IMPLEMENTED": {
+      "title": "Not available yet",
+      "body": "This part of the app is not finished yet.",
+      "step1": "You can skip it for now."
+    },
+    "UNKNOWN": {
+      "title": "Something went wrong",
+      "body": "An unexpected error happened.",
+      "step1": "Try again. If it repeats, report the problem."
+    },
+    "CONFIG_UNSUPPORTED": {
+      "title": "The board cannot use part of this setup",
+      "body": "The flight controller does not support something you chose, most often the receiver type.",
+      "step1": "Go back to Components and choose a different receiver, for example one wired to a UART.",
+      "step2": "If the board has a built-in receiver and you still see this, report the problem and include the details below."
     }
   }
 }
