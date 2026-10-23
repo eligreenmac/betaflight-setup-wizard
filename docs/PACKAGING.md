@@ -106,8 +106,10 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
   `chips`, `downloadUrl` are data, not translations. `notes` are English diagnostics.
 - `installDfuDriver()` may take a while (UAC + driver install, up to minutes); show a
   spinner and handle `{code: "DRIVER"}` (declined UAC or failure) with a retry.
-- Opening `downloadUrl` in the browser needs an opener (e.g. `tauri-plugin-opener`),
-  which is not wired yet — UI/shared follow-up.
+- Open `downloadUrl` with `openExternal()` from `src/api/opener.ts`. Its allow-list
+  (and `opener:allow-open-url` in `src-tauri/capabilities/default.json`) does not yet
+  include `https://www.silabs.com/*` and `https://www.wch-ic.com/*`; adding them is a
+  small `shared` follow-up (both lists must change together).
 - Non-Windows: `dfuWinusb = vcp = true`, `devices = []`.
 
 ## 3. CI (issue #25)
