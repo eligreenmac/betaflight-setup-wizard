@@ -161,9 +161,25 @@ fn sitl_msp_and_cli_read_path() {
     // --- Status / sensors (read-only MSP used by the calibration and motor screens).
     let st = crate::device::sensors::read_status(&mut msp).expect("status");
     eprintln!("status: {st:?}");
+    let flags = st.arming_disable_flags.expect("STATUS_EX arming flags");
+    let (names, unknown) = crate::device::arming::decode(flags, api);
+    eprintln!("arming disabled: {names:?}");
+    assert_eq!(
+        unknown, 0,
+        "arming flags outside this line's table: {flags:#x}"
+    );
+    assert!(names.contains(&"RXLOSS"), "SITL has no RX: {names:?}");
     let sensors = crate::device::sensors::read_sensors(&mut msp).expect("sensors");
     eprintln!("sensors: {sensors:?}");
     assert!(sensors.gyro.present, "SITL has a virtual gyro");
+    if api.at_least(1, 46) {
+        // Catches a wrong per-line table: SITL's gyro/acc/baro are the VIRTUAL drivers.
+        assert_eq!(sensors.gyro.detected_hardware.as_deref(), Some("VIRTUAL"));
+        assert_eq!(sensors.acc.detected_hardware.as_deref(), Some("VIRTUAL"));
+        if sensors.baro.present {
+            assert_eq!(sensors.baro.detected_hardware.as_deref(), Some("VIRTUAL"));
+        }
+    }
     assert!(crate::device::ram_state::msp_is_read_only(
         codes::MSP_STATUS_EX
     ));
