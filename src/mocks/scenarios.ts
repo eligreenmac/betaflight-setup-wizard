@@ -38,6 +38,7 @@ export const SCENARIOS = [
   "rollback-fail",
   "flash-verify",
   "read-protected",
+  "driver-replace",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -63,6 +64,10 @@ interface MockDevice {
   ports: FcSerialPort[];
   inDfu: boolean;
   dfuDriverOk: boolean;
+  /** ST's STTub30 (STM32CubeProgrammer / DfuSe) is bound to the DFU device: WinUSB would replace it. */
+  dfuOtherDriver: string | null;
+  /** system_install_dfu_driver calls (tests). */
+  driverInstalls: number;
   flashFailuresLeft: number;
   verifyFailuresLeft: number;
   /** MCU read protection set (flasher_flash refuses until it is removed). */
@@ -111,7 +116,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       { name: "SOFTSERIAL1", identifier: 30, functionMask: 0, isConnectionPort: false },
     ],
     inDfu: false,
-    dfuDriverOk: scenario !== "driver-missing",
+    dfuDriverOk: scenario !== "driver-missing" && scenario !== "driver-replace",
+    dfuOtherDriver: scenario === "driver-replace" ? "STTub30" : null,
+    driverInstalls: 0,
     flashFailuresLeft: scenario === "flash-fail" ? 1 : 0,
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     readProtected: scenario === "read-protected",
@@ -154,12 +161,12 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
               name: "STM32 BOOTLOADER",
               kind: "DFU",
               instanceId: "USB\\VID_0483&PID_DF11\\MOCKDFU1",
-              service: device.dfuDriverOk ? "WinUSB" : null,
+              service: device.dfuDriverOk ? "WinUSB" : device.dfuOtherDriver,
               driverOk: device.dfuDriverOk,
               action: device.dfuDriverOk ? "NONE" : "INSTALL_DFU_DRIVER",
               guidanceIndex: null,
-              // Mock DFU device has no driver bound, so nothing is replaced.
-              replacesDriver: false,
+              // Only the driver-replace scenario has another driver (STTub30) bound.
+              replacesDriver: !device.dfuDriverOk && device.dfuOtherDriver !== null,
             },
           ]
         : [],
@@ -167,7 +174,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }),
     system_install_dfu_driver: async () => {
       await sleep(latency * 2);
+      device.driverInstalls++;
       device.dfuDriverOk = true;
+      device.dfuOtherDriver = null;
     },
     device_list_ports: () =>
       scenario === "no-board" || device.inDfu

@@ -306,7 +306,7 @@
       "stop": "Stop all motors",
       "idle": "Motors are stopped.",
       "running": "Motor {n} is spinning. Select it again or Stop to stop it.",
-      "usbOnlyNote": "Motors stop when you leave this step or switch windows, and on their own within half a second if the app stops responding.",
+      "usbOnlyNote": "Motors stop when you leave this step or switch windows, when you close the window or quit the app, and on their own within half a second if the app stops responding.",
       "orderOk": "The right motor spins for each button.",
       "directionOk": "Every motor spins in the direction shown."
     },
@@ -724,5 +724,15 @@
       "step1": "Go back to Components and choose a different receiver, for example one wired to a UART.",
       "step2": "If the board has a built-in receiver and you still see this, report the problem and include the details below."
     }
+  },
+  "driverReplace": {
+    "title": "Installing the driver replaces another driver",
+    "body": "{device} currently uses the {driver} driver. Installing the WinUSB driver replaces it, so this app and Betaflight can flash the board.",
+    "tools": "Programs that rely on the old driver may stop seeing the board in bootloader mode, for example STM32CubeProgrammer or DfuSe with ST's STTub30 driver.",
+    "undo": "If you need those programs again, reinstall their driver from their installer. Nothing changes on the flight controller itself.",
+    "understand": "I understand that the {driver} driver will be replaced by WinUSB.",
+    "unknownDriver": "current",
+    "install": "Replace and install the driver",
+    "cancel": "Cancel"
   }
 }

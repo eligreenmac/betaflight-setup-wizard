@@ -6,7 +6,10 @@
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
+import DriverReplaceConfirm from "../../components/DriverReplaceConfirm.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
+import { installDfuDriverSafely } from "../dfuDriver";
+import type { UsbDriverInfo } from "../../types/model";
 import ReadProtectedPanel from "../../components/ReadProtectedPanel.vue";
 import StageList from "../../components/StageList.vue";
 import { isNotImplemented, toUiError, type UiError } from "../../errors/codes";
@@ -87,15 +90,31 @@ async function update(fullErase = false): Promise<void> {
   }
 }
 
-async function onAction(id: GuidanceActionId): Promise<void> {
-  if (id === "installDriver") {
-    try {
-      await api.system.installDfuDriver();
-    } catch (e) {
-      error.value = toUiError(e);
-      return;
-    }
+/** Devices whose current driver WinUSB would replace; set = waiting for confirmation. */
+const pendingReplace = ref<UsbDriverInfo[] | null>(null);
+const installing = ref(false);
+
+async function installDriver(confirmedReplace: boolean): Promise<boolean> {
+  installing.value = true;
+  try {
+    const r = await installDfuDriverSafely(confirmedReplace);
+    pendingReplace.value = r.installed ? null : r.replaces;
+    return r.installed;
+  } catch (e) {
+    error.value = toUiError(e);
+    pendingReplace.value = null;
+    return false;
+  } finally {
+    installing.value = false;
   }
+}
+
+async function confirmReplace(): Promise<void> {
+  if (await installDriver(true)) await update();
+}
+
+async function onAction(id: GuidanceActionId): Promise<void> {
+  if (id === "installDriver" && !(await installDriver(false))) return;
   if (id === "retryFullErase") return update(true);
   if (id === "retry" && !releases.value.length) return loadReleases();
   return update();
@@ -156,6 +175,7 @@ onMounted(loadReleases);
 
     <!-- Read protection: never removed without the explicit confirmation in this panel. -->
     <ReadProtectedPanel v-if="error && readProtected" :dfu-serial="dfuSerial" :has-backup="backupThisRun" @unprotected="update()" />
-    <ErrorPanel v-else-if="error" :error="error" :busy="phase === 'running'" @action="onAction" />
+    <DriverReplaceConfirm v-else-if="error && pendingReplace" :replaces="pendingReplace" :busy="installing" @confirm="confirmReplace" @cancel="pendingReplace = null" />
+    <ErrorPanel v-else-if="error" :error="error" :busy="phase === 'running' || installing" @action="onAction" />
   </div>
 </template>

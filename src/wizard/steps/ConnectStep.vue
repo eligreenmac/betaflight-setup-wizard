@@ -5,10 +5,12 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import { demoState, forceDemo } from "../../api/fallback";
+import DriverReplaceConfirm from "../../components/DriverReplaceConfirm.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
-import type { DfuDevice, HostPort } from "../../types/model";
+import type { DfuDevice, HostPort, UsbDriverInfo } from "../../types/model";
+import { installDfuDriverSafely } from "../dfuDriver";
 import { probeOnboardReceiver } from "../receiver";
 import { setBoard, wizard } from "../state";
 
@@ -73,19 +75,32 @@ async function disconnect(): Promise<void> {
   wizard.connectedPath = null;
 }
 
-async function onAction(id: GuidanceActionId): Promise<void> {
-  if (id === "installDriver") {
-    busy.value = true;
-    try {
-      await api.system.installDfuDriver();
-    } catch (e) {
-      error.value = toUiError(e);
-      busy.value = false;
-      return;
-    }
+/** Devices whose current driver WinUSB would replace; set = waiting for confirmation. */
+const pendingReplace = ref<UsbDriverInfo[] | null>(null);
+
+/** Install the DFU driver; asks first when it would replace another driver. */
+async function installDriver(confirmedReplace: boolean): Promise<boolean> {
+  busy.value = true;
+  try {
+    const r = await installDfuDriverSafely(confirmedReplace);
+    pendingReplace.value = r.installed ? null : r.replaces;
+    return r.installed;
+  } catch (e) {
+    error.value = toUiError(e);
+    pendingReplace.value = null;
+    return false;
+  } finally {
     busy.value = false;
   }
+}
+
+async function onAction(id: GuidanceActionId): Promise<void> {
+  if (id === "installDriver" && !(await installDriver(false))) return;
   await connect();
+}
+
+async function confirmReplace(): Promise<void> {
+  if (await installDriver(true)) await connect();
 }
 
 /** No board at hand: run every later call on the simulated board (banner stays on). */
@@ -147,7 +162,8 @@ onMounted(scan);
         </button>
         <button type="button" class="btn" :disabled="busy" @click="scan">{{ t("connect.rescan") }}</button>
       </div>
-      <ErrorPanel v-if="error" :error="error" :busy="busy" @action="onAction" />
+      <DriverReplaceConfirm v-if="pendingReplace" :replaces="pendingReplace" :busy="busy" @confirm="confirmReplace" @cancel="pendingReplace = null" />
+      <ErrorPanel v-else-if="error" :error="error" :busy="busy" @action="onAction" />
       <p v-if="!demoState.forced" class="hint">
         {{ t("demo.tryHint") }}
         <button type="button" class="btn btn--small btn--link" :disabled="busy" data-test="use-demo" @click="useDemo">{{ t("demo.try") }}</button>
