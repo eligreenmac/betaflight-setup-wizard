@@ -346,6 +346,23 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   The closure holds the port for its whole duration; a concurrent caller gets
   `PORT_BUSY {heldBy: "APP"}` (also while a motor test or RC stream runs). No open port →
   `NOT_CONNECTED`. Another program holding the port → `PORT_BUSY {heldBy: "EXTERNAL"}`.
+  **Lock rules** (`ConnectionManager::lock` / `lock_shared`, a `Mutex` + `Condvar` gate):
+  - *Shared calls* (`device_identify`, `device_sensors`, `device_get_attitude`, the
+    unsaved-changes check) hold the port for one short MSP exchange. They queue behind each
+    other instead of failing.
+  - *Exclusive calls* (everything else, including `device_attitude_stream_stop`,
+    `device_disconnect`, motor/RC start/stop, `device_acc_calibrate`, `device_cli_exec`,
+    reboots, `with_link`) **wait for shared calls in flight**, bounded by 3 × the MSP timeout
+    + 0.5 s (3.5 s by default), and then get the port. The attitude poll in flight is waited
+    for as well (≤ its 200 ms request timeout). Writers have priority: once an exclusive call
+    waits, new shared calls wait until it got in, so a UI polling `device_sensors` cannot
+    starve a stop or a calibration.
+  - `PORT_BUSY {heldBy: "APP"}` stays **immediate** for a real conflict: another exclusive call
+    in progress (a shared call then fails fast too), or a long-lived owner (motor test, RC
+    stream; for exclusive calls also the attitude stream) — those live in the slot as a state,
+    not as a held lock, and are never waited for.
+  - `emergency_stop_all` is the exception: a single `try_lock`, never waits (see §4.3 motor
+    test).
   Run `with_link` off the async runtime (`tauri::async_runtime::spawn_blocking`).
 - **`Connection` + `Reconnect` = `FcLink`** (device/mod.rs). `exit_cli(true)` sends `save` and
   returns once sent; the caller then calls `reconnect(timeout)`, which waits for the port to drop
@@ -568,6 +585,9 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
     such a call costs the stream about one poll slot (`device_sensors` ≈ 7 requests ≈ 70 ms).
     Everything else (`device_acc_calibrate`, `device_probe_board`, `device_cli_exec`,
     reboots, config's `with_link`) still gets `PORT_BUSY`: stop the stream first.
+    `device_attitude_stream_stop` and `device_disconnect` wait for a shared call or poll in
+    flight (writer priority, bounded; see "Lock rules" above), so a stop issued while the UI
+    polls `device_sensors` succeeds, and an exclusive command right after it gets the port.
   - **Why 30/50 Hz.** Betaflight answers one MSP command per pass of its 100 Hz SERIAL task
     (`msp_serial.c` "process one command at a time", `tasks.c` `TASK_SERIAL`
     `TASK_PERIOD_HZ(100)`, priority LOW, same on 4.4–2026.6), and the attitude estimate itself

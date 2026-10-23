@@ -24,7 +24,7 @@ use crate::model::{
     MotorOutputConfig, MotorTestLimits, MotorTestSession, MotorTestStopReason, MotorTestStopped,
     RcChannels, RcStopReason, RcStopped, RxSpiInfo, SensorStatus,
 };
-use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
 /// A serial link as stored by the manager.
@@ -912,10 +912,56 @@ enum Slot {
     Attitude(AttitudeSlot),
 }
 
+/// Bookkeeping around the `slot` lock (§4.3 "Sharing the port").
+///
+/// - Shared calls (`with_conn_shared`: identify, sensors, attitude, unsaved-changes check)
+///   hold `slot` only for one short MSP exchange and count themselves in `shared_active`.
+/// - Everything else is exclusive (`lock`): if `slot` is held by a shared call it waits
+///   (bounded, see [`ConnectionManager::exclusive_wait`]) and registers in
+///   `writers_waiting`, which keeps new shared calls out until it got in (writer priority, no
+///   starvation by a polling UI). If `slot` is held by another exclusive call it fails with
+///   `PORT_BUSY` at once, as before. Long-lived owners (motor test, RC stream) do not hold
+///   `slot`; they live in it as a `Slot` state and keep answering `PORT_BUSY` immediately.
+#[derive(Debug, Default)]
+struct Gate {
+    shared_active: u32,
+    writers_waiting: u32,
+}
+
+/// `slot` held by a shared call; leaving it updates the [`Gate`].
+struct SharedSlot<'a> {
+    guard: Option<MutexGuard<'a, Slot>>,
+    manager: &'a ConnectionManager,
+}
+
+impl std::ops::Deref for SharedSlot<'_> {
+    type Target = Slot;
+    fn deref(&self) -> &Slot {
+        self.guard.as_ref().expect("held until drop")
+    }
+}
+
+impl std::ops::DerefMut for SharedSlot<'_> {
+    fn deref_mut(&mut self) -> &mut Slot {
+        self.guard.as_mut().expect("held until drop")
+    }
+}
+
+impl Drop for SharedSlot<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take()); // release `slot` before telling the waiters
+        self.manager.end_shared();
+    }
+}
+
 /// The single owner of the FC port. Put it in Tauri state:
 /// `app.manage(device::ConnectionManager::default())`.
 pub struct ConnectionManager {
     slot: Mutex<Slot>,
+    /// Who is in or waiting for `slot` (see [`Gate`]); `gate_changed` is notified on every
+    /// change. Never held across I/O.
+    gate: Mutex<Gate>,
+    gate_changed: Condvar,
     /// Path of the open port, readable while `slot` is locked (for PORT_BUSY details).
     port: Mutex<Option<String>>,
     /// Emergency-stop handle of the current/last motor test. Kept outside `slot` so window
@@ -941,6 +987,8 @@ impl ConnectionManager {
     pub fn new(opener: Opener, lister: Lister) -> Self {
         ConnectionManager {
             slot: Mutex::new(Slot::Empty),
+            gate: Mutex::new(Gate::default()),
+            gate_changed: Condvar::new(),
             port: Mutex::new(None),
             motor_emergency: Mutex::new(None),
             opener,
@@ -988,12 +1036,100 @@ impl ConnectionManager {
         }
     }
 
+    fn gate(&self) -> MutexGuard<'_, Gate> {
+        self.gate.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// How long an exclusive call waits for shared calls in flight: a few MSP timeouts (a
+    /// shared call is one short MSP exchange, ~10-130 ms on a healthy link, plus the
+    /// attitude poll in flight).
+    fn exclusive_wait(&self) -> Duration {
+        self.msp_timeout * 3 + Duration::from_millis(500)
+    }
+
+    /// Exclusive access to the slot. Waits (bounded, Condvar) only while shared calls hold
+    /// it; held by another exclusive call: `PORT_BUSY` at once (see [`Gate`]).
     fn lock(&self) -> AppResult<MutexGuard<'_, Slot>> {
-        match self.slot.try_lock() {
-            Ok(g) => Ok(g),
-            Err(TryLockError::WouldBlock) => Err(self.busy()),
-            Err(TryLockError::Poisoned(p)) => Ok(p.into_inner()),
+        let deadline = Instant::now() + self.exclusive_wait();
+        let mut gate = self.gate();
+        let mut waiting = false;
+        let leave = |gate: &mut Gate, waiting: bool| {
+            if waiting {
+                gate.writers_waiting -= 1;
+                self.gate_changed.notify_all();
+            }
+        };
+        loop {
+            match self.slot.try_lock() {
+                Ok(g) => {
+                    leave(&mut gate, waiting);
+                    return Ok(g);
+                }
+                Err(TryLockError::Poisoned(p)) => {
+                    leave(&mut gate, waiting);
+                    return Ok(p.into_inner());
+                }
+                Err(TryLockError::WouldBlock) => {}
+            }
+            let now = Instant::now();
+            if gate.shared_active == 0 || now >= deadline {
+                // Another exclusive call (or a shared call that is not finishing).
+                leave(&mut gate, waiting);
+                return Err(self.busy());
+            }
+            if !waiting {
+                waiting = true;
+                gate.writers_waiting += 1;
+            }
+            gate = self
+                .gate_changed
+                .wait_timeout(gate, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
         }
+    }
+
+    /// Slot access for a shared call. Waits (bounded) while exclusive calls are waiting
+    /// (they go first) or another shared call is in flight; an exclusive call holding the
+    /// slot: `PORT_BUSY` at once. The `try_lock` runs under the gate lock so `lock` never
+    /// sees the slot taken by a shared call that is not counted yet.
+    fn lock_shared(&self) -> AppResult<SharedSlot<'_>> {
+        let deadline = Instant::now() + self.exclusive_wait();
+        let mut gate = self.gate();
+        loop {
+            if gate.writers_waiting == 0 {
+                let guard = match self.slot.try_lock() {
+                    Ok(g) => Some(g),
+                    Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+                    Err(TryLockError::WouldBlock) if gate.shared_active == 0 => {
+                        return Err(self.busy()); // exclusive call in progress
+                    }
+                    Err(TryLockError::WouldBlock) => None, // another shared call: wait
+                };
+                if let Some(guard) = guard {
+                    gate.shared_active += 1;
+                    return Ok(SharedSlot {
+                        guard: Some(guard),
+                        manager: self,
+                    });
+                }
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(self.busy());
+            }
+            gate = self
+                .gate_changed
+                .wait_timeout(gate, deadline - now)
+                .unwrap_or_else(|p| p.into_inner())
+                .0;
+        }
+    }
+
+    fn end_shared(&self) {
+        let mut gate = self.gate();
+        gate.shared_active -= 1;
+        self.gate_changed.notify_all();
     }
 
     fn set_port(&self, p: Option<String>) {
@@ -1026,10 +1162,12 @@ impl ConnectionManager {
     /// attitude stream runs they pause it between two polls, borrow the port, and resume
     /// it (no burst, no queued samples). Motor test / RC stream: PORT_BUSY as usual.
     fn with_conn_shared<T>(&self, f: impl FnOnce(&mut FcConnection) -> DResult<T>) -> AppResult<T> {
-        let mut g = self.lock()?;
-        let Slot::Attitude(a) = &mut *g else {
-            drop(g);
-            return self.with_conn(f);
+        let mut g = self.lock_shared()?;
+        let a = match &mut *g {
+            Slot::Empty => return Err(AppError::NotConnected),
+            Slot::Idle(c) => return Ok(f(c)?),
+            Slot::MotorTest(_) | Slot::Rc(_) => return Err(self.busy()),
+            Slot::Attitude(a) => a,
         };
         let Some(link) = a.stream.take_link() else {
             return Err(self.busy()); // stream ending (disconnect / error)
@@ -1053,8 +1191,8 @@ impl ConnectionManager {
     }
 
     pub fn is_connected(&self) -> bool {
-        self.slot
-            .try_lock()
+        // Waits out shared calls in flight; held by an exclusive call: connected.
+        self.lock_shared()
             .map(|g| !matches!(*g, Slot::Empty))
             .unwrap_or(true)
     }
@@ -2361,6 +2499,225 @@ mod tests {
             RcStopReason::Requested
         );
         assert!(!m.is_connected());
+    }
+
+    /// Sets the flag when dropped, so a failing assertion does not leave a poller running
+    /// (and the scope waiting for it forever).
+    struct SetOnDrop<'a>(&'a AtomicBool);
+    impl Drop for SetOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A thread polling a shared call (the UI's sensor refresh) until `stop` is set.
+    fn poll_sensors<'s>(
+        scope: &'s std::thread::Scope<'s, '_>,
+        m: &'s ConnectionManager,
+        stop: &'s AtomicBool,
+    ) -> std::thread::ScopedJoinHandle<'s, usize> {
+        scope.spawn(move || {
+            let mut ok = 0;
+            while !stop.load(Ordering::SeqCst) {
+                if m.get_sensors().is_ok() {
+                    ok += 1;
+                }
+            }
+            ok
+        })
+    }
+
+    #[test]
+    fn attitude_stream_stop_waits_for_shared_calls_in_flight() {
+        let (m, _fc) = sensor_manager(Default::default());
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let poller = poll_sensors(scope, &m, &done);
+            let _stop_poller = SetOnDrop(&done);
+            for i in 0..200 {
+                m.attitude_stream_start(Some(500), |_| {}, |_| {}).unwrap();
+                std::thread::sleep(Duration::from_millis(1));
+                m.attitude_stream_stop()
+                    .unwrap_or_else(|e| panic!("stop #{i} failed: {e:?}"));
+                // The stream is gone and an exclusive command gets the port.
+                if i % 10 == 0 {
+                    m.acc_calibrate()
+                        .unwrap_or_else(|e| panic!("calibrate after stop #{i}: {e:?}"));
+                } else {
+                    m.with_link(|_| Ok(()))
+                        .unwrap_or_else(|e| panic!("exclusive call after stop #{i}: {e:?}"));
+                }
+            }
+            done.store(true, Ordering::SeqCst);
+            assert!(poller.join().unwrap() > 0, "the poller got its turns too");
+        });
+    }
+
+    #[test]
+    fn exclusive_calls_wait_for_a_slow_shared_call() {
+        let (m, _fc) = sensor_manager(Default::default());
+        m.attitude_stream_start(Some(500), |_| {}, |_| {}).unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let slow = scope.spawn(|| {
+                m.with_conn_shared(|_| {
+                    entered_tx.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(150));
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let t = Instant::now();
+            m.attitude_stream_stop().unwrap();
+            assert!(t.elapsed() >= Duration::from_millis(50), "it did wait");
+            slow.join().unwrap().unwrap();
+        });
+        m.acc_calibrate().unwrap();
+
+        // Idle slot: the same holds for a plain exclusive command.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let slow = scope.spawn(|| {
+                m.with_conn_shared(|_| {
+                    entered_tx.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(150));
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            m.acc_calibrate().unwrap();
+            slow.join().unwrap().unwrap();
+        });
+    }
+
+    #[test]
+    fn waiting_exclusive_call_goes_before_new_shared_calls() {
+        let (m, _fc) = sensor_manager(Default::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let order = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            let slow = scope.spawn(|| {
+                m.with_conn_shared(|_| {
+                    entered_tx.send(()).unwrap();
+                    std::thread::sleep(Duration::from_millis(200));
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let writer = scope.spawn(|| {
+                m.with_link(|_| {
+                    order.lock().unwrap().push("exclusive");
+                    std::thread::sleep(Duration::from_millis(20));
+                    Ok(())
+                })
+            });
+            // Let the writer register as waiting, then queue a reader behind it.
+            std::thread::sleep(Duration::from_millis(50));
+            let reader = scope.spawn(|| {
+                m.with_conn_shared(|_| {
+                    order.lock().unwrap().push("shared");
+                    Ok(())
+                })
+            });
+            slow.join().unwrap().unwrap();
+            writer.join().unwrap().unwrap();
+            // The reader waited for the writer to get in; it then either found it still
+            // working (PORT_BUSY, like any shared call during an exclusive one) or ran after.
+            if let Err(e) = reader.join().unwrap() {
+                assert_eq!(e.code(), "PORT_BUSY");
+            }
+        });
+        assert_eq!(order.lock().unwrap()[0], "exclusive");
+    }
+
+    #[test]
+    fn concurrent_shared_calls_queue_instead_of_failing() {
+        let (m, _fc) = sensor_manager(Default::default());
+        m.attitude_stream_start(Some(500), |_| {}, |_| {}).unwrap();
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| (0..100).try_for_each(|_| m.get_sensors().map(drop)));
+            let b = scope.spawn(|| (0..100).try_for_each(|_| m.get_attitude().map(drop)));
+            a.join().unwrap().unwrap();
+            b.join().unwrap().unwrap();
+        });
+        m.attitude_stream_stop().unwrap();
+    }
+
+    #[test]
+    fn long_lived_owners_still_answer_port_busy_at_once() {
+        let (m, fc) = sensor_manager(Default::default());
+        let busy_now = |e: AppError, t: Instant| {
+            assert_eq!(e.code(), "PORT_BUSY");
+            assert!(
+                t.elapsed() < Duration::from_millis(100),
+                "{:?}",
+                t.elapsed()
+            );
+        };
+        let check = |m: &ConnectionManager| {
+            let t = Instant::now();
+            busy_now(m.get_sensors().unwrap_err(), t);
+            let t = Instant::now();
+            busy_now(m.acc_calibrate().unwrap_err(), t);
+            let t = Instant::now();
+            busy_now(
+                m.attitude_stream_start(None, |_| {}, |_| {}).unwrap_err(),
+                t,
+            );
+        };
+        m.motor_test_start(req(Some(1), 1100), None, |_| {})
+            .unwrap();
+        check(&m);
+        m.motor_test_stop().unwrap();
+        assert!(!fc.motors.lock().unwrap().is_empty());
+
+        m.rc_stream_start(None, |_| {}, |_| {}).unwrap();
+        check(&m);
+        m.rc_stream_stop().unwrap();
+
+        // Another exclusive call holding the slot: shared and exclusive callers fail fast.
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            let m = &m;
+            let holder = scope.spawn(move || {
+                m.with_link(|_| {
+                    entered_tx.send(()).unwrap();
+                    let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                    Ok(())
+                })
+            });
+            entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            let t = Instant::now();
+            busy_now(m.get_sensors().unwrap_err(), t);
+            let t = Instant::now();
+            busy_now(m.acc_calibrate().unwrap_err(), t);
+            release_tx.send(()).unwrap();
+            holder.join().unwrap().unwrap();
+        });
+        m.get_sensors().unwrap();
+    }
+
+    #[test]
+    fn disconnect_while_shared_calls_poll() {
+        let (m, _fc) = sensor_manager(Default::default());
+        let done = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let poller = poll_sensors(scope, &m, &done);
+            let _stop_poller = SetOnDrop(&done);
+            for i in 0..50 {
+                m.connect(PORT).unwrap();
+                if i % 2 == 0 {
+                    m.attitude_stream_start(Some(500), |_| {}, |_| {}).unwrap();
+                }
+                std::thread::sleep(Duration::from_millis(2));
+                m.disconnect()
+                    .unwrap_or_else(|e| panic!("disconnect #{i} failed: {e:?}"));
+                assert!(!m.is_connected());
+            }
+            done.store(true, Ordering::SeqCst);
+            poller.join().unwrap();
+        });
     }
 
     #[test]
