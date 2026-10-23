@@ -189,10 +189,23 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
 
 ### 4.1 Device contracts
 
-- **One connection manager** (device) owns the single open serial port app-wide. Commands
-  that need the FC borrow it for the duration of the call; a concurrent caller gets
-  `PORT_BUSY {heldBy: "APP"}`. Another program holding the port → `PORT_BUSY {heldBy: "EXTERNAL"}`.
-  config/flasher get the link only as `&mut dyn Connection` through the manager.
+- **One connection manager** (device) owns the single open serial port app-wide. It lives in
+  Tauri managed state (`app.manage(device::ConnectionManager::default())` in lib.rs).
+  Other modules use it through the state, never by opening ports:
+  ```rust
+  let mgr = app.state::<device::ConnectionManager>();   // or State<'_, ConnectionManager> in a command
+  mgr.with_link(|link: &mut dyn device::FcLink| { link.enter_cli()?; /* … */ link.reconnect(t) })?;
+  ```
+  The closure holds the port for its whole duration; a concurrent caller gets
+  `PORT_BUSY {heldBy: "APP"}` (also while a motor test or RC stream runs). No open port →
+  `NOT_CONNECTED`. Another program holding the port → `PORT_BUSY {heldBy: "EXTERNAL"}`.
+  Run `with_link` off the async runtime (`tauri::async_runtime::spawn_blocking`).
+- **`Connection` + `Reconnect` = `FcLink`** (device/mod.rs). `exit_cli(true)` sends `save` and
+  returns once sent; the caller then calls `reconnect(timeout)`, which waits for the port to drop
+  and come back (same VID/PID/serial number), reopens it and re-verifies MSP_API_VERSION and
+  MSP_UID. Likewise after `exit` on 4.4 (reboots). `exit_cli(false)` uses `exit noreboot` on 4.5+.
+- **`FcInfo.uid`**: MSP_UID (160) = 3 × u32 LE, each `toString(16)` without padding,
+  concatenated (same as Betaflight Configurator) → backup folder `<boardUid>`.
 - **Serial port list** (`FcInfo.serialPorts`): read by `device_identify` with
   `MSP2_COMMON_SERIAL_CONFIG` (0x1009), falling back to `MSP_CF_SERIAL_CONFIG` (54).
   `identifier` is exactly what the board sent (never remapped); `name` is derived from the

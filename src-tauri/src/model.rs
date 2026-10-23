@@ -53,7 +53,9 @@ pub struct FcInfo {
     pub manufacturer_id: Option<String>,
     /// MCU type, e.g. "STM32F405"
     pub mcu: Option<String>,
-    /// Hex-encoded unique id (MSP_UID)
+    /// MCU unique id from MSP_UID (160): three little-endian u32, each formatted as
+    /// lowercase hex without padding and concatenated (Betaflight Configurator's
+    /// `deviceIdentifier`). Used as the backup folder name. `None` only if MSP_UID fails.
     pub uid: Option<String>,
     /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
     pub build_options: Vec<String>,
