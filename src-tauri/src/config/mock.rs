@@ -381,7 +381,6 @@ impl MockFc {
         let args = args.trim();
         match cmd {
             "version" => self.banner(),
-            "mcu_id" => format!("mcu_id {}\r\n", self.mcu_id),
             "batch" => match args {
                 "start" => {
                     self.batch_error = false;
@@ -575,6 +574,12 @@ impl Connection for MockFc {
             }
         }
         Ok(self.exec(line))
+    }
+
+    /// Like the device connection's cached MSP_UID; `None` when `mcu_id` is empty
+    /// (MSP_UID unsupported).
+    fn uid(&self) -> Option<String> {
+        (!self.mcu_id.is_empty()).then(|| self.mcu_id.clone())
     }
 
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {

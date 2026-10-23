@@ -322,8 +322,6 @@ fn sitl_end_to_end_apply_error_and_rollback() {
     fc.enter_cli().unwrap();
     let (vi, dialect) = session::read_version(&mut fc).unwrap();
     assert_eq!(vi.version, info.firmware_version);
-    // The backup folder key read over the CLI (`mcu_id`) equals the MSP_UID form.
-    assert_eq!(session::board_uid(&mut fc).unwrap(), uid);
     let original = {
         let r = fc.cli_exec("get serialrx_provider").unwrap();
         r.lines()

@@ -42,6 +42,13 @@ impl LinkSource for ConnectionManager {
 
 // ------------------------------------------------------------------ logic (testable)
 
+/// Backup folder key `backups/<boardUid>/`: the link's cached MSP_UID in the CLI
+/// `mcu_id` form (`FcInfo.uid`, ARCHITECTURE §4.1; no I/O), `unknown` if the FC did not
+/// report one (§5.1).
+fn board_uid(link: &dyn FcLink) -> String {
+    link.uid().unwrap_or_else(|| "unknown".into())
+}
+
 /// C2: the FC's serial ports (`serial`, dialect-specific identifiers).
 pub fn read_ports(links: &impl LinkSource) -> AppResult<Vec<FcSerialPort>> {
     links.with_link(|l| session::read_ports(l))
@@ -50,7 +57,7 @@ pub fn read_ports(links: &impl LinkSource) -> AppResult<Vec<FcSerialPort>> {
 /// C4: `diff all` -> `backups/<mcu_id>/<UTC stamp>.txt`.
 pub fn backup(links: &impl LinkSource, store: &BackupStore) -> AppResult<Backup> {
     links.with_link(|l| {
-        let uid = session::board_uid(l)?;
+        let uid = board_uid(l);
         session::backup(l, store, &uid)
     })
 }
@@ -70,7 +77,7 @@ pub fn apply(
     // Checked before the port is borrowed: a bad script sends nothing at all.
     super::guard::validate_script(&script.commands)?;
     links.with_link(|l| {
-        let uid = session::board_uid(l)?;
+        let uid = board_uid(l);
         session::apply(l, script, store, &uid, progress)
     })
 }
@@ -104,7 +111,7 @@ pub fn restore(
     // Checked before the port is borrowed: a tampered or foreign file sends nothing.
     super::guard::replay_lines(&std::fs::read_to_string(&target.path)?)?;
     links.with_link(|l| {
-        let uid = session::board_uid(l)?;
+        let uid = board_uid(l);
         let known = |u: &str| !u.is_empty() && u != "unknown";
         if known(&uid) && known(&target.board_uid) && !uid.eq_ignore_ascii_case(&target.board_uid) {
             return Err(AppError::Config(format!(
@@ -244,8 +251,9 @@ mod tests {
     use super::*;
     use crate::config::firmware::Dialect;
     use crate::config::mock::MockFc;
-    use crate::device::manager::{BoxLink, Lister, Opener};
-    use crate::device::mock::MockSerial;
+    use crate::device::manager::{BoxLink, Lister, Opener, PortIdentity};
+    use crate::device::motor::fake::{CliBackend, FakeFc};
+    use crate::device::Connection;
     use crate::error::PortHolder;
     use crate::model::ConfigStage;
 
@@ -293,20 +301,7 @@ mod tests {
         BackupStore::new(dir)
     }
 
-    const UID: &str = "000000000000000100000002"; // fixture `mcu_id`
-
-    #[test]
-    fn mcu_id_parsing() {
-        assert_eq!(
-            session::parse_mcu_id("mcu_id\r\nmcu_id 0033002B3138510B32383733\r\n").as_deref(),
-            Some("0033002b3138510b32383733")
-        );
-        assert_eq!(
-            session::parse_mcu_id("mcu_id\r\n###ERROR IN input###"),
-            None
-        );
-        assert_eq!(session::parse_mcu_id("mcu_id 12345"), None);
-    }
+    const UID: &str = "000000000000000100000002"; // fixture `mcu_id` = MockFc::uid()
 
     #[test]
     fn read_ports_and_backup_use_the_borrowed_link() {
@@ -335,9 +330,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_mcu_id_goes_to_the_unknown_folder() {
+    fn unknown_uid_goes_to_the_unknown_folder() {
         let mut fc = MockFc::load("4.5", "speedybeef405v4");
-        fc.fail_on.push("mcu_id".into());
+        fc.mcu_id.clear(); // link.uid() == None (MSP_UID unsupported)
         let src = MockSource::new(fc);
         let st = store("bk-unknown");
         let bk = backup(&src, &st).unwrap();
@@ -445,7 +440,7 @@ mod tests {
             "{e:?}"
         );
         src.fc(|fc| {
-            assert_eq!(fc.log, ["mcu_id"]);
+            assert!(fc.log.is_empty(), "{:?}", fc.log); // the UID check needs no I/O
             assert_eq!(fc.reboots, 0);
         });
         let _ = std::fs::remove_dir_all(st.root());
@@ -498,13 +493,47 @@ mod tests {
         assert!(plan(&*src, &model("cinematic-7in-hd")).is_ok());
     }
 
-    /// The real connection manager: the same codes come straight from `with_link`.
+    /// Config's MockFc as the CLI of device's fake FC (which answers MSP), so the real
+    /// `ConnectionManager` connects, identifies and serves `with_link` like with a board.
+    struct CliOf(MockFc);
+
+    impl CliBackend for CliOf {
+        fn enter(&mut self) {
+            let _ = self.0.enter_cli();
+        }
+        fn exec(&mut self, line: &str) -> String {
+            self.0
+                .cli_exec(line)
+                .unwrap_or_else(|e| format!("###ERROR: {e}###"))
+        }
+        fn reboot(&mut self) {
+            let _ = self.0.exit_cli(false);
+            let _ = self.0.msp_request(session::MSP_SET_REBOOT, &[0]);
+        }
+    }
+
+    /// The real connection manager on a fake 4.5 FC: codes come straight from
+    /// `with_link`, and the backup folder is the UID the manager read over MSP_UID.
     #[test]
-    fn connection_manager_codes() {
-        let opener: Opener = Arc::new(|_| Ok(Box::new(MockSerial::silent()) as BoxLink));
-        let lister: Lister = Arc::new(Vec::new);
+    fn connection_manager_codes_and_uid() {
+        let fc = FakeFc::default(); // API 1.46, MSP_UID words 1, 2, 3
+        *fc.cli_backend.lock().unwrap() =
+            Some(Box::new(CliOf(MockFc::load("4.5", "speedybeef405v4"))));
+        let f2 = fc.clone();
+        let opener: Opener = Arc::new(move |_| Ok(Box::new(f2.serial()) as BoxLink));
+        let lister: Lister = Arc::new(|| {
+            vec![PortIdentity {
+                path: "COM9".into(),
+                vid: Some(0x0483),
+                pid: Some(0x5740),
+                serial_number: Some("0x8000000".into()),
+                ..Default::default()
+            }]
+        });
         let mgr = Arc::new(
-            ConnectionManager::new(opener, lister).with_poll_interval(Duration::from_millis(5)),
+            ConnectionManager::new(opener, lister)
+                .with_poll_interval(Duration::from_millis(5))
+                .with_msp_timeout(Duration::from_millis(100)),
         );
         assert!(matches!(read_ports(&*mgr), Err(AppError::NotConnected)));
         assert!(matches!(
@@ -512,7 +541,15 @@ mod tests {
             Err(AppError::NotConnected)
         ));
 
+        let t0 = std::time::Instant::now();
         mgr.connect("COM9").unwrap();
+        let st = store("mgr");
+        let bk = backup(&*mgr, &st).unwrap();
+        assert_eq!(bk.board_uid, "000000010000000200000003");
+        assert!(PathBuf::from(&bk.path).starts_with(st.root().join(&bk.board_uid)));
+        assert!(!read_ports(&*mgr).unwrap().is_empty());
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+
         let (held_tx, held_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let m2 = mgr.clone();
@@ -524,7 +561,6 @@ mod tests {
             })
         });
         held_rx.recv().unwrap();
-        let st = store("mgr-busy");
         let e = backup(&*mgr, &st).unwrap_err();
         assert!(
             matches!(&e, AppError::PortBusy { port, held_by: PortHolder::App } if port == "COM9"),
@@ -532,5 +568,6 @@ mod tests {
         );
         release_tx.send(()).unwrap();
         t.join().unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(st.root());
     }
 }

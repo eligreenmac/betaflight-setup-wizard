@@ -70,25 +70,6 @@ pub fn read_version<C: Connection + ?Sized>(conn: &mut C) -> AppResult<(VersionI
     Ok((info, dialect))
 }
 
-/// The board's `mcu_id` (CLI command `mcu_id`, `"%08x%08x%08x"` of U_ID_0..2): the same
-/// 24-char lowercase hex string as `FcInfo.uid` (ARCHITECTURE §4.1), used as the backup
-/// folder `backups/<boardUid>/`. Read over the CLI so it works whatever mode the link is
-/// in (on 4.4 MSP is unavailable while the CLI is active). `"unknown"` if the FC does not
-/// print one (§5.1).
-pub fn board_uid<C: Connection + ?Sized>(conn: &mut C) -> AppResult<String> {
-    conn.enter_cli()?;
-    let out = conn.cli_exec("mcu_id")?;
-    Ok(parse_mcu_id(&out).unwrap_or_else(|| "unknown".into()))
-}
-
-/// `mcu_id 0033002b3138510b32383733` -> the hex string (24 hex digits, lowercased).
-pub fn parse_mcu_id(out: &str) -> Option<String> {
-    out.lines().find_map(|l| {
-        let v = l.trim().strip_prefix("mcu_id ")?.trim();
-        (v.len() == 24 && v.chars().all(|c| c.is_ascii_hexdigit())).then(|| v.to_ascii_lowercase())
-    })
-}
-
 /// C2: `serial` -> `FcSerialPort[]` with dialect-specific identifiers.
 pub fn read_ports<C: Connection + ?Sized>(conn: &mut C) -> AppResult<Vec<FcSerialPort>> {
     let (_, dialect) = read_version(conn)?;
