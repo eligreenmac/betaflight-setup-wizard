@@ -1,0 +1,4 @@
+feature
+Enabled: TELEMETRY RX_MSP AIRMODE ANTI_GRAVITY 
+
+# 

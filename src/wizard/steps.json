@@ -7,6 +7,8 @@
     { "id": "components", "titleKey": "steps.components.title", "component": "Components" },
     { "id": "receiver",   "titleKey": "steps.receiver.title",   "component": "Receiver",
       "when": [{ "path": "receiver.kind", "notEquals": "NONE" }] },
+    { "id": "binding",    "titleKey": "steps.binding.title",    "component": "Binding",
+      "when": [{ "path": "receiver.protocol", "in": ["EXPRESSLRS", "CRSF"] }] },
     { "id": "vtx",        "titleKey": "steps.vtx.title",        "component": "Vtx",
       "when": [{ "path": "vtx.kind", "notEquals": "NONE" }] },
     { "id": "gps",        "titleKey": "steps.gps.title",        "component": "Gps",

@@ -1,17 +1,25 @@
 //! C1: `MockFc`, a stateful Betaflight CLI simulator implementing `device::Connection`,
 //! seeded from dump-format fixtures in `src-tauri/tests/fixtures/<firmware>/`.
 //!
-//! The fixtures are synthetic (hand-written from the 4.4.3 / 4.5.x / 2025.12.x CLI
-//! sources), not recordings from hardware. The simulator models what the config
-//! workstream depends on: `version`, `serial`, `feature`, `set`/`get`, `aux`, `resource`,
+//! The fixtures are composed from real public sources (Betaflight SITL `dump all` plus
+//! the board's unified-target / config.h; see `tests/fixtures/README.md`). Responses
+//! follow what Betaflight 4.4.3 / 4.5.5 / 2025.12.5 SITL actually print
+//! (`tests/fixtures/sitl/<version>/transcript.txt`): every line is echoed, then
+//! `serialrx_provider set to CRSF`, `Enabled RX_MSP`, `###ERROR IN set: INVALID NAME: foo = 1###`,
+//! `###ERROR IN input: UNKNOWN COMMAND, TRY 'HELP'###`, and so on.
+//!
+//! Modelled: `version`, `serial`, `feature`, `set`/`get`, `aux`, `resource`,
 //! `batch start|end`, `defaults nosave`, `dump all`, `diff all`, save/exit semantics
-//! (unsaved changes are lost on `exit`; `save` is refused after a batch error) and
-//! error injection.
+//! (unsaved changes are lost on `exit`; `save` persists even after a batch error, as on
+//! real firmware, so the engine must never send it then), compiled-out features
+//! (`unavailable`), error injection, and the MSP identification messages
+//! (API_VERSION, FC_VARIANT, FC_VERSION, BOARD_INFO, BUILD_INFO, UID).
 
 use std::collections::BTreeMap;
 
 use super::firmware::Dialect;
 use super::generate::serial_cmd;
+use super::msp;
 use super::snapshot::{parse_dump, parse_serial_line, AuxSlot, Snapshot};
 use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
@@ -56,6 +64,18 @@ pub enum LinkFault {
 pub struct MockFc {
     pub version: String,
     pub board_name: String,
+    /// `# Betaflight / STM32F405 (S405) 4.5.5 ...` line from the fixture.
+    banner_line: String,
+    /// "STM32F405", "S405" from the banner.
+    pub mcu: String,
+    pub board_identifier: String,
+    pub manufacturer_id: String,
+    /// CLI `mcu_id` (24 hex digits); MSP_UID returns it as three LE u32 words.
+    pub mcu_id: String,
+    /// Features compiled out of this build: `feature X` answers "unavailable".
+    pub unavailable_features: Vec<String>,
+    /// Number of `save` commands accepted while the batch had errors (real firmware saves).
+    pub saves_after_error: usize,
     dialect: Dialect,
     defaults: State,
     saved: State,
@@ -84,6 +104,53 @@ fn err(cmd: &str, reason: &str) -> String {
     format!("###ERROR IN {cmd}: {reason}###\r\n")
 }
 
+fn unknown_command() -> String {
+    err("input", "UNKNOWN COMMAND, TRY 'HELP'")
+}
+
+/// Lookup-table values MockFc enforces (`###ERROR IN set: INVALID VALUE###`). Only
+/// tables captured from SITL are listed (in firmware order); booleans are ON/OFF;
+/// other settings accept any value.
+fn allowed_values(
+    dialect: Dialect,
+    name: &str,
+    current: Option<&String>,
+) -> Option<Vec<&'static str>> {
+    const RX: [&str; 14] = [
+        "SPEK2048",
+        "SBUS",
+        "SUMD",
+        "SUMH",
+        "XB-B",
+        "XB-B-RJ01",
+        "IBUS",
+        "JETIEXBUS",
+        "CRSF",
+        "SRXL",
+        "CUSTOM",
+        "FPORT",
+        "SRXL2",
+        "GHST",
+    ];
+    match (name, current.map(String::as_str)) {
+        ("serialrx_provider", _) => Some(match dialect {
+            Dialect::V4_4 => [&["SPEK1024"][..], &RX].concat(),
+            Dialect::V4_5 => [&["NONE"][..], &RX, &["SPEK1024"]].concat(),
+            Dialect::V2025_12 => [&["NONE"][..], &RX, &["SPEK1024", "MAVLINK"]].concat(),
+        }),
+        (_, Some("ON" | "OFF")) => Some(vec!["OFF", "ON"]),
+        _ => None,
+    }
+}
+
+/// Value of a `name value` line in a dump, e.g. `mcu_id`.
+fn dump_value<'a>(dump: &'a str, key: &str) -> Option<&'a str> {
+    dump.lines()
+        .filter_map(|l| l.trim().strip_prefix(key))
+        .find(|r| r.starts_with(' '))
+        .map(str::trim)
+}
+
 impl MockFc {
     pub fn from_dump(dump: &str) -> MockFc {
         let snap = parse_dump(dump);
@@ -93,8 +160,34 @@ impl MockFc {
             .expect("fixture needs a version banner");
         let dialect = Dialect::from_version(&version).unwrap_or(Dialect::V2025_12);
         let st = State::from_snapshot(&snap);
+        let banner_line = dump
+            .lines()
+            .find(|l| l.starts_with("# Betaflight /"))
+            .unwrap_or("# Betaflight / STM32F405 (S405)")
+            .trim()
+            .to_string();
+        // "# Betaflight / STM32F405 (S405) 4.5.5 ..."
+        let mut w = banner_line.split_whitespace().skip(3);
+        let mcu = w.next().unwrap_or("STM32F405").to_string();
+        let board_identifier = w
+            .next()
+            .unwrap_or("(S405)")
+            .trim_matches(|c| c == '(' || c == ')')
+            .to_string();
+        let manufacturer_id = dump_value(dump, "manufacturer_id")
+            .unwrap_or_default()
+            .to_string();
         MockFc {
             board_name: snap.board_name.clone().unwrap_or_default(),
+            banner_line,
+            mcu,
+            board_identifier,
+            manufacturer_id,
+            mcu_id: dump_value(dump, "mcu_id")
+                .unwrap_or("000000000000000100000002")
+                .to_string(),
+            unavailable_features: Vec::new(),
+            saves_after_error: 0,
             version,
             dialect,
             defaults: st.clone(),
@@ -128,10 +221,84 @@ impl MockFc {
     }
 
     fn banner(&self) -> String {
-        format!(
-            "# Betaflight / STM32F405 (S405) {} Jan  1 2026 / 00:00:00 (mock) MSP API: 1.46\r\n# board_name: {}\r\n",
-            self.version, self.board_name
-        )
+        let mut b = format!("{}\r\n", self.banner_line);
+        if !self.board_name.is_empty() {
+            b += &format!("# board_name: {}\r\n", self.board_name);
+            if !self.manufacturer_id.is_empty() {
+                b += &format!("# manufacturer_id: {}\r\n", self.manufacturer_id);
+            }
+        }
+        b
+    }
+
+    fn api_version(&self) -> (u8, u8) {
+        self.banner_line
+            .split("MSP API: ")
+            .nth(1)
+            .and_then(|v| {
+                let (a, b) = v.trim().split_once('.')?;
+                Some((a.parse().ok()?, b.parse().ok()?))
+            })
+            .unwrap_or((1, 46))
+    }
+
+    /// Reply payload for an MSP request, laid out like Betaflight's `msp.c`.
+    pub fn msp_reply(&self, code: u16) -> Option<Vec<u8>> {
+        let pstr = |o: &mut Vec<u8>, s: &str| {
+            o.push(s.len() as u8);
+            o.extend_from_slice(s.as_bytes());
+        };
+        Some(match code {
+            msp::MSP_API_VERSION => {
+                let (a, b) = self.api_version();
+                vec![0, a, b]
+            }
+            msp::MSP_FC_VARIANT => b"BTFL".to_vec(),
+            msp::MSP_FC_VERSION => {
+                let n: Vec<u16> = self
+                    .version
+                    .split('.')
+                    .filter_map(|x| x.parse().ok())
+                    .collect();
+                let (a, b, c) = (
+                    n[0],
+                    n.get(1).copied().unwrap_or(0),
+                    n.get(2).copied().unwrap_or(0),
+                );
+                if a >= 2025 {
+                    let mut o = vec![(a % 100) as u8, b as u8, c as u8];
+                    pstr(&mut o, &self.version);
+                    o
+                } else {
+                    vec![a as u8, b as u8, c as u8]
+                }
+            }
+            msp::MSP_BOARD_INFO => {
+                let mut o = self.board_identifier.as_bytes().to_vec();
+                o.resize(4, b' ');
+                o.extend_from_slice(&0u16.to_le_bytes()); // hardware revision
+                o.push(2); // onboard max7456
+                o.push(0); // target capabilities
+                pstr(&mut o, &self.mcu);
+                pstr(&mut o, &self.board_name);
+                pstr(&mut o, &self.manufacturer_id);
+                o.extend_from_slice(&[0; 32]); // signature
+                o.push(msp::mcu_type_id(&self.mcu));
+                o.push(2); // configuration state: CONFIGURED
+                o.extend_from_slice(&8000u16.to_le_bytes()); // gyro sample rate
+                o.extend_from_slice(&0u32.to_le_bytes()); // configuration problems
+                o.extend_from_slice(&[0, 0]); // SPI / I2C device counts
+                o
+            }
+            msp::MSP_BUILD_INFO => {
+                // "Mmm dd yyyy" + "hh:mm:ss" + 7-char revision, as printed in the banner.
+                let mut o = b"Jan  1 202600:00:00".to_vec();
+                o.extend_from_slice(b"mockrev");
+                o
+            }
+            msp::MSP_UID => msp::encode_uid(&self.mcu_id)?,
+            _ => return None,
+        })
     }
 
     fn render(&self, diff: bool) -> String {
@@ -184,13 +351,17 @@ impl MockFc {
             .any(|f| line == f || line.starts_with(f.as_str()))
         {
             self.batch_error = true;
-            return err(line.split(' ').next().unwrap_or(line), "INJECTED FAILURE");
+            return format!(
+                "{line}\r\n{}",
+                err(line.split(' ').next().unwrap_or(line), "INJECTED FAILURE")
+            );
         }
         let r = self.exec_inner(line);
         if r.contains("###ERROR") {
             self.batch_error = true;
         }
-        r
+        // The CLI echoes every line before answering.
+        format!("{line}\r\n{r}")
     }
 
     fn exec_inner(&mut self, line: &str) -> String {
@@ -203,8 +374,12 @@ impl MockFc {
                     self.batch_error = false;
                     "Command batch started\r\n".into()
                 }
+                "end" if self.batch_error => err(
+                    "batch",
+                    "ERRORS WERE DETECTED - PLEASE REVIEW BEFORE CONTINUING",
+                ),
                 "end" => "Command batch ended\r\n".into(),
-                _ => err("batch", "INVALID ARGUMENT"),
+                _ => unknown_command(),
             },
             "defaults" if args == "nosave" => {
                 self.live = self.defaults.clone();
@@ -221,50 +396,80 @@ impl MockFc {
                 .collect(),
             "serial" => match parse_serial_line(line, self.dialect) {
                 Some(p) if self.live.ports.iter().any(|q| q.name == p.name) => {
+                    let echo = serial_cmd(&p, p.function_mask, self.dialect) + "\r\n";
                     if let Some(q) = self.live.ports.iter_mut().find(|q| q.name == p.name) {
                         *q = p;
                     }
-                    String::new()
+                    echo
                 }
-                _ => err("serial", "INVALID PORT"),
+                // Real firmware: 2025.12 cannot parse an unknown port name; 4.x rejects an
+                // unknown numeric identifier as an argument-count error.
+                _ if self.dialect == Dialect::V2025_12 => err("serial", "PARSING FAILED"),
+                _ => err("serial", "INVALID ARGUMENT COUNT"),
             },
             "feature" => {
                 let (name, on) = match args.strip_prefix('-') {
                     Some(n) => (n, false),
                     None => (args, true),
                 };
+                if self.unavailable_features.iter().any(|f| f == name) {
+                    return if self.dialect == Dialect::V2025_12 {
+                        format!("Unavailable {name}\r\n")
+                    } else {
+                        "unavailable\r\n".into()
+                    };
+                }
                 match self.live.features.get_mut(name) {
                     Some(v) => {
                         *v = on;
                         format!("{} {name}\r\n", if on { "Enabled" } else { "Disabled" })
                     }
-                    None => err("feature", "INVALID NAME"),
+                    None => err("feature", &format!("INVALID NAME: {name}")),
                 }
             }
             "set" => {
                 let Some((k, v)) = args.split_once('=') else {
-                    return err("set", "INVALID ARGUMENT");
+                    return match self.live.settings.get(args) {
+                        Some(v) => format!("{args} = {v}\r\n"),
+                        None => err("set", &format!("INVALID NAME: {args}")),
+                    };
                 };
                 let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_string());
+                if let Some(allowed) = allowed_values(self.dialect, &k, self.live.settings.get(&k))
+                {
+                    if !allowed.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
+                        return format!(
+                            "{}Allowed values: {}\r\n",
+                            err("set", "INVALID VALUE"),
+                            allowed.join(", ")
+                        );
+                    }
+                }
                 match self.live.settings.get_mut(&k) {
                     Some(slot) => {
                         *slot = v.clone();
                         format!("{k} set to {v}\r\n")
                     }
-                    None => err("set", "INVALID NAME"),
+                    None => err("set", &format!("INVALID NAME: {args}")),
                 }
             }
             "get" => match self.live.settings.get(args) {
                 Some(v) => format!("{args} = {v}\r\n"),
-                None => err("get", "INVALID NAME"),
+                None => err("get", &format!("INVALID NAME: {args}")),
             },
             "aux" => {
                 let n: Vec<u16> = args
                     .split_whitespace()
                     .filter_map(|x| x.parse().ok())
                     .collect();
-                if n.len() < 5 || n[0] >= u16::from(AuxSlot::COUNT) {
-                    return err("aux", "INVALID ARGUMENT");
+                if n.first().is_some_and(|i| *i >= u16::from(AuxSlot::COUNT)) {
+                    return err(
+                        "aux",
+                        &format!("INDEX NOT BETWEEN 0 AND {}", AuxSlot::COUNT - 1),
+                    );
+                }
+                if n.len() < 5 {
+                    return err("aux", "INVALID ARGUMENT COUNT");
                 }
                 let a = AuxSlot {
                     slot: n[0] as u8,
@@ -289,19 +494,20 @@ impl MockFc {
                     err("resource", "INVALID ARGUMENT")
                 }
             }
-            _ => err(cmd, "UNKNOWN COMMAND"),
+            _ => unknown_command(),
         }
     }
 }
 
 impl Connection for MockFc {
-    /// Only MSP_SET_REBOOT is modelled: it reboots, dropping unsaved RAM changes.
+    /// MSP_SET_REBOOT reboots, dropping unsaved RAM changes; identification codes are
+    /// answered from `msp_reply`.
     fn msp_request(&mut self, code: u16, _payload: &[u8]) -> AppResult<Vec<u8>> {
         if self.unplugged {
             return Err(AppError::Serial("port closed".into()));
         }
         if self.in_cli {
-            return Err(AppError::Msp("no MSP reply while in CLI mode".into()));
+            return Err(AppError::Cli("MSP request while in CLI mode".into()));
         }
         if code == super::session::MSP_SET_REBOOT {
             self.log.push("MSP_SET_REBOOT".into());
@@ -309,7 +515,8 @@ impl Connection for MockFc {
             self.reboots += 1;
             return Ok(vec![0]);
         }
-        Err(AppError::NotImplemented("MockFc::msp_request"))
+        self.msp_reply(code)
+            .ok_or_else(|| AppError::Cli(format!("MSP {code}: unsupported by MockFc")))
     }
 
     fn enter_cli(&mut self) -> AppResult<()> {
@@ -358,9 +565,8 @@ impl Connection for MockFc {
         if save {
             self.log.push("save".into());
             if self.batch_error {
-                return Err(AppError::Cli(
-                    "save refused: PLEASE FIX ERRORS THEN 'SAVE'".into(),
-                ));
+                // Verified on 4.4.3 / 4.5.5 / 2025.12.5 SITL: the failed batch is saved anyway.
+                self.saves_after_error += 1;
             }
             self.saved = self.live.clone();
         } else if self.dialect == Dialect::V4_4 {

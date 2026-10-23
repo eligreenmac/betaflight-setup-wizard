@@ -9,7 +9,7 @@ import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
 import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
-import { hasOnboardElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
+import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
 /** A validation problem; `key` is an i18n key under `validation.*`. */
@@ -108,6 +108,18 @@ export const guards: Record<string, StepGuard> = {
       const allowed = r.kind === "SPI" ? SPI_RX_PROTOCOLS : SERIAL_RX_PROTOCOLS;
       if (!r.protocol || !allowed.includes(r.protocol)) issues.push({ key: "validation.rxProtocolRequired" });
       return [...issues, ...portIssues(s, "receiver")];
+    },
+  },
+  binding: {
+    canEnter: configured,
+    validate: (s) => {
+      if (!bindingApplies(s)) return [];
+      const r = s.model.receiver;
+      if (r.kind === "SERIAL" && !s.ui.crsfFamily) return [{ key: "validation.crsfFamilyRequired" }];
+      if (!isElrs(s)) return [];
+      if (!s.ui.elrsBinding) return [{ key: "validation.bindingRequired" }];
+      if (r.kind === "SPI" && s.ui.elrsBinding === "phrase" && r.elrsUid?.length !== 6) return [{ key: "validation.phraseNotSet" }];
+      return [];
     },
   },
   vtx: {

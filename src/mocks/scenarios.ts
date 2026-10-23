@@ -444,6 +444,7 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript
     commands.push(`set serialrx_inverted = ${model.receiver.inverted ? "ON" : "OFF"}`, `set serialrx_halfduplex = ${model.receiver.halfDuplex ? "ON" : "OFF"}`);
   }
   if (model.receiver.kind === "SPI" && model.receiver.protocol) commands.push("feature -RX_SERIAL", "feature RX_SPI", `set rx_spi_protocol = ${model.receiver.protocol}`);
+  if (model.receiver.kind === "SPI" && model.receiver.elrsUid?.length === 6) commands.push(`set expresslrs_uid = ${model.receiver.elrsUid.join(",")}`);
   const p = model.receiver.protocol;
   if (model.receiver.telemetry && (p === "CRSF" || p === "FPORT" || (model.receiver.kind === "SPI" && p === "EXPRESSLRS"))) commands.push("feature TELEMETRY");
   if (model.gps.enabled) commands.push("feature GPS", `set gps_provider = ${model.gps.provider ?? "UBLOX"}`);
