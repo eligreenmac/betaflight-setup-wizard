@@ -281,9 +281,41 @@ export interface ApplyResult {
   backup: Backup | null;
   reconnected: boolean;
 }
-export type ConfigStage = "BACKUP" | "SENDING" | "SAVING" | "REBOOTING" | "RECONNECTED";
-/** Payload of event `config://progress`. */
-export interface ConfigProgress { stage: ConfigStage; fraction: number; message: string | null }
+/** RESTORING: config_restore_after_flash replaying a backup (§5.2). */
+export type ConfigStage = "BACKUP" | "SENDING" | "RESTORING" | "SAVING" | "REBOOTING" | "RECONNECTED";
+/** Payload of event `config://progress`. `message` never contains a backup line. `line` / `total`:
+ * RESTORING only (1-based line being replayed, 0 before the first / number of backup lines). */
+export interface ConfigProgress { stage: ConfigStage; fraction: number; message: string | null; line?: number; total?: number }
+
+/** Result of config_restore_after_flash (ARCHITECTURE §5.2). Every non-empty line of the backup's
+ * `diff all` body is in exactly one of applied / failed / skipped. `saved` is true even when some
+ * lines failed (intended on this path). fromVersion / toVersion are full versions ("2025.12.5"). */
+export interface RestoreReport {
+  applied: number;
+  failed: RestoreFailure[];
+  skipped: RestoreSkip[];
+  warnings: string[];
+  saved: boolean;
+  lineChanged: boolean;
+  fromVersion: string;
+  toVersion: string;
+}
+/** `line`: the backup line (secret values masked). `error`: the FC's error (+ the mapped command). */
+export interface RestoreFailure { line: string; error: string }
+/** Why a backup line was not sent (ARCHITECTURE §5.2). */
+export type RestoreSkipReason =
+  | "COMMENT"
+  | "SESSION_CONTROL"
+  | "BOARD_IDENTITY"
+  | "HARDWARE_LINE_CHANGED"
+  | "REMOVED_ON_TARGET"
+  | "NOT_IN_BUILD"
+  | "SEMANTICS_CHANGED"
+  | "NO_EQUIVALENT_MODE"
+  | "PORT_NOT_AVAILABLE"
+  | "OTHER_BATTERY_PROFILE";
+/** `detail`: human-readable explanation, e.g. "removed in 2025.12". */
+export interface RestoreSkip { line: string; reason: RestoreSkipReason; detail: string }
 export interface Mismatch { setting: string; expected: string; actual: string }
 export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
 
@@ -437,10 +469,21 @@ export interface BuildOptionsUnavailableDetails { release: string }
 export interface RequiredOptionUnsupportedDetails { release: string; options: string[] }
 
 /** Machine-readable reason on some CONFIG errors (ARCHITECTURE §2.3). OSD_HD_NO_DISPLAYPORT: the model
- * asks for an HD OSD but the FC's firmware build has no MSP DisplayPort. */
-export type ConfigErrorReason = "OSD_HD_NO_DISPLAYPORT";
-/** `details` of a CONFIG error that has a reason (other CONFIG errors have no details). */
-export interface ConfigErrorDetails { reason: ConfigErrorReason }
+ * asks for an HD OSD but the FC's firmware build has no MSP DisplayPort. The other four come from
+ * config_restore_after_flash (§5.2); the UI treats each of them as "the flash succeeded, but the
+ * settings weren't restored". */
+export type ConfigErrorReason =
+  | "OSD_HD_NO_DISPLAYPORT"
+  | "BOARD_UID_MISMATCH"
+  | "BACKUP_NOT_DIFF_ALL"
+  | "BACKUP_UNREADABLE"
+  | "BOARD_NOT_RECONNECTED";
+/** `details` of a CONFIG error that has a reason (other CONFIG errors have no details).
+ * config_restore_after_flash always sets `backupId`; `path` when the backup file was resolved;
+ * `stage` (BOARD_NOT_RECONNECTED only) = last stage reached: absent = nothing was sent,
+ * RESTORING = dropped mid-replay (nothing saved), SAVING = save state unknown,
+ * REBOOTING = saved but the board did not come back. */
+export interface ConfigErrorDetails { reason: ConfigErrorReason; backupId?: string; path?: string; stage?: ConfigStage }
 
 /** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
  * ACC_NOT_AVAILABLE / BOARD_MOVING / PENDING_UNSAVED_CHANGES, and CONFIG with a reason. */

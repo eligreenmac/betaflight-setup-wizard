@@ -7,7 +7,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AccCalibrationResult, AppInfo, ApplyResult, Attitude, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
   FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FirmwareRequirements, FlashOptions, HostPort,
-  OsdLayout, OsdVideoSystem, SensorStatus, VerifyReport,
+  OsdLayout, OsdVideoSystem, RestoreReport, SensorStatus, VerifyReport,
 } from "../types/model";
 
 /** Map of command name -> [args, result]. Single source of truth on the TS side. */
@@ -57,6 +57,8 @@ export interface CommandMap {
   config_list_backups: [Record<string, never>, Backup[]];
   config_backups_dir: [Record<string, never>, string];
   config_restore: [{ backupId: string }, ApplyResult];
+  /** After a flash: replay a `diff all` backup across firmware lines (ARCHITECTURE §5.2). */
+  config_restore_after_flash: [{ backupId: string }, RestoreReport];
   /** Pure: config's default OSD layout for that video system and firmware line. */
   config_osd_default_layout: [{ videoSystem: OsdVideoSystem; firmwareVersion: string }, OsdLayout];
   /** Pure: per-firmware beepers / beacon events / OSD elements / mode names. */
@@ -147,6 +149,7 @@ export const api = {
     listBackups: () => call("config_list_backups", none),
     backupsDir: () => call("config_backups_dir", none),
     restore: (backupId: string) => call("config_restore", { backupId }),
+    restoreAfterFlash: (backupId: string) => call("config_restore_after_flash", { backupId }),
     osdDefaultLayout: (videoSystem: OsdVideoSystem, firmwareVersion: string) =>
       call("config_osd_default_layout", { videoSystem, firmwareVersion }),
     firmwareCatalog: (firmwareVersion: string) => call("config_firmware_catalog", { firmwareVersion }),

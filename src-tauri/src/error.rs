@@ -8,6 +8,8 @@
 
 use serde::Serialize;
 
+use crate::model::ConfigStage;
+
 /// Who holds a serial port when `PORT_BUSY` is returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -60,6 +62,20 @@ pub enum ConfigErrorReason {
     /// has no MSP DisplayPort (`displayport_msp_*` is missing from its dump).
     #[serde(rename = "OSD_HD_NO_DISPLAYPORT")]
     OsdHdNoDisplayport,
+    /// `config_restore_after_flash`: the backup was taken from a different board (MCU UID
+    /// differs, or a UID is unknown and the board names differ). Nothing was sent.
+    BoardUidMismatch,
+    /// `config_restore_after_flash`: the backup is not a full `diff all` (a plain `diff`, a
+    /// `dump`, or an imported file without the `defaults nosave` line). Nothing was sent.
+    BackupNotDiffAll,
+    /// `config_restore_after_flash`: the backup id is unknown, or its file is missing,
+    /// unreadable or unparseable (including a backup from an unsupported firmware line).
+    /// Nothing was sent.
+    BackupUnreadable,
+    /// `config_restore_after_flash`: no link to the board at start, the link dropped during
+    /// the restore, or the board did not come back after `save`. `details.stage` says how far
+    /// it got (ARCHITECTURE.md §5.2).
+    BoardNotReconnected,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,12 +96,20 @@ pub enum AppError {
     Firmware(String),
     #[error("configuration error: {0}")]
     Config(String),
-    /// A `CONFIG` error with `details: { reason }`, so the UI can react without parsing the
-    /// message. Same code and message format as [`AppError::Config`].
+    /// A `CONFIG` error with `details: { reason, backupId?, path?, stage? }`, so the UI can
+    /// react without parsing the message. Same code and message format as
+    /// [`AppError::Config`]. The optional fields are serialized only when set; build it with
+    /// [`AppError::config_rejected`] or [`AppError::restore_rejected`].
     #[error("configuration error: {message}")]
     ConfigRejected {
         message: String,
         reason: ConfigErrorReason,
+        /// Backup the operation was about to restore (`config_restore_after_flash`).
+        backup_id: Option<String>,
+        /// Absolute path of that backup file, when it was resolved.
+        path: Option<String>,
+        /// Last progress stage reached before the failure (`BOARD_NOT_RECONNECTED`).
+        stage: Option<ConfigStage>,
     },
     /// Firmware outside the supported lines (see `config::firmware::SUPPORTED_LINES`:
     /// 4.4.x, 4.5.x, 2025.12.x and 2026.6.x).
@@ -171,6 +195,35 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// `CONFIG` with `details: { reason }`.
+    pub fn config_rejected(reason: ConfigErrorReason, message: impl Into<String>) -> AppError {
+        AppError::ConfigRejected {
+            message: message.into(),
+            reason,
+            backup_id: None,
+            path: None,
+            stage: None,
+        }
+    }
+
+    /// `CONFIG` refusal/failure of `config_restore_after_flash`:
+    /// `details: { reason, backupId, path?, stage? }`.
+    pub fn restore_rejected(
+        reason: ConfigErrorReason,
+        message: impl Into<String>,
+        backup_id: &str,
+        path: Option<String>,
+        stage: Option<ConfigStage>,
+    ) -> AppError {
+        AppError::ConfigRejected {
+            message: message.into(),
+            reason,
+            backup_id: Some(backup_id.to_string()),
+            path,
+            stage,
+        }
+    }
+
     pub fn code(&self) -> &'static str {
         match self {
             AppError::NotImplemented(_) => "NOT_IMPLEMENTED",
@@ -240,8 +293,24 @@ impl AppError {
             AppError::RequiredOptionUnsupported { release, options } => {
                 Some(serde_json::json!({ "release": release, "options": options }))
             }
-            AppError::ConfigRejected { reason, .. } => {
-                Some(serde_json::json!({ "reason": reason }))
+            AppError::ConfigRejected {
+                reason,
+                backup_id,
+                path,
+                stage,
+                ..
+            } => {
+                let mut d = serde_json::json!({ "reason": reason });
+                if let Some(b) = backup_id {
+                    d["backupId"] = serde_json::json!(b);
+                }
+                if let Some(p) = path {
+                    d["path"] = serde_json::json!(p);
+                }
+                if let Some(st) = stage {
+                    d["stage"] = serde_json::json!(st);
+                }
+                Some(d)
             }
             _ => None,
         }
@@ -372,10 +441,10 @@ mod tests {
 
     #[test]
     fn config_errors_with_a_reason_carry_details() {
-        let v = serde_json::to_value(AppError::ConfigRejected {
-            message: "HD OSD needs MSP DisplayPort".into(),
-            reason: ConfigErrorReason::OsdHdNoDisplayport,
-        })
+        let v = serde_json::to_value(AppError::config_rejected(
+            ConfigErrorReason::OsdHdNoDisplayport,
+            "HD OSD needs MSP DisplayPort",
+        ))
         .unwrap();
         assert_eq!(v["code"], "CONFIG");
         assert_eq!(v["details"], json!({ "reason": "OSD_HD_NO_DISPLAYPORT" }));
@@ -389,6 +458,68 @@ mod tests {
                 .get("details"),
             None
         );
+    }
+
+    #[test]
+    fn restore_rejections_carry_backup_id_path_and_stage() {
+        let v = serde_json::to_value(AppError::restore_rejected(
+            ConfigErrorReason::BoardUidMismatch,
+            "the backup is from another board",
+            "0123/20261023T170000Z",
+            Some("/data/backups/0123/20261023T170000Z.txt".into()),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(v["code"], "CONFIG");
+        assert_eq!(
+            v["details"],
+            json!({
+                "reason": "BOARD_UID_MISMATCH",
+                "backupId": "0123/20261023T170000Z",
+                "path": "/data/backups/0123/20261023T170000Z.txt",
+            })
+        );
+        let v = serde_json::to_value(AppError::restore_rejected(
+            ConfigErrorReason::BoardNotReconnected,
+            "the board did not come back",
+            "b",
+            None,
+            Some(ConfigStage::Restoring),
+        ))
+        .unwrap();
+        assert_eq!(
+            v["details"],
+            json!({ "reason": "BOARD_NOT_RECONNECTED", "backupId": "b", "stage": "RESTORING" })
+        );
+        for (r, s) in [
+            (ConfigErrorReason::BackupNotDiffAll, "BACKUP_NOT_DIFF_ALL"),
+            (ConfigErrorReason::BackupUnreadable, "BACKUP_UNREADABLE"),
+        ] {
+            assert_eq!(serde_json::to_value(r).unwrap(), json!(s));
+        }
+    }
+
+    /// Every `ConfigErrorReason` must appear in the TypeScript `ConfigErrorReason` union.
+    #[test]
+    fn every_config_reason_is_in_the_typescript_union() {
+        let ts = include_str!("../../src/types/model.ts");
+        let start = ts
+            .find("export type ConfigErrorReason =")
+            .expect("ConfigErrorReason union");
+        let union = &ts[start..start + ts[start..].find(';').expect("end of union")];
+        for r in [
+            ConfigErrorReason::OsdHdNoDisplayport,
+            ConfigErrorReason::BoardUidMismatch,
+            ConfigErrorReason::BackupNotDiffAll,
+            ConfigErrorReason::BackupUnreadable,
+            ConfigErrorReason::BoardNotReconnected,
+        ] {
+            let quoted = serde_json::to_string(&r).unwrap();
+            assert!(
+                union.contains(&quoted),
+                "{quoted} missing from ConfigErrorReason"
+            );
+        }
     }
 
     /// `src/types/model.ts` (`AppErrorCode`) is the TypeScript source of truth for codes;
@@ -409,10 +540,7 @@ mod tests {
             AppError::Usb(String::new()),
             AppError::Firmware(String::new()),
             AppError::Config(String::new()),
-            AppError::ConfigRejected {
-                message: String::new(),
-                reason: ConfigErrorReason::OsdHdNoDisplayport,
-            },
+            AppError::config_rejected(ConfigErrorReason::OsdHdNoDisplayport, ""),
             AppError::UnsupportedFirmware(String::new()),
             AppError::Driver(String::new()),
             AppError::BoardNotFound(String::new()),
