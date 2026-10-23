@@ -411,7 +411,8 @@ fn esc_section(cx: &mut Ctx) -> AppResult<()> {
                 "motor idle {idle} is out of range (0-2000, in 0.01 %)"
             )));
         }
-        if cx.dialect == Dialect::V2025_12 {
+        if cx.dialect.idle_setting() == "motor_idle" {
+            // 2025.12+: protocol-independent `motor_idle`.
             cx.push(format!("set motor_idle = {idle}"));
         } else if dshot {
             cx.push(format!("set dshot_idle_value = {idle}"));
@@ -922,7 +923,7 @@ fn osd_section(cx: &mut Ctx) -> AppResult<()> {
         ));
     }
     let (cols, rows) = vs.grid();
-    // osd_canvas_* exist on 4.4 / 4.5; 2025.12 hides them (OSD_CANVAS_SIZE_DEBUG) and
+    // osd_canvas_* exist on 4.4 / 4.5; 2025.12+ hides them (OSD_CANVAS_SIZE_DEBUG) and
     // takes the canvas from the HD device.
     let canvas = match snap {
         Some(s) => s.has_setting("osd_canvas_width"),

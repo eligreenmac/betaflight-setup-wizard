@@ -1,4 +1,7 @@
 //! Wizard-managed flight modes and their permanent box ids (betaflight msp/msp_box.c).
+//!
+//! 2026.6 adds AUTOPILOT (56) and WP CAPTURE (57) without renumbering anything. They are
+//! not wizard-managed: existing ranges using them are kept like any other unmanaged aux.
 
 use super::firmware::Dialect;
 

@@ -1,5 +1,6 @@
 //! Serial port function bitmask, from betaflight src/main/io/serial.h
-//! (stable across 4.4 .. 2025.12+).
+//! (stable across 4.4 .. 2026.6; 2026.6 adds LIDAR_NL and OSD_CUSTOM_TEXT, which the
+//! wizard never manages: they are kept like every other unmanaged bit).
 
 pub const MSP: u32 = 1 << 0;
 pub const GPS: u32 = 1 << 1;
@@ -19,6 +20,10 @@ pub const LIDAR: u32 = 1 << 15;
 pub const FRSKY_OSD: u32 = 1 << 16;
 pub const VTX_MSP: u32 = 1 << 17;
 pub const GIMBAL: u32 = 1 << 18;
+/// 2026.6+ (io/serial.h FUNCTION_LIDAR_NL)
+pub const LIDAR_NL: u32 = 1 << 19;
+/// 2026.6+ (io/serial.h FUNCTION_OSD_CUSTOM_TEXT)
+pub const OSD_CUSTOM_TEXT: u32 = 1 << 20;
 
 /// Functions the wizard manages. Everything else on a port is never touched.
 pub const MANAGED: u32 = RX_SERIAL | GPS | ESC_SENSOR | VTX_SMARTAUDIO | VTX_TRAMP | VTX_MSP;
@@ -65,8 +70,8 @@ pub fn functions_in(mask: u32) -> Vec<SerialFunction> {
 }
 
 /// `serial` identifier for a port name in the given dialect.
-/// 4.4/4.5: UART1=0..UART10=9; 2025.12: UART1=51.. (PR #14094). VCP=20,
-/// SOFTSERIAL1=30, LPUART1=40 in all.
+/// 4.4/4.5: UART1=0..UART10=9; 2025.12+: UART1=51.. (PR #14094; 2026.6 adds
+/// UART11..15 = 61..65). VCP=20, SOFTSERIAL1=30, LPUART1=40 in all.
 pub fn port_identifier(name: &str, dialect: Dialect) -> Option<i32> {
     match name {
         "VCP" => return Some(20),
@@ -86,7 +91,7 @@ pub fn port_identifier(name: &str, dialect: Dialect) -> Option<i32> {
     })
 }
 
-/// Inverse of [`port_identifier`]. 2025.12 also accepts legacy 0..=19 as UART1..
+/// Inverse of [`port_identifier`]. 2025.12+ also accepts legacy 0..=19 as UART1..
 pub fn port_name(identifier: i32, dialect: Dialect) -> Option<String> {
     match identifier {
         20 => Some("VCP".into()),
@@ -110,7 +115,7 @@ pub fn normalize_port_name(s: &str) -> String {
 }
 
 /// Mirror of betaflight io/serial.c `isSerialConfigValid` (identical rules in
-/// 4.4.3, 4.5.5 and 2025.12.5 apart from the soft-serial sanitising, and soft
+/// 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2 apart from the soft-serial sanitising, and soft
 /// serial is out of MVP scope). If the firmware finds the config invalid at boot
 /// it resets the WHOLE serial config to defaults, so the planner must refuse first.
 /// Returns a human-readable reason on failure.

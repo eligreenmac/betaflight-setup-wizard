@@ -24,6 +24,26 @@ use crate::model::CliScript;
 
 const PORT: u16 = 5761;
 
+/// Something already listens on TCP [`PORT`].
+fn port_busy() -> bool {
+    TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(200)).is_ok()
+}
+
+/// Wait up to 3 s for [`PORT`] to be free (our own SITL may still be exiting). Another
+/// process holding it (e.g. Device's SITL smoke test on the shared box) is an error: the
+/// test would otherwise talk to the wrong simulator. Never run two SITL tests at once.
+fn ensure_port_free() -> AppResult<()> {
+    for _ in 0..30 {
+        if !port_busy() {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err(AppError::Cli(format!(
+        "SITL: TCP {PORT} is already in use (another SITL running?); stop it first"
+    )))
+}
+
 struct SitlFc {
     bin: PathBuf,
     dir: PathBuf,
@@ -228,6 +248,7 @@ impl Reconnect for SitlFc {
         let mut last = AppError::Cli(format!("SITL did not open TCP {PORT}"));
         for _ in 0..3 {
             self.stop();
+            ensure_port_free()?;
             let log = std::fs::File::create(self.dir.join("sitl.log")).map_err(io)?;
             self.child = Some(
                 Command::new(&self.bin)
@@ -553,7 +574,7 @@ fn sitl_end_to_end_apply_error_and_rollback() {
         "set craft_name = LR7 Chimera".into(),
         "set motor_output_reordering = 1,0,3,2,4,5,6,7".into(),
     ]);
-    if dialect == Dialect::V2025_12 {
+    if dialect.idle_setting() == "motor_idle" {
         lines.push("set motor_idle = 450".into());
     }
     fc.enter_cli().unwrap();
@@ -573,7 +594,7 @@ fn sitl_end_to_end_apply_error_and_rollback() {
         snap.setting("motor_output_reordering"),
         Some("1,0,3,2,4,5,6,7")
     );
-    if dialect == Dialect::V2025_12 {
+    if dialect.idle_setting() == "motor_idle" {
         assert_eq!(snap.setting("motor_idle"), Some("450"));
     }
     let r = fc.cli_exec("set craft_name = -").unwrap();

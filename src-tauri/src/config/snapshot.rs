@@ -129,7 +129,7 @@ impl Snapshot {
     }
 }
 
-/// Parse one `serial` line. Accepts numeric (4.4/4.5, legacy) or named (2025.12) ports.
+/// Parse one `serial` line. Accepts numeric (4.4/4.5, legacy) or named (2025.12+) ports.
 pub fn parse_serial_line(line: &str, dialect: Dialect) -> Option<PortState> {
     let mut t = line.split_whitespace();
     if t.next()? != "serial" {

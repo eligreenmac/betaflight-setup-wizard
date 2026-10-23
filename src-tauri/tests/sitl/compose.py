@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Compose the per-board MockFc fixtures from public, GPL-3.0 sources.
 
-    tests/sitl/compose.py            # rewrites tests/fixtures/{4.4,4.5,2025.12}/*.dump.txt
+    tests/sitl/compose.py            # rewrites tests/fixtures/{4.4,4.5,2025.12,2026.6}/*.dump.txt
 
 Layer 1  real `dump all` captured from Betaflight SITL of the same release
          (tests/fixtures/sitl/<tag>/dump_all.txt): banner, section layout, the full
          feature-name list, every setting name and its firmware default.
 Layer 2  the board definition: betaflight/unified-targets .config (4.4) or
-         betaflight/config config.h (4.5, 2025.12), copied verbatim under
+         betaflight/config config.h (4.5, 2025.12, 2026.6; 2026.6.2 bundles the same
+         files under src/config/configs/), copied verbatim under
          tests/fixtures/boards/: board_name, manufacturer_id, MCU, pin resources,
          which UARTs exist, default serial functions/features/settings.
 Layer 3  settings and commands that SITL cannot compile (DShot, GPS, OSD, SPI ELRS,
@@ -20,7 +21,7 @@ import os, re
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures")
 
-RELEASES = {"4.4": "4.4.3", "4.5": "4.5.5", "2025.12": "2025.12.5"}
+RELEASES = {"4.4": "4.4.3", "4.5": "4.5.5", "2025.12": "2025.12.5", "2026.6": "2026.6.2"}
 BOARDS = {
     "speedybeef405v4": ("SPBE-SPEEDYBEEF405V4.config", "SPEEDYBEEF405V4"),
     "crazybeef4sx1280": ("HAMO-CRAZYBEEF4SX1280.config", "CRAZYBEEF4SX1280"),
@@ -47,7 +48,21 @@ OVERLAY = {
     "4.5": {"dshot_idle_value": "550",        # pg/motor.c digitalIdleOffsetValue = 550
             "osd_displayport_device": "MSP", "osd_canvas_width": "53", "osd_canvas_height": "20"},
     "2025.12": {"osd_displayport_device": "MSP"},  # motor_idle is present in SITL
+    # 2026.6.2: osd.c:420 MSP under USE_OSD_HD as in 2025.12; the SITL target now compiles
+    # GPS (gps_provider = VIRTUAL there, pg/gps.c:36; the "all" overlay restores UBLOX).
+    "2026.6": {"osd_displayport_device": "MSP",
+               "gps_ublox_enable_ana": "OFF"},    # pg/gps.c:51 .gps_ublox_enable_ana = false
 }
+
+# Features the 2026.6.2 SITL target enables (platform/SIMULATOR/target/SITL/target.h:111
+# ENABLE_RX_UDP, USE_GPS) that a board build has off by default: config/feature.c
+# DEFAULT_FEATURES; RX_UDP is SITL-only (featuresSupportedByBuild) but always printed.
+SITL_ONLY_ON = {"RX_UDP", "GPS"}
+
+# 2026.6.2 sections the SITL target has but board builds do not (ENABLE_FLIGHT_PLAN needs
+# USE_FLIGHT_PLAN, set only by the SITL target / cloud option; target/common_post.h:876).
+SITL_ONLY_SECTIONS = {"waypoint"}
+SITL_ONLY_SETTING_PREFIXES = ("ap_", "osd_nav_map")
 
 # io/beeper.c beeperTable (dump order; `ALL` is not printed). Default beeper_off_flags = 0
 # (all on); beacon (USE_DSHOT): DSHOT_BEACON_ALLOWED_MODES = RX_LOST | RX_SET, both off by
@@ -60,6 +75,7 @@ BEEPERS_44 = ("GYRO_CALIBRATED RX_LOST RX_LOST_LANDING DISARMING ARMING ARMING_G
 BEEPERS = {"4.4": BEEPERS_44, "4.5": BEEPERS_44,
            "2025.12": [("CRASHFLIP" if b == "CRASH_FLIP" else b) for b in BEEPERS_44
                        if b != "RC_SMOOTHING_INIT_FAIL"]}
+BEEPERS["2026.6"] = BEEPERS["2025.12"]  # io/beeper.c beeperTable identical at 2026.6.2
 
 # cli/settings.c `osd_<name>_pos` per release (all with USE_OSD; the board builds have the
 # defaults of target/common_pre.h). gps_lap_* need USE_GPS_LAP_TIMER (a cloud-build option,
@@ -88,10 +104,18 @@ def osd_defaults(fw, flash_kb):
     USE_OSD_HD is defined (both are, on these builds)."""
     mid_col, mid_row = (15, 7) if fw == "4.4" else (26, 10)
     names = list(OSD_44)
-    if fw == "2025.12":
+    if fw in ("2025.12", "2026.6"):
         names.insert(names.index("power"), "debug2")
         if flash_kb >= 1024:
             names.append("lidar_dist")
+    if fw == "2026.6":
+        # cli/settings.c:1614 (USE_POSITION_HOLD: common_pre.h:289, flash >= 1024 KB),
+        # :1642 (USE_PROFILE_NAMES), :1700 (ENABLE_OSD_CUSTOM_TEXT: every USE_OSD build).
+        # wp_* / nav_map need ENABLE_FLIGHT_PLAN, which board builds do not have.
+        if flash_kb >= 1024:
+            names.insert(names.index("ready_mode") + 1, "pos_hold_ready")
+        names.insert(names.index("pid_profile_name") + 1, "battery_profile_name")
+        names.append("custom_serial_text")
     special = {
         "warnings": osd_pos(mid_col - 6, mid_row + 3) | 0x3800,
         "crosshairs": osd_pos(mid_col - 2, mid_row - 1),
@@ -104,7 +128,9 @@ def osd_defaults(fw, flash_kb):
 # pg/motor.c: 4.4 defaults to DISABLED (kept from SITL); 4.5 uses DEFAULT_MOTOR_DSHOT_SPEED
 # (target/STM32F411/target.h: DSHOT300) else DSHOT600; 2025.12 DSHOT600.
 MOTOR_PROTOCOL = {("4.5", "STM32F405"): "DSHOT600", ("4.5", "STM32F411"): "DSHOT300",
-                  ("2025.12", "STM32F405"): "DSHOT600", ("2025.12", "STM32F411"): "DSHOT600"}
+                  ("2025.12", "STM32F405"): "DSHOT600", ("2025.12", "STM32F411"): "DSHOT600",
+                  # 2026.6.2 pg/motor.c:66 DSHOT600 (no DEFAULT_MOTOR_DSHOT_SPEED on these)
+                  ("2026.6", "STM32F405"): "DSHOT600", ("2026.6", "STM32F411"): "DSHOT600"}
 ELRS = {  # pg/rx_spi_expresslrs.c: domain 0, rateIndex 0, modelId 0xFF, switchMode 0
     "rx_spi_protocol": "EXPRESSLRS",          # RX_SPI_DEFAULT_PROTOCOL in the board file
     "expresslrs_domain": "ISM2400",           # lookupTableFreqDomain[0] for SX1280-only builds
@@ -179,7 +205,7 @@ def board_from_unified(text):
 
 
 def port_line(fw, name, fn):
-    if fw == "2025.12":
+    if fw in ("2025.12", "2026.6"):
         ident = name
     else:
         ident = {"VCP": "20", "SOFTSERIAL1": "30"}.get(name) or str(int(name[4:]) - 1)
@@ -237,9 +263,15 @@ def compose(fw, board_key):
                 out.append("# beeper")
                 out += [f"beeper {n}" for n in BEEPERS[fw]]
                 out += ["", "# beacon", "beacon -RX_LOST", "beacon -RX_SET", ""]
+        if section in SITL_ONLY_SECTIONS:
+            if ln == "":
+                section = None
+            continue
         if section == "feature" and ln.startswith("feature "):
             name = ln.split()[1].lstrip("-")
             on = name in b["features"] or name in ("AIRMODE", "ANTI_GRAVITY")
+            if fw == "2026.6" and name in SITL_ONLY_ON and name not in b["features"]:
+                on = False
             # SITL prints the always-on features a second time; keep one line per name.
             if any(o.lstrip("feature -") == name and o.startswith("feature") for o in out[-40:]):
                 continue
@@ -256,6 +288,8 @@ def compose(fw, board_key):
             continue
         if section == "master" and ln.startswith("set "):
             k = ln[4:].split(" = ")[0]
+            if fw == "2026.6" and k.startswith(SITL_ONLY_SETTING_PREFIXES):
+                continue
             if k in settings:
                 out.append(f"set {k} = {settings.pop(k)}")
             else:

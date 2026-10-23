@@ -23,6 +23,16 @@ class Sitl:
         self.binary, self.wd, self.p, self.s = os.path.abspath(binary), wd, None, None
 
     def start(self):
+        # Fail fast if another SITL (e.g. Device's smoke test on the shared box) holds the
+        # port: we would otherwise capture from the wrong process.
+        for _ in range(30):
+            try:
+                socket.create_connection(("127.0.0.1", PORT), timeout=0.2).close()
+            except OSError:
+                break
+            time.sleep(0.1)
+        else:
+            raise SystemExit("TCP %d is already in use (another SITL running?); stop it first" % PORT)
         self.p = subprocess.Popen([self.binary], cwd=self.wd, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL)
         for _ in range(100):
@@ -85,7 +95,7 @@ class Sitl:
 LINE = re.compile(rb"^(#.*|set [A-Za-z0-9_]+ = .*|feature -?[A-Z0-9_]+|serial \S+ \d+ \d+ \d+ \d+ \d+|"
                   rb"aux( \d+){7}|adjrange( \d+){9,10}|rxrange( \d+){3}|rxfail \d+ [ahs]( \d+)?|"
                   rb"(board_name|manufacturer_id|mcu_id|signature)( \S*)?|mixer \S+|mmix reset|smix reset|"
-                  rb"map [A-Z0-9]+|(profile|rateprofile) \d|batch (start|end)|defaults nosave|save|"
+                  rb"map [A-Z0-9]+|(profile|rateprofile|battery_profile) \d|waypoint .*|batch (start|end)|defaults nosave|save|"
                   rb"(dump|diff) all|serial|feature|resource .*|beacon .*|vtxtable .*|vtx( \d+)+|led .*|color .*|"
                   rb"mode_color .*|timer .*|dma .*|servo .*|)$")
 
@@ -98,7 +108,7 @@ def well_formed(text):
     for ln in lines:
         if not LINE.match(ln):
             return False
-        if ln.startswith(b"# profile") or ln.startswith(b"# rateprofile"):
+        if ln.startswith((b"# profile", b"# rateprofile", b"# battery_profile")):
             seen = set()
         if ln.startswith(b"set "):
             key = ln.split(b" ")[1]
