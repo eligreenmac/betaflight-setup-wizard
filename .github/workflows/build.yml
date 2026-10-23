@@ -50,7 +50,7 @@ jobs:
       - name: Check app version
         id: version
         run: node .github/scripts/check-release-version.mjs
-      - name: NSIS template is Tauri's + the version change
+      - name: NSIS template is Tauri's pinned template + the version change (offline)
         run: node src-tauri/windows/nsis-template.mjs --check
       - name: tauri build (NSIS + MSI)
         run: npm run tauri build
