@@ -200,6 +200,11 @@ impl<C: HttpClient> FirmwareService<C> {
         Ok(Self::image(&entry, &data, false))
     }
 
+    /// [`load_image`] restricted to this service's cache directory.
+    pub fn load_image(&self, image: &FirmwareImage) -> Result<HexImage> {
+        load_image(image, self.cache.root())
+    }
+
     pub fn list_cache(&self) -> Result<Vec<FirmwareImage>> {
         let mut out = Vec::new();
         for e in self.cache.list()? {
@@ -212,9 +217,23 @@ impl<C: HttpClient> FirmwareService<C> {
     }
 }
 
-/// Load the image the UI passes back, checking it is the file we produced (sha256).
-pub fn load_image(image: &FirmwareImage) -> Result<HexImage> {
-    let data = fs::read(Path::new(&image.path))?;
+/// Resolve `path` (symlinks, `..`) and require it to be a file inside `root` (also
+/// resolved). Returns the canonical path; anything else is `PathOutsideCache`.
+pub fn ensure_in_cache(root: &Path, path: &Path) -> Result<PathBuf> {
+    let outside = || FlashError::PathOutsideCache(path.display().to_string());
+    let root = fs::canonicalize(root).map_err(|_| outside())?;
+    let canonical = fs::canonicalize(path).map_err(|_| outside())?;
+    if canonical == root || !canonical.starts_with(&root) || !canonical.is_file() {
+        return Err(outside());
+    }
+    Ok(canonical)
+}
+
+/// Load the image the UI passes back: it must be a file in the firmware cache `root`
+/// (see [`ensure_in_cache`]) and the file we produced (sha256).
+pub fn load_image(image: &FirmwareImage, root: &Path) -> Result<HexImage> {
+    let path = ensure_in_cache(root, Path::new(&image.path))?;
+    let data = fs::read(&path)?;
     let actual = sha256_hex(&data);
     if !actual.eq_ignore_ascii_case(&image.sha256) {
         return Err(FlashError::ChecksumMismatch {
@@ -376,7 +395,7 @@ mod tests {
         assert_eq!(again.path, img.path);
         assert_eq!(again.build_key.as_deref(), Some("k1"));
         assert_eq!(s.list_cache().unwrap().len(), 1);
-        assert_eq!(load_image(&again).unwrap().bytes_total(), 600);
+        assert_eq!(s.load_image(&again).unwrap().bytes_total(), 600);
     }
 
     #[test]
@@ -422,12 +441,75 @@ mod tests {
             build_key: None,
             from_cache: true,
         };
-        assert!(load_image(&img).is_ok());
+        assert!(load_image(&img, dir.path()).is_ok());
         img.sha256 = "00".repeat(32);
         assert!(matches!(
-            load_image(&img),
+            load_image(&img, dir.path()),
             Err(FlashError::ChecksumMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn load_image_only_accepts_files_inside_the_cache() {
+        let cache = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let root = cache.path().join("firmware");
+        fs::create_dir_all(root.join("STM32F405")).unwrap();
+        let inside = root.join("STM32F405").join("fw.hex");
+        let outside = other.path().join("evil.hex");
+        fs::write(&inside, hex()).unwrap();
+        fs::write(&outside, hex()).unwrap();
+        let img = |p: &Path| FirmwareImage {
+            request: req(true),
+            path: p.to_string_lossy().into_owned(),
+            format: FirmwareFormat::Hex,
+            sha256: sha256_hex(hex().as_bytes()),
+            build_key: None,
+            from_cache: true,
+        };
+        let rejected = |p: &Path| {
+            let e = load_image(&img(p), &root).unwrap_err();
+            assert!(matches!(e, FlashError::PathOutsideCache(_)), "{p:?}: {e:?}");
+            assert_eq!(crate::error::AppError::from(e).code(), "INVALID_ARGUMENT");
+        };
+
+        assert!(load_image(&img(&inside), &root).is_ok());
+        // `..` is resolved before the check.
+        assert!(load_image(&img(&root.join("STM32F405/../STM32F405/fw.hex")), &root).is_ok());
+        rejected(&outside);
+        // `..` escape to an existing file (both tempdirs share the temp dir as parent).
+        let dotdot = root
+            .join("..")
+            .join("..")
+            .join(other.path().file_name().unwrap())
+            .join("evil.hex");
+        assert!(dotdot.is_file());
+        rejected(&dotdot);
+        rejected(&root.join("STM32F405")); // a directory
+        rejected(&root); // the root itself
+        rejected(&root.join("missing.hex"));
+        rejected(Path::new("relative/fw.hex"));
+        // A sibling dir whose name merely starts with the root's name.
+        let sibling = cache.path().join("firmware-evil");
+        fs::create_dir_all(&sibling).unwrap();
+        fs::write(sibling.join("fw.hex"), hex()).unwrap();
+        rejected(&sibling.join("fw.hex"));
+
+        #[cfg(unix)]
+        {
+            // A symlink inside the cache pointing outside it.
+            let link = root.join("STM32F405").join("link.hex");
+            std::os::unix::fs::symlink(&outside, &link).unwrap();
+            rejected(&link);
+            // A symlinked directory inside the cache pointing outside it.
+            let dir_link = root.join("escape");
+            std::os::unix::fs::symlink(other.path(), &dir_link).unwrap();
+            rejected(&dir_link.join("evil.hex"));
+            // A symlink to a file inside the cache is fine.
+            let ok_link = root.join("ok.hex");
+            std::os::unix::fs::symlink(&inside, &ok_link).unwrap();
+            assert!(load_image(&img(&ok_link), &root).is_ok());
+        }
     }
 
     #[test]

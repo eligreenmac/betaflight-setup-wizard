@@ -53,6 +53,9 @@ pub enum FlashError {
     NotCached(String),
     #[error("firmware file changed on disk: expected sha256 {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
+    /// The image path given to `flasher_flash` is not a file inside the firmware cache.
+    #[error("firmware image must be a file in the firmware cache: {0}")]
+    PathOutsideCache(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -90,6 +93,7 @@ impl From<FlashError> for AppError {
             | FlashError::NotCached(_)
             | FlashError::ChecksumMismatch { .. }
             | FlashError::Json(_) => AppError::Firmware(msg),
+            FlashError::PathOutsideCache(_) => AppError::InvalidArgument(msg),
             FlashError::Io(_) => AppError::Io(msg),
         }
     }

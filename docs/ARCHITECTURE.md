@@ -131,6 +131,7 @@ plus the device/flasher codes:
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
 | `ERASE_CONFIRMATION_REQUIRED` | `flasher_remove_read_protection` called without `confirmErase: true`; nothing was sent | – | (programming error in the UI) |
+| `INVALID_ARGUMENT` | A command argument is invalid, e.g. `flasher_flash` given an image path that is not a file inside the firmware cache (canonicalized; `..` and symlink escapes rejected); nothing was sent | – | (programming error in the UI) |
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
 | `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |

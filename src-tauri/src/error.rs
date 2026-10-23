@@ -82,6 +82,9 @@ pub enum AppError {
     /// Keepalive/stop without a running motor test (e.g. the watchdog already fired).
     #[error("motor test is not running")]
     MotorTestNotActive,
+    /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
     #[error("I/O error: {0}")]
     Io(String),
 }
@@ -110,6 +113,7 @@ impl AppError {
             AppError::MotorTestRefused(_) => "MOTOR_TEST_REFUSED",
             AppError::BoardArmed => "BOARD_ARMED",
             AppError::MotorTestNotActive => "MOTOR_TEST_NOT_ACTIVE",
+            AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Io(_) => "IO",
         }
     }

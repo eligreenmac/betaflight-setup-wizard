@@ -124,7 +124,8 @@ pub async fn flasher_flash(
     blocking(move || {
         let r = (|| {
             let _guard = dfu_guard("DFU device")?;
-            let hex = service::load_image(&image)?;
+            // Only files inside the firmware cache (canonicalized; no symlink escapes).
+            let hex = firmware_service(&app)?.load_image(&image)?;
             let found = usb::select(usb::list_dfu()?, dfu_serial.as_deref())?;
             let mut dfu = DfuSe::new(usb::open_selected(found)?);
             service::flash(
