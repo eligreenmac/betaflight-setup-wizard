@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { afterEach, describe, expect, it } from "vitest";
-import { isAllowedUrl, openBackupsFolder, openExternal, setLinkRuntime } from "../src/api/links";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { ALLOWED_URL_PREFIXES, isAllowedUrl, openBackupsFolder, openExternal, setLinkRuntime } from "../src/api/links";
 
 afterEach(() => setLinkRuntime(null));
 
@@ -11,6 +13,24 @@ describe("links (@tauri-apps/plugin-opener)", () => {
     expect(isAllowedUrl("https://github.com/eligreenmac/betaflight-setup-wizard/issues")).toBe(true);
     expect(isAllowedUrl("https://github.com/evil/repo")).toBe(false);
     expect(isAllowedUrl("https://betaflight.com.evil.example/")).toBe(false);
+  });
+
+  it("allows the USB-serial driver vendors (CP210x, CH34x) and nothing that only looks like them", () => {
+    expect(isAllowedUrl("https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers")).toBe(true);
+    expect(isAllowedUrl("https://silabs.com/developers/usb-to-uart-bridge-vcp-drivers")).toBe(true);
+    expect(isAllowedUrl("https://www.wch-ic.com/downloads/CH341SER_EXE.html")).toBe(true);
+    expect(isAllowedUrl("https://wch-ic.com/downloads/CH343SER_EXE.html")).toBe(true);
+    expect(isAllowedUrl("http://www.silabs.com/")).toBe(false);
+    expect(isAllowedUrl("https://www.silabs.com.evil.example/")).toBe(false);
+    expect(isAllowedUrl("https://evil-wch-ic.com/")).toBe(false);
+  });
+
+  it("matches the opener capability scope in src-tauri/capabilities/default.json", () => {
+    const cap = JSON.parse(readFileSync(resolve(process.cwd(), "src-tauri/capabilities/default.json"), "utf8")) as {
+      permissions: (string | { identifier: string; allow?: { url?: string }[] })[];
+    };
+    const open = cap.permissions.find((p) => typeof p !== "string" && p.identifier === "opener:allow-open-url") as { allow: { url: string }[] };
+    expect(open.allow.map((a) => a.url).sort()).toEqual(ALLOWED_URL_PREFIXES.map((p) => `${p}*`).sort());
   });
 
   it("in the app, uses the opener plugin's openUrl", async () => {

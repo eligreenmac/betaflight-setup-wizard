@@ -2,6 +2,7 @@
 /** Receiver options offered by the wizard (MVP). */
 import { api } from "../api/commands";
 import type { FcInfo, RxProtocol } from "../types/model";
+import type { WizardState } from "./state";
 import { compareVersions } from "./version";
 
 /** Serial receiver protocols, most common first. */
@@ -58,4 +59,16 @@ export function asksTelemetry(p: RxProtocol | null): boolean {
 /** Default telemetry answer: yes where we ask, otherwise off (ignored by the engine). */
 export function defaultTelemetry(p: RxProtocol): boolean {
   return asksTelemetry(p);
+}
+
+/** The Binding step applies: ExpressLRS on SPI, or CRSF on a UART (ExpressLRS or Crossfire). */
+export function bindingApplies(s: WizardState): boolean {
+  const r = s.model.receiver;
+  return (r.kind === "SPI" && r.protocol === "EXPRESSLRS") || (r.kind === "SERIAL" && r.protocol === "CRSF");
+}
+
+/** The receiver is ExpressLRS (onboard SPI, or a UART CRSF receiver the user says is ExpressLRS). */
+export function isElrs(s: WizardState): boolean {
+  const r = s.model.receiver;
+  return (r.kind === "SPI" && r.protocol === "EXPRESSLRS") || (r.kind === "SERIAL" && r.protocol === "CRSF" && s.ui.crsfFamily === "ELRS");
 }

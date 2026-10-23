@@ -35,6 +35,12 @@ export async function walkToDone(w: VueWrapper, firmware: "keep" | "update", hoo
       await w.get('[data-test="gps"]').setValue(true);
       await settle();
     }
+    if (id === "binding") {
+      // UART CRSF: say it is ExpressLRS and bind with the button later.
+      if (w.find('[data-family="ELRS"]').exists() && !wizard.ui.crsfFamily) await w.get('[data-family="ELRS"]').setValue(true);
+      if (w.find('[data-binding="button"]').exists() && !wizard.ui.elrsBinding) await w.get('[data-binding="button"]').setValue(true);
+      await settle();
+    }
     for (const sel of w.findAll("select[data-role]")) {
       const el = sel.element as HTMLSelectElement;
       const first = [...el.options].find((o) => o.value !== "");
