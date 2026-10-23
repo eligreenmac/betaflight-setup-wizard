@@ -128,7 +128,7 @@ pub enum AppError {
     /// reboot was not confirmed). Refused because the operation (accelerometer calibration)
     /// saves the whole RAM configuration to EEPROM. Nothing was sent; a confirmed reboot or a
     /// reconnect clears it.
-    #[error("the flight controller may have unsaved changes ({reason}); reconnect or reboot the board first")]
+    #[error("the flight controller may have unsaved changes ({reason}); reboot the board first")]
     PendingUnsavedChanges { reason: UnsavedChangesReason },
     /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
     #[error("invalid argument: {0}")]
@@ -295,7 +295,7 @@ mod tests {
         assert!(v["message"]
             .as_str()
             .unwrap()
-            .ends_with("reconnect or reboot the board first"));
+            .ends_with("; reboot the board first"));
         for (r, s) in [
             (UnsavedChangesReason::CliCommand, "CLI_COMMAND"),
             (UnsavedChangesReason::MspWrite, "MSP_WRITE"),
