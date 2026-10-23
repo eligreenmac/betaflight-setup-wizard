@@ -173,6 +173,11 @@ export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, l
  * config_plan's error for an HD OSD on firmware without MSP DisplayPort (config::generate,
  * #67): AppError::Config "HD OSD needs MSP DisplayPort, which this firmware build does not
  * have" (code CONFIG -> CONFIG_UNSUPPORTED in the UI).
+ *
+ * TODO(shared): the backend has no distinct code or detail for this refusal yet (cfg_err ->
+ * AppError::Config(String), no details), so the message text is matched. Asked of Config:
+ * keep code CONFIG and add details `{ reason: "OSD_HD_NO_DISPLAYPORT" }` (like PORT_BUSY
+ * {heldBy}). Then match on the reason, keeping this message match only as a fallback.
  */
 export function isHdOsdPlanError(e: { code: string; message: string }): boolean {
   return (e.code === "CONFIG_UNSUPPORTED" || e.code === "CONFIG") && /HD OSD|MSP DisplayPort/i.test(e.message);

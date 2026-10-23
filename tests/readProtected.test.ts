@@ -11,7 +11,7 @@ import { removeReadProtection, runFirmwareUpdate } from "../src/wizard/flash";
 import { motorTest } from "../src/wizard/motorTest";
 import { nav, resetNav } from "../src/wizard/nav";
 import { resetWizard, wizard } from "../src/wizard/state";
-import { click, settle, walkToDone } from "./walk";
+import { click, settle, WALK_TIMEOUT_MS, walkToDone } from "./walk";
 
 let mock: ScenarioMock;
 let w: VueWrapper | null = null;
@@ -89,7 +89,7 @@ describe("read-protected screen", () => {
 
     await walkToDone(w!, "keep");
     expect(nav.currentId).toBe("done");
-  });
+  }, WALK_TIMEOUT_MS);
 
   it("Hebrew asks for the Hebrew word", async () => {
     setLocale("he");
