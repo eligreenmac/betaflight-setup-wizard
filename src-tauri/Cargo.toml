@@ -1,6 +1,6 @@
 [package]
 name = "betaflight-setup-wizard"
-version = "0.1.0-1"
+version = "0.1.0-2"
 description = "Offline-first Betaflight setup wizard for Windows"
 authors = ["Betaflight Setup Wizard contributors"]
 license = "GPL-3.0-or-later"
