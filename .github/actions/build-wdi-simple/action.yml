@@ -15,6 +15,11 @@ inputs:
   wdk-redist-url:
     description: WDK 8.0 redistributable components (WinUSB co-installers), as used by libwdi CI
     default: https://go.microsoft.com/fwlink/p/?LinkID=253170
+  wdk-redist-sha256:
+    description: >
+      Pinned SHA256 of the WDK redist MSI (wdfcoinstaller.msi, 31318016 bytes, Authenticode
+      "Microsoft Corporation", signed 2012-08-17). The build fails hard on any mismatch.
+    default: 29314207814ce9d5d73695f7e9239539cf37c79e750b9d5ea5a5ef5487a583d6
 
 runs:
   using: composite
@@ -37,6 +42,14 @@ runs:
         if ($head -ne '${{ inputs.libwdi-commit }}') { throw "libwdi ${{ inputs.libwdi-ref }} is $head, expected ${{ inputs.libwdi-commit }}" }
         Push-Location $src
         curl.exe -sSfL '${{ inputs.wdk-redist-url }}' -o wdk-redist.msi
+        if ($LASTEXITCODE -ne 0) { throw "WDK redist download failed (curl $LASTEXITCODE)" }
+        $sha = (Get-FileHash -Algorithm SHA256 wdk-redist.msi).Hash.ToLowerInvariant()
+        if ($sha -ne '${{ inputs.wdk-redist-sha256 }}'.ToLowerInvariant()) {
+          throw "WDK redist SHA256 mismatch: got $sha, expected ${{ inputs.wdk-redist-sha256 }}. Refusing to build."
+        }
+        Write-Host "WDK redist SHA256 OK ($sha)"
+        $sig = Get-AuthenticodeSignature wdk-redist.msi
+        Write-Host "WDK redist signature: $($sig.Status) $($sig.SignerCertificate.Subject)"
         $p = Start-Process msiexec.exe -ArgumentList '/a','wdk-redist.msi','/qn',"TARGETDIR=$src\wdk" -Wait -PassThru
         if ($p.ExitCode -ne 0) { throw "msiexec failed: $($p.ExitCode)" }
         if (-not (Test-Path 'wdk\Windows Kits\8.0\redist\wdf\x64\WdfCoInstaller01011.dll')) { throw 'WDK redist layout unexpected' }

@@ -4,6 +4,7 @@
 //! docs/PACKAGING.md.
 
 pub mod commands;
+pub mod install_script;
 pub mod usb_drivers;
 #[cfg(windows)]
 mod windows;
@@ -57,23 +58,31 @@ pub fn install_dfu_driver(helper: Option<PathBuf>) -> AppResult<()> {
             "WinUSB helper ({HELPER_EXE}) is not bundled with this build"
         ))
     })?;
-    for (vid, pid, name) in &todo {
-        let dest = std::env::temp_dir()
-            .join("bfsw-winusb")
-            .join(format!("{vid:04x}_{pid:04x}"));
-        std::fs::create_dir_all(&dest)?;
-        let args = usb_drivers::wdi_simple_args(*vid, *pid, name, &dest.to_string_lossy())
+    // One elevated Windows PowerShell run for all devices: it extracts the driver
+    // files into a fresh SYSTEM/Administrators-only folder under %ProgramData%
+    // (not the user-writable %TEMP%) and runs the helper from there.
+    let helper = helper.to_string_lossy().into_owned();
+    let script = install_script::install_script(&helper, &install_script::run_id(), &todo);
+    let params = install_script::powershell_params(&script).ok_or_else(|| {
+        AppError::Driver("driver helper path contains an unsupported character".into())
+    })?;
+    let ps = windows::powershell_exe()?;
+    let cwd = ps
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let timeout_ms = 5 * 60 * 1000 * u32::try_from(todo.len()).unwrap_or(1).max(1);
+    let code = windows::run_elevated(&ps, &params, &cwd, timeout_ms)?;
+    if code != 0 {
+        let names = todo
             .iter()
-            .map(|a| usb_drivers::quote_windows_arg(a))
+            .map(|(vid, pid, name)| format!("{name} ({vid:04X}:{pid:04X})"))
             .collect::<Vec<_>>()
-            .join(" ");
-        let code = windows::run_elevated(&helper, &args, &dest, 5 * 60 * 1000)?;
-        if code != 0 {
-            return Err(AppError::Driver(format!(
-                "WinUSB install for {name} ({vid:04X}:{pid:04X}) failed: {} (libwdi {code})",
-                usb_drivers::wdi_error_message(code)
-            )));
-        }
+            .join(", ");
+        return Err(AppError::Driver(format!(
+            "WinUSB install for {names} failed: {}",
+            install_script::exit_message(code)
+        )));
     }
     // Verify: every device we touched must now be bound to WinUSB.
     let after = driver_status()?;
