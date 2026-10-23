@@ -14,6 +14,12 @@ pub trait SerialLink: Send {
     fn clear_input(&mut self) -> Result<()>;
     /// Port name, for logs and errors.
     fn name(&self) -> &str;
+    /// A second, independent write handle to the same port, used by the motor-test
+    /// emergency stop to write MSP_SET_MOTOR without waiting for the thread that owns
+    /// this link. `None` if the port cannot be duplicated.
+    fn try_clone_writer(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        None
+    }
 }
 
 impl<T: SerialLink + ?Sized> SerialLink for Box<T> {
@@ -28,6 +34,9 @@ impl<T: SerialLink + ?Sized> SerialLink for Box<T> {
     }
     fn name(&self) -> &str {
         (**self).name()
+    }
+    fn try_clone_writer(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        (**self).try_clone_writer()
     }
 }
 
@@ -106,6 +115,19 @@ impl SerialLink for SystemSerial {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn try_clone_writer(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        match self.port.try_clone() {
+            Ok(p) => Some(Box::new(p)),
+            Err(e) => {
+                log::warn!(
+                    "{}: cannot duplicate port handle for emergency stop: {e}",
+                    self.name
+                );
+                None
+            }
+        }
     }
 }
 

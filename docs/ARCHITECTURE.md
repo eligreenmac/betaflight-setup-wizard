@@ -266,7 +266,12 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   armed, `device_disconnect`, dropping the worker/handle, and the **emergency stop in the Tauri
   run loop**: `on_window_event` on `CloseRequested` and `Destroyed`, and the `App::run` callback on
   `RunEvent::ExitRequested` and `RunEvent::Exit` call `device::emergency_stop_all()` (event
-  `APP_CLOSING`). This does not depend on the UI being alive.
+  `APP_CLOSING`). This does not depend on the UI being alive, and it never waits on the
+  manager lock (a keepalive may hold it): it sets the test's halt flag, which the worker checks
+  before every `MSP_SET_MOTOR`, on keepalive/update and every ≤20 ms, and writes the all-stop
+  frame directly through a duplicated port handle (`SerialLink::try_clone_writer`). Port cleanup
+  is a single `try_lock`; if the manager is busy the worker stops the motors itself as soon as
+  the in-flight exchange returns. After a halt, keepalive/update get `MOTOR_TEST_NOT_ACTIVE`.
 - `MSP_SET_ARMING_DISABLED` is **not** sent. Betaflight has no firmware-side MSP motor timeout:
   if USB drops mid-test the last value stays applied, so the UI must tell the user to test on
   USB power with the battery disconnected and props off.

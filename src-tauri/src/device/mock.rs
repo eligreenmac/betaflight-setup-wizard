@@ -5,7 +5,7 @@ use crate::device::error::{DeviceError, Result};
 use crate::device::serial::SerialLink;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 type Responder = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
@@ -15,7 +15,7 @@ type Responder = Box<dyn FnMut(&[u8]) -> Vec<u8> + Send>;
 pub struct MockSerial {
     pub written: Vec<u8>,
     rx: VecDeque<u8>,
-    responder: Responder,
+    responder: Arc<Mutex<Responder>>,
     /// Max bytes returned per `read` (0 = unlimited).
     pub chunk: usize,
     /// When true, I/O fails with `Disconnected` (simulates the FC rebooting).
@@ -24,6 +24,27 @@ pub struct MockSerial {
     pub disconnect_after_write_containing: Option<Vec<u8>>,
     /// Shared switch a test can flip from another thread to simulate unplugging.
     pub disconnect_switch: Option<Arc<AtomicBool>>,
+    /// While set, `write_all` on this link blocks (simulates the owning thread being stuck
+    /// mid-write). Writes through `try_clone_writer` are not affected.
+    pub wedge: Option<Arc<AtomicBool>>,
+}
+
+/// Write handle from [`MockSerial::try_clone_writer`]: feeds the same responder (so a fake FC
+/// sees the frames) and discards its replies.
+pub struct MockWriter {
+    responder: Arc<Mutex<Responder>>,
+    pub written: Arc<Mutex<Vec<u8>>>,
+}
+
+impl std::io::Write for MockWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.written.lock().unwrap().extend_from_slice(buf);
+        let _ = (self.responder.lock().unwrap())(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 impl MockSerial {
@@ -31,11 +52,12 @@ impl MockSerial {
         MockSerial {
             written: Vec::new(),
             rx: VecDeque::new(),
-            responder: Box::new(responder),
+            responder: Arc::new(Mutex::new(Box::new(responder))),
             chunk: 0,
             disconnected: false,
             disconnect_after_write_containing: None,
             disconnect_switch: None,
+            wedge: None,
         }
     }
 
@@ -65,11 +87,18 @@ impl MockSerial {
 
 impl SerialLink for MockSerial {
     fn write_all(&mut self, data: &[u8]) -> Result<()> {
+        while self
+            .wedge
+            .as_ref()
+            .is_some_and(|w| w.load(Ordering::SeqCst))
+        {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         if self.is_disconnected() {
             return Err(DeviceError::Disconnected);
         }
         self.written.extend_from_slice(data);
-        let reply = (self.responder)(data);
+        let reply = (self.responder.lock().unwrap())(data);
         self.rx.extend(reply);
         if let Some(needle) = &self.disconnect_after_write_containing {
             if data.windows(needle.len()).any(|w| w == needle.as_slice()) {
@@ -111,5 +140,12 @@ impl SerialLink for MockSerial {
 
     fn name(&self) -> &str {
         "mock"
+    }
+
+    fn try_clone_writer(&self) -> Option<Box<dyn std::io::Write + Send>> {
+        Some(Box::new(MockWriter {
+            responder: self.responder.clone(),
+            written: Arc::default(),
+        }))
     }
 }

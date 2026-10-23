@@ -20,12 +20,12 @@
 //! require USB-only power (no battery) or keep the cap low. See DESIGN.md.
 
 use crate::device::error::{DeviceError, MotorTestRefusal, Result};
-use crate::device::msp::{codes, MspClient, Reader};
+use crate::device::msp::{codes, MspClient, MspFrame, MspVersion, Reader};
 use crate::device::serial::SerialLink;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, TryLockError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -317,6 +317,95 @@ pub fn encode_set_motor(values: &[u16; MAX_MOTORS]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
+/// Lock-free emergency stop for a running motor test (window close / app exit).
+///
+/// [`EmergencyStop::trigger`] never waits for the motor-test thread or the connection
+/// manager: it sets the `halt` flag (checked by the worker before every MSP_SET_MOTOR, by
+/// keepalive and by every loop iteration) and writes an all-stop MSP_SET_MOTOR frame
+/// straight to a duplicated port handle. The worker then sends stop again through its own
+/// link as soon as it gets control back, so if the direct write fails the motors stop
+/// within one worker iteration after the current MSP exchange returns.
+pub struct EmergencyStop {
+    halt: AtomicBool,
+    /// Set when the `MotorTest` is dropped (session over, link handed back or lost).
+    finished: AtomicBool,
+    /// Duplicated write handle; only ever touched by `trigger` (via `try_lock`).
+    writer: Mutex<Option<Box<dyn std::io::Write + Send>>>,
+    /// Pre-encoded MSP_SET_MOTOR with every motor at the stop value.
+    frame: Vec<u8>,
+}
+
+/// What [`EmergencyStop::trigger`] managed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmergencyOutcome {
+    /// The stop frame was written through the duplicated handle.
+    pub written: bool,
+    /// The halt flag was already set (second trigger).
+    pub already_halted: bool,
+}
+
+impl EmergencyStop {
+    pub fn new(writer: Option<Box<dyn std::io::Write + Send>>, stop_value: u16) -> Self {
+        let frame = MspFrame::request(
+            MspVersion::V1,
+            codes::MSP_SET_MOTOR,
+            &encode_set_motor(&[stop_value; MAX_MOTORS]),
+        )
+        .encode()
+        .unwrap_or_default();
+        EmergencyStop {
+            halt: AtomicBool::new(false),
+            finished: AtomicBool::new(false),
+            writer: Mutex::new(writer),
+            frame,
+        }
+    }
+
+    pub fn is_halted(&self) -> bool {
+        self.halt.load(Ordering::SeqCst)
+    }
+
+    /// The motor-test session this belongs to has ended.
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
+    }
+
+    /// Session over: close the duplicated handle so the port can be reopened.
+    fn release(&self) {
+        self.finished.store(true, Ordering::SeqCst);
+        let mut w = self.writer.lock().unwrap_or_else(|p| p.into_inner());
+        *w = None;
+    }
+
+    /// Halt the test and write stop directly. Never blocks.
+    pub fn trigger(&self) -> EmergencyOutcome {
+        let already_halted = self.halt.swap(true, Ordering::SeqCst);
+        let written = match self.writer.try_lock() {
+            Ok(mut w) => Self::write(&mut w, &self.frame),
+            Err(TryLockError::Poisoned(p)) => Self::write(&mut p.into_inner(), &self.frame),
+            // Another trigger is writing right now; it sends the same frame.
+            Err(TryLockError::WouldBlock) => false,
+        };
+        EmergencyOutcome {
+            written,
+            already_halted,
+        }
+    }
+
+    fn write(w: &mut Option<Box<dyn std::io::Write + Send>>, frame: &[u8]) -> bool {
+        let Some(w) = w.as_mut() else { return false };
+        // Twice, like `MotorTest::stop`: MSP_SET_MOTOR is fire-and-forget.
+        let r = w
+            .write_all(frame)
+            .and_then(|_| w.write_all(frame))
+            .and_then(|_| w.flush());
+        if let Err(e) = &r {
+            log::warn!("emergency stop: direct MSP_SET_MOTOR write failed: {e}");
+        }
+        r.is_ok()
+    }
+}
+
 /// A motor-test session owning the MSP link. Motors are stopped on `stop()`, on watchdog
 /// expiry (`tick()`), on `into_inner()` and on drop.
 pub struct MotorTest<S: SerialLink, C: Clock = SystemClock> {
@@ -328,6 +417,7 @@ pub struct MotorTest<S: SerialLink, C: Clock = SystemClock> {
     active: bool,
     last_refresh: Duration,
     last_status_check: Duration,
+    emergency: Arc<EmergencyStop>,
 }
 
 impl<S: SerialLink, C: Clock> MotorTest<S, C> {
@@ -338,6 +428,7 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
         clock: C,
         limits: MotorTestLimits,
     ) -> std::result::Result<Self, (DeviceError, S)> {
+        let writer = link.try_clone_writer();
         let mut client = MspClient::new(link);
         let read = |client: &mut MspClient<S>| -> Result<MotorOutputConfig> {
             let adv = client.request(codes::MSP_ADVANCED_CONFIG, &[])?;
@@ -350,6 +441,7 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
             Err(e) => return Err((e, client.into_inner())),
         };
         let now = clock.now();
+        let emergency = Arc::new(EmergencyStop::new(writer, output.stop_value));
         let mut t = MotorTest {
             client: Some(client),
             clock,
@@ -359,6 +451,7 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
             active: false,
             last_refresh: now,
             last_status_check: now,
+            emergency,
         };
         if let Err(e) = t.send_values(t.values) {
             return Err((e, t.into_inner()));
@@ -373,6 +466,8 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
     }
 
     fn send_values(&mut self, v: [u16; MAX_MOTORS]) -> Result<()> {
+        let stop = [self.output.stop_value; MAX_MOTORS];
+        let v = if self.emergency.is_halted() { stop } else { v };
         let r = self
             .client()
             .send(codes::MSP_SET_MOTOR, &encode_set_motor(&v));
@@ -404,9 +499,17 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
     pub fn is_active(&self) -> bool {
         self.active
     }
+    /// Shared emergency-stop handle (see [`EmergencyStop`]).
+    pub fn emergency(&self) -> Arc<EmergencyStop> {
+        self.emergency.clone()
+    }
 
     /// Gate + spin. A refusal leaves (or puts) every motor at stop.
     pub fn set(&mut self, req: &MotorTestRequest) -> Result<()> {
+        if self.emergency.is_halted() {
+            let _ = self.stop();
+            return Err(DeviceError::MotorTestNotActive);
+        }
         let status = match self.read_status() {
             Ok(s) => s,
             Err(e) => {
@@ -432,6 +535,12 @@ impl<S: SerialLink, C: Clock> MotorTest<S, C> {
 
     /// Feed the watchdog and re-send the current values.
     pub fn keepalive(&mut self) -> Result<()> {
+        if self.emergency.is_halted() {
+            if self.active {
+                let _ = self.stop();
+            }
+            return Err(DeviceError::MotorTestNotActive);
+        }
         if !self.active {
             return Err(DeviceError::MotorTestNotActive);
         }
@@ -494,6 +603,7 @@ impl<S: SerialLink, C: Clock> Drop for MotorTest<S, C> {
         if self.client.is_some() {
             let _ = self.stop();
         }
+        self.emergency.release();
     }
 }
 
@@ -526,6 +636,7 @@ enum Cmd {
 pub struct MotorTestHandle<S: SerialLink + 'static> {
     tx: Option<mpsc::Sender<Cmd>>,
     join: Option<JoinHandle<Option<S>>>,
+    emergency: Arc<EmergencyStop>,
 }
 
 impl<S: SerialLink + 'static> MotorTestHandle<S> {
@@ -534,12 +645,25 @@ impl<S: SerialLink + 'static> MotorTestHandle<S> {
         mut on_stopped: impl FnMut(MotorTestStopped) + Send + 'static,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<Cmd>();
-        let tick = (test.limits.watchdog / 5).max(Duration::from_millis(10));
+        let emergency = test.emergency();
+        let halt = emergency.clone();
+        // Poll at least every 20 ms so an emergency halt is acted on promptly even when no
+        // commands arrive; `tick()` is time-based, so polling more often is harmless.
+        let tick = (test.limits.watchdog / 5)
+            .max(Duration::from_millis(10))
+            .min(Duration::from_millis(20));
         let join = std::thread::Builder::new()
             .name("motor-test".into())
             .spawn(move || {
                 let mut test = test;
+                let mut halt_handled = false;
                 loop {
+                    let active_before = test.is_active();
+                    let mut emitted = false;
+                    let mut emit = |ev: MotorTestStopped, emitted: &mut bool| {
+                        *emitted = true;
+                        on_stopped(ev);
+                    };
                     match rx.recv_timeout(tick) {
                         Ok(cmd) => {
                             let (r, reply, requested_stop) = match cmd {
@@ -553,40 +677,75 @@ impl<S: SerialLink + 'static> MotorTestHandle<S> {
                             let fatal = matches!(r, Err(DeviceError::Disconnected));
                             let _ = reply.send(r);
                             if fatal {
-                                on_stopped(MotorTestStopped {
-                                    reason: StopReason::Disconnected,
-                                    error: None,
-                                });
+                                emit(
+                                    MotorTestStopped {
+                                        reason: StopReason::Disconnected,
+                                        error: None,
+                                    },
+                                    &mut emitted,
+                                );
                                 return None;
                             }
                             if requested_stop {
-                                on_stopped(MotorTestStopped {
-                                    reason: StopReason::Requested,
-                                    error: None,
-                                });
+                                emit(
+                                    MotorTestStopped {
+                                        reason: StopReason::Requested,
+                                        error: None,
+                                    },
+                                    &mut emitted,
+                                );
                             }
                         }
                         Err(mpsc::RecvTimeoutError::Timeout) => match test.tick() {
-                            Ok(Some(reason)) => on_stopped(MotorTestStopped {
-                                reason,
-                                error: None,
-                            }),
+                            Ok(Some(reason)) => emit(
+                                MotorTestStopped {
+                                    reason,
+                                    error: None,
+                                },
+                                &mut emitted,
+                            ),
                             Ok(None) => {}
                             Err(DeviceError::Disconnected) => {
-                                on_stopped(MotorTestStopped {
-                                    reason: StopReason::Disconnected,
-                                    error: None,
-                                });
+                                emit(
+                                    MotorTestStopped {
+                                        reason: StopReason::Disconnected,
+                                        error: None,
+                                    },
+                                    &mut emitted,
+                                );
                                 return None;
                             }
-                            Err(e) => on_stopped(MotorTestStopped {
-                                reason: StopReason::Error,
-                                error: Some(crate::error::AppError::from(e).to_json()),
-                            }),
+                            Err(e) => emit(
+                                MotorTestStopped {
+                                    reason: StopReason::Error,
+                                    error: Some(crate::error::AppError::from(e).to_json()),
+                                },
+                                &mut emitted,
+                            ),
                         },
                         // Handle dropped or finish(): stop and hand the link back.
                         Err(mpsc::RecvTimeoutError::Disconnected) => {
                             return Some(test.into_inner())
+                        }
+                    }
+                    // Emergency halt: stop through our own link too (the direct write is
+                    // best effort) and report it once.
+                    if !halt_handled && halt.is_halted() {
+                        halt_handled = true;
+                        // Active now, or deactivated by a halted keepalive this iteration.
+                        let was_active = active_before || test.is_active();
+                        let r = test.stop();
+                        if was_active && !emitted {
+                            emit(
+                                MotorTestStopped {
+                                    reason: StopReason::Requested,
+                                    error: None,
+                                },
+                                &mut emitted,
+                            );
+                        }
+                        if matches!(r, Err(DeviceError::Disconnected)) {
+                            return None;
                         }
                     }
                 }
@@ -595,7 +754,13 @@ impl<S: SerialLink + 'static> MotorTestHandle<S> {
         MotorTestHandle {
             tx: Some(tx),
             join: Some(join),
+            emergency,
         }
+    }
+
+    /// Lock-free emergency-stop handle for this test; usable without the handle itself.
+    pub fn emergency(&self) -> Arc<EmergencyStop> {
+        self.emergency.clone()
     }
 
     fn call(&self, make: impl FnOnce(mpsc::Sender<Result<()>>) -> Cmd) -> Result<()> {
@@ -650,6 +815,8 @@ pub(crate) mod fake {
         pub motor_count: u8,
         /// MSP_UID payload (12 bytes).
         pub uid: Arc<Mutex<[u8; 12]>>,
+        /// While set, writes on links from `serial()` block (see `MockSerial::wedge`).
+        pub wedge: Arc<AtomicBool>,
     }
 
     impl Default for FakeFc {
@@ -662,6 +829,7 @@ pub(crate) mod fake {
                 mincommand: 1000,
                 motor_count: 4,
                 uid: Arc::new(Mutex::new([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])),
+                wedge: Arc::default(),
             }
         }
     }
@@ -687,7 +855,7 @@ pub(crate) mod fake {
         pub fn serial(&self) -> MockSerial {
             let me = self.clone();
             let mut parser = MspParser::default();
-            MockSerial::new(move |w| {
+            let mut link = MockSerial::new(move |w| {
                 let mut out = Vec::new();
                 for ev in parser.feed(w) {
                     let MspEvent::Frame(f) = ev else { continue };
@@ -720,7 +888,9 @@ pub(crate) mod fake {
                     }
                 }
                 out
-            })
+            });
+            link.wedge = Some(self.wedge.clone());
+            link
         }
 
         pub fn last(&self) -> [u16; 8] {

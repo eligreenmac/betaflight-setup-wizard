@@ -8,7 +8,9 @@
 
 use super::cli::{BootloaderTarget, CliOptions, CliSession};
 use super::error::{DeviceError, Result as DResult};
-use super::motor::{self, MotorTest, MotorTestHandle, MotorTestRequest, StopReason, SystemClock};
+use super::motor::{
+    self, EmergencyStop, MotorTest, MotorTestHandle, MotorTestRequest, StopReason, SystemClock,
+};
 use super::msp::{ApiVersion, FcIdentity, MspClient, RebootType, Uid};
 use super::rc::{RcStopReason as DevRcStop, RcStream, RcStreamEvent, RcStreamOptions};
 use super::serial::{SerialConfig as OpenConfig, SerialLink, SystemSerial};
@@ -18,7 +20,6 @@ use crate::model::{
     FcInfo, FcSerialPort, HostPort, MotorOutputConfig, MotorTestLimits, MotorTestSession,
     MotorTestStopReason, MotorTestStopped, RcChannels, RcStopReason, RcStopped, RxSpiInfo,
 };
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
 
@@ -29,8 +30,6 @@ pub type Opener = Arc<dyn Fn(&str) -> DResult<BoxLink> + Send + Sync>;
 /// Lists the host's serial ports. Replaced by a fake in tests.
 pub type Lister = Arc<dyn Fn() -> Vec<PortIdentity> + Send + Sync>;
 
-/// How long `emergency_stop_all` waits for a short command to release the manager.
-const EMERGENCY_LOCK_WAIT: Duration = Duration::from_millis(500);
 /// Default for `device_identify`'s reconnect after `device_probe_board` on 4.4.
 pub const DEFAULT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// API 1.46 (Betaflight 4.5) added `exit noreboot`.
@@ -379,7 +378,6 @@ impl Reconnect for FcConnection {
 struct MotorSlot {
     conn: FcConnection,
     handle: MotorTestHandle<BoxLink>,
-    closing: Arc<AtomicBool>,
     session: MotorTestSession,
 }
 
@@ -401,6 +399,10 @@ pub struct ConnectionManager {
     slot: Mutex<Slot>,
     /// Path of the open port, readable while `slot` is locked (for PORT_BUSY details).
     port: Mutex<Option<String>>,
+    /// Emergency-stop handle of the current/last motor test. Kept outside `slot` so window
+    /// close / app exit can stop the motors while a command holds `slot`. Never held
+    /// across I/O.
+    motor_emergency: Mutex<Option<Arc<EmergencyStop>>>,
     opener: Opener,
     lister: Lister,
     poll: Duration,
@@ -417,6 +419,7 @@ impl ConnectionManager {
         ConnectionManager {
             slot: Mutex::new(Slot::Empty),
             port: Mutex::new(None),
+            motor_emergency: Mutex::new(None),
             opener,
             lister,
             poll: Duration::from_millis(200),
@@ -496,7 +499,7 @@ impl ConnectionManager {
                 return Ok(());
             }
         }
-        Self::stop_workers(&mut g, false);
+        Self::stop_workers(&mut g);
         *g = Slot::Empty;
         self.set_port(None);
         let ident = (self.lister)()
@@ -515,7 +518,7 @@ impl ConnectionManager {
     /// Stop any motor test / RC stream, then close the port.
     pub fn disconnect(&self) -> AppResult<()> {
         let mut g = self.lock()?;
-        Self::stop_workers(&mut g, false);
+        Self::stop_workers(&mut g);
         *g = Slot::Empty;
         self.set_port(None);
         Ok(())
@@ -595,11 +598,11 @@ impl ConnectionManager {
                     output_config: output_config(test.output_config()),
                     limits: model_limits(test.limits()),
                 };
-                let closing = Arc::new(AtomicBool::new(false));
-                let flag = closing.clone();
+                let emergency = test.emergency();
+                let flag = emergency.clone();
                 let handle = MotorTestHandle::spawn(test, move |ev: motor::MotorTestStopped| {
                     let reason = match ev.reason {
-                        StopReason::Requested if flag.load(Ordering::SeqCst) => {
+                        StopReason::Requested if flag.is_halted() => {
                             MotorTestStopReason::AppClosing
                         }
                         StopReason::Requested => MotorTestStopReason::Requested,
@@ -624,10 +627,13 @@ impl ConnectionManager {
                     }
                     return Err(e.into());
                 }
+                *self
+                    .motor_emergency
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(emergency);
                 *g = Slot::MotorTest(MotorSlot {
                     conn,
                     handle,
-                    closing,
                     session: session.clone(),
                 });
                 Ok(session)
@@ -647,7 +653,7 @@ impl ConnectionManager {
     pub fn motor_test_stop(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         if matches!(*g, Slot::MotorTest(_)) {
-            Self::stop_workers(&mut g, false);
+            Self::stop_workers(&mut g);
             if matches!(*g, Slot::Empty) {
                 self.set_port(None);
             }
@@ -655,39 +661,61 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Safety net for window close / app exit: stops a running motor test (all motors
-    /// to stop via MSP_SET_MOTOR) and the RC stream. Returns whether a motor test was
-    /// running. Never blocks for long: a motor test only ever holds the manager for a
-    /// single short command, so if the lock is busy for longer no motor test is running.
+    /// Safety net for window close / app exit: stops a running motor test and the RC
+    /// stream. Returns whether a motor-test session was open. Never blocks:
+    ///
+    /// 1. Lock-free: sets the motor test's halt flag (checked by the worker before every
+    ///    MSP_SET_MOTOR, by keepalive and every ~20 ms) and writes an all-stop
+    ///    MSP_SET_MOTOR directly to a duplicated port handle, without waiting for the worker
+    ///    or the manager lock.
+    /// 2. One `try_lock` on the manager for cleanup (port back to Idle, RC stream stopped).
+    ///    If a command holds it (e.g. a keepalive waiting on the worker), cleanup is left to
+    ///    the worker, which stops the motors again as soon as it gets control back.
     pub fn emergency_stop_all(&self) -> bool {
-        let deadline = Instant::now() + EMERGENCY_LOCK_WAIT;
-        let mut g = loop {
-            match self.slot.try_lock() {
-                Ok(g) => break g,
-                Err(TryLockError::Poisoned(p)) => break p.into_inner(),
-                Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(5))
+        let em = self
+            .motor_emergency
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .filter(|e| !e.is_finished());
+        let outcome = em.as_ref().map(|e| e.trigger());
+        let running = em.is_some();
+        let direct = match outcome {
+            Some(o) if o.written => "stop frame written directly",
+            Some(_) => "direct stop write unavailable, worker will send stop",
+            None => "",
+        };
+        let mut g = match self.slot.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => {
+                if running {
+                    log::warn!(
+                        "emergency stop: motor test running; halt flag set, {direct}; manager \
+                         busy (command in flight), worker stops motors and keeps the port \
+                         until it returns"
+                    );
+                } else {
+                    log::warn!(
+                        "emergency stop: no motor test session; manager busy (command in \
+                         flight), RC stream (if any) not stopped"
+                    );
                 }
-                Err(TryLockError::WouldBlock) => {
-                    log::warn!("emergency stop: manager busy, no motor test running");
-                    return false;
-                }
+                return running;
             }
         };
-        let was = matches!(*g, Slot::MotorTest(_));
-        if was {
-            log::warn!("emergency stop: stopping motor test");
+        if running {
+            log::warn!("emergency stop: stopping motor test; halt flag set, {direct}");
         }
-        Self::stop_workers(&mut g, true);
-        was
+        Self::stop_workers(&mut g);
+        running
     }
 
     /// Ends a motor test / RC stream and puts the connection back to Idle (or Empty if
     /// the port is gone).
-    fn stop_workers(g: &mut MutexGuard<'_, Slot>, closing: bool) {
+    fn stop_workers(g: &mut MutexGuard<'_, Slot>) {
         match std::mem::replace(&mut **g, Slot::Empty) {
             Slot::MotorTest(m) => {
-                m.closing.store(closing, Ordering::SeqCst);
                 let MotorSlot {
                     mut conn, handle, ..
                 } = m;
@@ -763,7 +791,7 @@ impl ConnectionManager {
     pub fn rc_stream_stop(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         if matches!(*g, Slot::Rc(_)) {
-            Self::stop_workers(&mut g, false);
+            Self::stop_workers(&mut g);
             if matches!(*g, Slot::Empty) {
                 self.set_port(None);
             }
@@ -913,6 +941,7 @@ mod tests {
     use crate::device::msp::codes;
     use crate::device::msp::{parse_uid, BoardInfo};
     use crate::device::rx_spi::RxSpiInfo as DevRxSpi;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
     const PORT: &str = "COM7";
@@ -1003,6 +1032,117 @@ mod tests {
             m.motor_test_keepalive().unwrap_err().code(),
             "MOTOR_TEST_NOT_ACTIVE"
         );
+    }
+
+    /// Start a motor test spinning motor 1 at 1100; stop events go to the returned channel.
+    fn spinning(fc: &FakeFc) -> (Arc<ConnectionManager>, mpsc::Receiver<MotorTestStopReason>) {
+        let m = Arc::new(manager(fc, Arc::new(AtomicBool::new(true))));
+        m.connect(PORT).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        m.motor_test_start(req(Some(1), 1100), None, move |ev| {
+            let _ = tx.lock().unwrap().send(ev.reason);
+        })
+        .unwrap();
+        assert_eq!(fc.last(), [1000, 1100, 1000, 1000, 1000, 1000, 1000, 1000]);
+        (m, rx)
+    }
+
+    #[test]
+    fn emergency_stop_does_not_wait_for_a_held_manager_lock() {
+        let fc = FakeFc::default();
+        let (m, rx) = spinning(&fc);
+
+        // Something (a keepalive, say) holds the manager lock and doesn't let go.
+        let guard = m.slot.lock().unwrap();
+        let t0 = Instant::now();
+        assert!(m.emergency_stop_all(), "a motor test was running");
+        assert!(
+            t0.elapsed() < Duration::from_millis(100),
+            "returned in {:?}",
+            t0.elapsed()
+        );
+        // Direct write through the duplicated handle: motors already at stop.
+        assert_eq!(fc.last(), [1000; 8], "all motors at stop");
+        // The worker sees the halt flag on its own and reports it.
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            MotorTestStopReason::AppClosing
+        );
+        drop(guard);
+
+        // Halted for good: no more spinning, keepalive refused; stop cleans up the port.
+        assert_eq!(
+            m.motor_test_keepalive().unwrap_err().code(),
+            "MOTOR_TEST_NOT_ACTIVE"
+        );
+        assert_eq!(fc.last(), [1000; 8]);
+        m.motor_test_stop().unwrap();
+        assert!(m.with_link(|_| Ok(())).is_ok());
+        assert!(!m.emergency_stop_all(), "session over");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "exactly one stopped event"
+        );
+    }
+
+    #[test]
+    fn emergency_stop_while_keepalive_holds_the_lock_and_worker_is_stuck() {
+        let fc = FakeFc::default();
+        let (m, rx) = spinning(&fc);
+
+        // The worker gets stuck writing the keepalive's SET_MOTOR, so the keepalive call
+        // holds the manager lock while it waits for the worker's reply.
+        fc.wedge.store(true, Ordering::SeqCst);
+        let m2 = m.clone();
+        let keepalive = std::thread::spawn(move || m2.motor_test_keepalive());
+        let t = Instant::now();
+        while m.slot.try_lock().is_ok() {
+            assert!(
+                t.elapsed() < Duration::from_secs(1),
+                "keepalive took the lock"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        let t0 = Instant::now();
+        assert!(m.emergency_stop_all(), "a motor test was running");
+        assert!(
+            t0.elapsed() < Duration::from_millis(100),
+            "returned in {:?}",
+            t0.elapsed()
+        );
+        assert_eq!(fc.last(), [1000; 8], "stopped by the direct write");
+        assert!(m.slot.try_lock().is_err(), "keepalive still holds the lock");
+
+        // Worker unsticks: the write already in flight lands, then the worker sees the halt,
+        // sends stop through its own link and reports it; nothing but stop after that.
+        fc.wedge.store(false, Ordering::SeqCst);
+        let _ = keepalive.join().unwrap();
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            MotorTestStopReason::AppClosing
+        );
+        let sent = fc.motors.lock().unwrap().clone();
+        let after_stop = sent.iter().rposition(|v| v[1] == 1100).unwrap() + 1;
+        assert!(
+            sent[after_stop..].iter().all(|v| *v == [1000; 8]) && after_stop < sent.len(),
+            "nothing but stop after the emergency stop: {sent:?}"
+        );
+        assert_eq!(
+            m.motor_test_keepalive().unwrap_err().code(),
+            "MOTOR_TEST_NOT_ACTIVE"
+        );
+        assert_eq!(
+            m.motor_test_start(req(Some(1), 1100), None, |_| {})
+                .unwrap_err()
+                .code(),
+            "MOTOR_TEST_NOT_ACTIVE"
+        );
+        assert_eq!(fc.last(), [1000; 8]);
+        // Next emergency stop can take the lock and hand the port back.
+        assert!(m.emergency_stop_all());
+        assert!(m.with_link(|_| Ok(())).is_ok());
     }
 
     #[test]
