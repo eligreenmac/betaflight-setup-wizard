@@ -41,6 +41,11 @@ export async function walkToDone(w: VueWrapper, firmware: "keep" | "update", hoo
       if (w.find('[data-binding="button"]').exists() && !wizard.ui.elrsBinding) await w.get('[data-binding="button"]').setValue(true);
       await settle();
     }
+    if (id === "osd" && wizard.osd.mode === null) {
+      // Set the OSD up from the recommended layout.
+      await w.get('[data-osd-mode="choose"]').setValue(true);
+      await settle();
+    }
     for (const sel of w.findAll("select[data-role]")) {
       const el = sel.element as HTMLSelectElement;
       const first = [...el.options].find((o) => o.value !== "");

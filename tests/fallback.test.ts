@@ -89,7 +89,7 @@ describe("demo mode end to end (no board connected)", () => {
       await settle();
       const seen = await walk(path);
       expect(nav.currentId).toBe("done");
-      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "binding", "vtx", "gps", "esc", "switches", "review", "apply"]);
+      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "binding", "vtx", "gps", "esc", "switches", "osd", "review", "apply"]);
       const banner = w.get('[data-test="demo-banner"]');
       expect(banner.text()).toContain("Demo mode.");
       expect(banner.text()).toContain("Some features are simulated");

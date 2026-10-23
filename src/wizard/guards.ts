@@ -8,6 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
+import { systemFromVtx } from "./osd";
 import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
@@ -151,6 +152,7 @@ export const guards: Record<string, StepGuard> = {
     },
   },
   switches: { canEnter: configured, validate: validateSwitches },
+  osd: { canEnter: configured, validate: validateOsd },
   review: {
     canEnter: configured,
     validate: (s) => (s.ui.script ? [] : [{ key: s.ui.planUnavailable ? "validation.planUnavailable" : "validation.notGenerated" }]),
@@ -180,4 +182,12 @@ export function canGoTo(targetId: string, currentId: string, s: WizardState, ste
   if (target <= current) return true;
   for (let i = 0; i < target; i++) if (!canLeave(steps[i]!.id, s)) return false;
   return guardFor(targetId).canEnter(s);
+}
+
+/** OSD: the video system must be known, and "set up" needs the layout loaded. */
+export function validateOsd(s: WizardState): Issue[] {
+  if (!systemFromVtx(s.model.vtx) && !s.osd.askedSystem) return [{ key: "validation.osdSystem" }];
+  if (s.osd.mode === null) return [{ key: "validation.osdChoose" }];
+  if (s.osd.mode === "choose" && !s.osd.layout) return [{ key: "validation.osdLayout" }];
+  return [];
 }

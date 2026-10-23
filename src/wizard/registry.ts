@@ -12,6 +12,7 @@ import FirmwareStep from "./steps/FirmwareStep.vue";
 import GpsStep from "./steps/GpsStep.vue";
 import ReceiverStep from "./steps/ReceiverStep.vue";
 import ReviewStep from "./steps/ReviewStep.vue";
+import OsdStep from "./steps/OsdStep.vue";
 import SwitchesStep from "./steps/SwitchesStep.vue";
 import VtxStep from "./steps/VtxStep.vue";
 import WelcomeStep from "./steps/WelcomeStep.vue";
@@ -27,6 +28,7 @@ export const stepComponents: Record<string, Component> = {
   Gps: GpsStep,
   Esc: EscStep,
   Switches: SwitchesStep,
+  Osd: OsdStep,
   Review: ReviewStep,
   Apply: ApplyStep,
   Done: DoneStep,

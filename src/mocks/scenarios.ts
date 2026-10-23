@@ -17,9 +17,11 @@
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { Backup, ClearedPort, CliScript, DroneModel, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
+import type { OsdLayout, OsdSystem } from "../api/osdPending";
+import type { ModelWithOsd } from "../wizard/osd";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
 export const SCENARIOS = [
@@ -38,6 +40,7 @@ export const SCENARIOS = [
   "flash-verify",
   "read-protected",
   "driver-replace",
+  "osd-ntsc",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -402,11 +405,22 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
+  // ---- pending Config contract (api/osdPending.ts): the default OSD layout for this board.
+  const pendingHandlers: Record<string, (args: never) => unknown> = {
+    config_osd_default_layout: ({ system }: { system: OsdSystem }) => {
+      legacy("config_osd_default_layout");
+      if (system !== "ANALOG" && system !== "HD") throw err("CONFIG_UNSUPPORTED", `unknown OSD system ${String(system)}`);
+      return mockOsdLayout(system, scenario === "osd-ntsc" ? "NTSC" : "PAL");
+    },
+  };
+
   const inner = createMockBackend({ ...handlers, ...deviceHandlers });
   // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
   const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
+    const p = pendingHandlers[cmd];
+    if (p) return p(args);
     return inner(cmd, args);
   }) as Backend;
 
@@ -424,7 +438,50 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
 };
 
 /** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
-export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript {
+/**
+ * Plausible default layouts (stand-in for config_osd_default_layout): analog PAL 30x16,
+ * NTSC 30x13, HD 53x20. Includes an element the UI does not offer (pid_roll).
+ */
+export function mockOsdLayout(system: OsdSystem, analog: "PAL" | "NTSC" = "PAL"): OsdLayout {
+  const [cols, rows] = system === "HD" ? [53, 20] : analog === "NTSC" ? [30, 13] : [30, 16];
+  const c = Math.floor(cols / 2);
+  const m = Math.floor(rows / 2);
+  const e = (name: string, x: number, y: number, enabledByDefault: boolean) => ({ name, x, y, enabledByDefault });
+  return {
+    grid: { cols, rows },
+    elements: [
+      e("link_quality", 1, 1, true),
+      e("rssi", 1, 2, false),
+      e("rssi_dbm", 1, 3, false),
+      e("tim_2", cols - 7, 1, true),
+      e("gps_sats", cols - 8, 2, true),
+      e("flymode", cols - 6, 3, false),
+      e("tim_1", cols - 7, 4, false),
+      e("gps_speed", cols - 9, 5, false),
+      e("home_dir", c, 1, true),
+      e("home_dist", c - 2, 2, true),
+      e("crosshairs", c - 1, m, false),
+      e("disarmed", c - 4, m + 2, false),
+      e("altitude", 1, m, false),
+      e("warnings", c - 6, rows - 5, true),
+      e("esc_tmp", 1, rows - 4, false),
+      e("vbat", 1, rows - 3, false),
+      e("avg_cell_voltage", 1, rows - 2, true),
+      e("current", cols - 8, rows - 4, false),
+      e("throttle", cols - 8, rows - 3, false),
+      e("mah_drawn", cols - 8, rows - 2, true),
+      e("craft_name", c - 4, rows - 1, true),
+      e("pid_roll", 2, 6, false),
+    ],
+  };
+}
+
+/** BF 4.4+ `osd_*_pos` value: x (5 bits + HD bit 10), y (5 bits), visible in OSD profile 1 (bit 11). */
+export function osdPosValue(x: number, y: number, visible: boolean): number {
+  return (x & 0x1f) | (((x >> 5) & 1) << 10) | ((y & 0x1f) << 5) | (visible ? 1 << 11 : 0);
+}
+
+export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScript {
   const opts = { escTelemetry: model.esc.telemetryPort !== null };
   const commands: string[] = [];
   const warnings: string[] = [];
@@ -463,6 +520,18 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
+  // Proposed `osd` field (wizard/osd.ts); absent = keep the board's OSD.
+  if (model.osd) {
+    const layout = mockOsdLayout(model.osd.system);
+    for (const el of model.osd.elements) {
+      const d = layout.elements.find((l) => l.name === el.name);
+      if (!d) continue;
+      const x = el.x ?? d.x;
+      const y = el.y ?? d.y;
+      if (x < 0 || y < 0 || x >= layout.grid.cols || y >= layout.grid.rows) throw err("CONFIG_UNSUPPORTED", `osd ${el.name} outside the grid`);
+      commands.push(`set osd_${el.name}_pos = ${osdPosValue(x, y, el.enabled)}`);
+    }
+  }
   commands.push("save");
   return { commands, warnings, dialect: "4.5", cleared };
 }

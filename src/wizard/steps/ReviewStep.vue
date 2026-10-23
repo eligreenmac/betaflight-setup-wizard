@@ -9,6 +9,7 @@ import type { CliScript } from "../../types/model";
 import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
+import { osdChoice, withOsd } from "../osd";
 import { modeKeyOf } from "../switches";
 import { wizard } from "../state";
 
@@ -27,7 +28,7 @@ async function load(): Promise<void> {
   wizard.ui.planUnavailable = false;
   plan.value = null;
   try {
-    const r = await fetchPlan(wizard.model, wizard.ports);
+    const r = await fetchPlan(withOsd(wizard.model, wizard.osd), wizard.ports);
     if (r.status === "ready") {
       plan.value = r.script;
       previewOnly.value = false;
@@ -56,8 +57,13 @@ const rows = computed(() => {
   ];
   for (const role of neededRoles(wizard.model, wizard.ui)) r.push([t(`roles.${role}`), getRolePort(wizard.model, role) ?? "—"]);
   r.push([t("review.switches"), m.value.switches.map((s) => `${modeKeyOf(s.mode) ? t(`switches.modes.${modeKeyOf(s.mode)}`) : s.mode} AUX${s.auxChannel + 1}`).join(", ")]);
+  const osd = osdChoice(wizard.osd, m.value.gps.enabled);
+  if (m.value.vtx.kind !== "NONE")
+    r.push([t("review.osd"), osd ? t("review.osdChosen", { n: osd.elements.filter((e) => e.enabled).length, system: t(`osd.system.${osd.system}`) }) : t("review.osdKeep")]);
   return r;
 });
+/** The OSD was set up, but this version's plan does not write it (engine without `osd`). */
+const osdUnplanned = computed(() => !previewOnly.value && !!plan.value && !!osdChoice(wizard.osd, m.value.gps.enabled) && !plan.value.commands.some((c) => /^set osd_\w+_pos\b/.test(c)));
 </script>
 
 <template>
@@ -89,6 +95,11 @@ const rows = computed(() => {
       <dl class="kv">
         <template v-for="[k, v] in rows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></template>
       </dl>
+
+      <div v-if="osdUnplanned" class="callout callout--warn" data-test="osd-unplanned">
+        <strong>{{ t("review.osdUnplannedTitle") }}</strong>
+        <p>{{ t("review.osdUnplannedBody") }}</p>
+      </div>
 
       <div v-if="plan.warnings.length" class="callout callout--warn">
         <h3>{{ t("review.warnings") }}</h3>

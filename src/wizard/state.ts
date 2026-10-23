@@ -21,6 +21,7 @@ import {
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
 import { MODES, normalizeModeNames, SWITCH_POSITIONS } from "./switches";
 import { defaultTelemetry } from "./receiver";
+import { emptyOsdState, type OsdState } from "./osd";
 
 export type FirmwareDecision = "keep" | "update" | null;
 /** CRSF on a UART can be ExpressLRS or TBS Crossfire; only ExpressLRS has a binding phrase. */
@@ -64,6 +65,8 @@ export interface WizardState {
   ports: FcSerialPort[];
   connectedPath: string | null;
   ui: UiState;
+  /** OSD step (wizard/osd.ts); `osd` is sent only when the user sets it up (null = keep). */
+  osd: OsdState;
 }
 
 function emptyUi(): UiState {
@@ -96,7 +99,7 @@ export function initialModel(): DroneModel {
 }
 
 export function createWizardState(): WizardState {
-  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi() };
+  return { model: initialModel(), fc: null, ports: [], connectedPath: null, ui: emptyUi(), osd: emptyOsdState() };
 }
 
 export const wizard = reactive<WizardState>(createWizardState());
@@ -130,6 +133,10 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
     s.model.esc.telemetryPort = null;
     s.ui.motorOrderOk = false;
     s.ui.motorDirectionOk = false;
+    // The OSD grid depends on the board: reload the layout for the new one.
+    s.osd.layout = null;
+    s.osd.layoutSystem = null;
+    s.osd.moved = {};
   }
   prefillFromBoard(s.ports, s.model, s.ui);
   markDirty(s);

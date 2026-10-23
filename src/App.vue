@@ -20,6 +20,7 @@ let unbind: (() => void) | null = null;
 
 // Any change to the model after Review invalidates the reviewed plan / apply result.
 watch(() => wizard.model, () => markDirty(), { deep: true });
+watch(() => wizard.osd, () => markDirty(), { deep: true });
 
 onMounted(() => {
   unbind = bindMotorStopTriggers(motorTest, {

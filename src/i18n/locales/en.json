@@ -76,6 +76,10 @@
     },
     "done": {
       "title": "Done"
+    },
+    "osd": {
+      "title": "Screen overlay (OSD)",
+      "description": "Choose what you see on top of the video in your goggles."
     }
   },
   "welcome": {
@@ -369,7 +373,12 @@
     "nothingWritten": "Nothing is written until you select Apply on the next step.",
     "planUnavailableTitle": "This app version cannot apply settings yet",
     "planUnavailableBody": "The board connection in this version can only show a preview of the changes, so Apply is turned off. Update the app to apply settings. Nothing has been changed on the board.",
-    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes."
+    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes.",
+    "osd": "OSD",
+    "osdKeep": "Keep as it is",
+    "osdChosen": "{n} items shown ({system})",
+    "osdUnplannedTitle": "The OSD won't be written yet",
+    "osdUnplannedBody": "This app version can't save the OSD layout to the board yet. Your other settings will be applied as normal."
   },
   "apply": {
     "ready": "{n} settings are ready to write.",
@@ -524,7 +533,10 @@
     "planUnavailable": "This app version cannot apply settings yet. Update the app.",
     "crsfFamilyRequired": "Choose which radio system the receiver uses.",
     "bindingRequired": "Choose how to bind the receiver.",
-    "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button."
+    "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button.",
+    "osdSystem": "Choose your video system.",
+    "osdChoose": "Choose whether to set up the OSD or keep the current one.",
+    "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -744,5 +756,120 @@
     "unknownDriver": "current",
     "install": "Replace and install the driver",
     "cancel": "Cancel"
+  },
+  "osd": {
+    "intro": "The OSD (on-screen display) is the text drawn over your camera picture: battery, flight time, warnings and more. Pick only what you need, so the picture stays clear.",
+    "system": {
+      "title": "Your video system",
+      "detected": {
+        "ANALOG": "Your video transmitter is analog, so the screen is 4:3.",
+        "HD": "Your video transmitter is digital HD (DJI, Walksnail or HDZero), so the screen is widescreen 16:9."
+      },
+      "change": "Not right? Change it",
+      "ask": "We couldn't tell which video system you have. Which one do you use?",
+      "ANALOG": "Analog",
+      "ANALOGHint": "Classic FPV video with some fuzz and static. Most cheaper goggles.",
+      "HD": "Digital HD",
+      "HDHint": "DJI O3/O4, Walksnail Avatar or HDZero: a sharp, widescreen picture."
+    },
+    "choose": "Set up the OSD now",
+    "chooseHint": "Start from a recommended layout and adjust it.",
+    "keep": "Keep the current OSD",
+    "keepHint": "Leave the OSD on the board as it is.",
+    "loading": "Loading the default layout…",
+    "reset": "Reset to recommended",
+    "isRecommended": "Using the recommended set.",
+    "groups": {
+      "recommended": "Recommended",
+      "optional": "Optional"
+    },
+    "items": {
+      "avg_cell_voltage": {
+        "label": "Battery voltage per cell",
+        "hint": "The best way to know when to land: land at about 3.5 V per cell."
+      },
+      "vbat": {
+        "label": "Total battery voltage",
+        "hint": "The whole pack's voltage. Per-cell voltage is easier to read."
+      },
+      "mah_drawn": {
+        "label": "Battery used (mAh)",
+        "hint": "How much of the battery you've used so far."
+      },
+      "tim_2": {
+        "label": "Flight timer",
+        "hint": "How long you've been flying on this battery."
+      },
+      "link_quality": {
+        "label": "Radio link quality",
+        "hint": "How well the drone hears your radio. Turn back if it drops."
+      },
+      "warnings": {
+        "label": "Warnings",
+        "hint": "Short alerts such as low battery or a lost radio signal."
+      },
+      "craft_name": {
+        "label": "Drone name",
+        "hint": "The name you gave this drone."
+      },
+      "gps_sats": {
+        "label": "GPS satellites",
+        "hint": "How many satellites the GPS sees. Wait for enough before you take off."
+      },
+      "home_dir": {
+        "label": "Arrow to home",
+        "hint": "Points back to where you took off."
+      },
+      "home_dist": {
+        "label": "Distance to home",
+        "hint": "How far you are from where you took off."
+      },
+      "rssi": {
+        "label": "Signal strength (%)",
+        "hint": "The radio signal as a percentage. Link quality is usually more useful."
+      },
+      "rssi_dbm": {
+        "label": "Signal strength (dBm)",
+        "hint": "The radio signal in dBm, for ELRS and Crossfire."
+      },
+      "throttle": {
+        "label": "Throttle",
+        "hint": "How much throttle you're giving, in percent."
+      },
+      "current": {
+        "label": "Current draw",
+        "hint": "How many amps the motors are pulling right now."
+      },
+      "flymode": {
+        "label": "Flight mode",
+        "hint": "The current flight mode, such as ACRO or ANGLE."
+      },
+      "altitude": {
+        "label": "Altitude",
+        "hint": "Height above the takeoff point."
+      },
+      "gps_speed": {
+        "label": "Speed",
+        "hint": "Ground speed from the GPS."
+      },
+      "crosshairs": {
+        "label": "Crosshair",
+        "hint": "A small mark in the middle of the screen."
+      },
+      "tim_1": {
+        "label": "Total on-time",
+        "hint": "How long the drone has been powered on."
+      },
+      "disarmed": {
+        "label": "DISARMED label",
+        "hint": "Shows DISARMED in the middle while the motors are off."
+      },
+      "esc_tmp": {
+        "label": "ESC temperature",
+        "hint": "How hot the ESC is. Needs ESC telemetry."
+      }
+    },
+    "moveLabel": "{item}: drag, or use the arrow keys to move",
+    "previewHint": "Preview with sample values ({cols} × {rows} grid). Drag an item, or select it and use the arrow keys."
   }
 }
