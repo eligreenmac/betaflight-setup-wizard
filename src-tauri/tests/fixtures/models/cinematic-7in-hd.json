@@ -3,7 +3,7 @@
   "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "2025.12.1", "apiVersion": "1.47" },
   "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true },
   "vtx": { "kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI" },
-  "gps": { "enabled": true, "port": "UART4", "provider": "UBLOX" },
+  "gps": { "enabled": true, "port": "UART6", "provider": "UBLOX" },
   "esc": { "protocol": "DSHOT300", "bidirectionalDshot": true, "motorPoles": 12, "propsOut": false },
   "switches": [
     { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },

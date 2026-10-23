@@ -89,7 +89,14 @@ fn golden_files() {
 fn dialect_differences() {
     let m = model("freestyle-5in-analog");
     for d in Dialect::ALL {
-        let fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        // The SpeedyBee board file already puts serial RX on UART2; clear it so the
+        // dialect-specific command is emitted.
+        fc.preset(&[if d == Dialect::V2025_12 {
+            "serial UART2 0 115200 57600 0 115200"
+        } else {
+            "serial 1 0 115200 57600 0 115200"
+        }]);
         let snap = fc.snapshot();
         let s = generate_for(&m, d, &snap.ports, Some(&snap)).unwrap();
         let has = |x: &str| s.commands.iter().any(|c| c == x);
@@ -136,7 +143,7 @@ fn unsupported_firmware_refused() {
     let e = super::generate(&m, &[]).unwrap_err();
     assert_eq!(e.code(), "UNSUPPORTED_FIRMWARE");
 
-    let dump = super::mock::fixture("2025.12", "speedybeef405v4").replace("2025.12.1", "2026.6.0");
+    let dump = super::mock::fixture("2025.12", "speedybeef405v4").replace("2025.12.5", "2026.6.0");
     let mut fc = MockFc::from_dump(&dump);
     let e = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap_err();
     assert_eq!(e.code(), "UNSUPPORTED_FIRMWARE");
@@ -160,7 +167,12 @@ fn msp_displayport_rules() {
     // MSP that the user configured themselves (MSP|VTX_MSP|BLACKBOX? no: plain MSP + VTX_MSP
     // plus another function) is kept.
     let mut fc = MockFc::load("4.5", "speedybeef405v4");
-    fc.preset(&["serial 2 131201 115200 57600 0 115200"]); // MSP|BLACKBOX|VTX_MSP
+    // MSP|BLACKBOX|VTX_MSP on UART3; the board-default MSP on UART4 was freed by the user,
+    // otherwise VCP + UART1 + UART3 + UART4 would be 4 MSP ports (Betaflight allows 3).
+    fc.preset(&[
+        "serial 2 131201 115200 57600 0 115200",
+        "serial 3 0 115200 57600 0 115200",
+    ]);
     let s = session::plan(&mut fc, &model("cinematic-7in-hd")).unwrap();
     assert!(s
         .commands
@@ -411,6 +423,20 @@ fn vtx_none_clears_vtx_functions() {
     assert!(s
         .commands
         .contains(&"serial 3 0 115200 57600 0 115200".to_string()));
+}
+
+#[test]
+fn board_default_msp_port_is_not_taken_silently() {
+    // betaflight/config SPEEDYBEEF405V4: MSP_UART = UART4. Putting GPS there would give
+    // MSP|GPS on one port, which Betaflight rejects (and resets every port).
+    for d in Dialect::ALL {
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let mut m = model("cinematic-7in-hd");
+        m.gps.port = Some("UART4".into());
+        let e = session::plan(&mut fc, &m).unwrap_err();
+        assert_eq!(e.code(), "CONFIG");
+        assert!(e.to_string().contains("UART4"), "{e}");
+    }
 }
 
 #[test]
