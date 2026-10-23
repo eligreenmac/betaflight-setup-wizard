@@ -53,7 +53,8 @@ SCREAMING_SNAKE_CASE enum values.
   "schemaVersion": 1,
   "fc":       { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
   "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true,
-                "inverted": false, "halfDuplex": false },
+                "inverted": false, "halfDuplex": false,
+                "elrsUid": null, "elrsDomain": null },   // elrs* only for SPI + EXPRESSLRS
   "vtx":      { "kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI", "region": null },
   "gps":      { "enabled": true, "port": "UART4", "provider": "UBLOX" },
   "esc":      { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14,
@@ -67,21 +68,29 @@ Enums:
 - `receiver.kind`: NONE | SERIAL | SPI | PPM | MSP
 - `receiver.protocol`: CRSF | GHST | SBUS | FPORT | IBUS | SRXL2 | SPEK1024 | SPEK2048 | SUMD (serial); EXPRESSLRS | FRSKY_D | FRSKY_X | FRSKY_X_LBT (SPI)
 - `vtx.kind`: NONE | ANALOG | DIGITAL; `vtx.protocol`: SMARTAUDIO | TRAMP | MSP; `vtx.digitalSystem`: DJI | WALKSNAIL | HDZERO | OTHER
+- `receiver.elrsDomain`: AU433 | AU915 | EU433 | EU868 | IN866 | FCC915 (SX127x) | ISM2400 | CE2400 (SX1280)
 - `gps.provider`: UBLOX | NMEA
 - `esc.protocol`: DSHOT150 | DSHOT300 | DSHOT600 | ONESHOT125 | MULTISHOT | PWM
 - Port names: `UART1`…`UART15`, `LPUART1`, `SOFTSERIAL1`, `SOFTSERIAL2` (never numeric ids).
+  The MVP config engine rejects `SOFTSERIAL*` (no soft serial in MVP).
+- `receiver.telemetry` defaults to `true`. Per-motor DShot direction reversal is phase 2 and not in the model.
 
 ### 2.2 Other types (see model.rs for fields)
 
 `HostPort`, `HostPortKind`, `FcInfo`, `FcSerialPort {name, identifier, functionMask, isConnectionPort}`,
 `BoardTarget`, `FirmwareRelease`, `FirmwareRequest`, `FirmwareImage`, `FirmwareFormat`,
-`DfuDevice`, `FlashOptions`, `FlashProgress`, `FlashStage`, `CliScript {commands, warnings, dialect}`,
-`Backup`, `ApplyResult`, `CliError`, `VerifyReport`, `Mismatch`, `DriverStatus`, `AppInfo`.
+`DfuDevice`, `FlashOptions`, `FlashProgress`, `FlashStage`, `CliScript {commands, warnings, dialect, cleared}`,
+`ClearedPort {port, functions, functionMaskBefore, functionMaskAfter}`, `SerialFunction`,
+`Backup {id, path, boardUid, boardName, firmwareVersion, createdAt}`,
+`ApplyResult {applied, errors, saved, backup, reconnected}`, `ConfigProgress {stage, fraction, message}`,
+`ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
+`DriverStatus`, `AppInfo`.
 
 ### 2.3 Errors
 
 Every command returns `Result<T, AppError>`; the UI receives `{ "code": "...", "message": "..." }`.
-Codes: NOT_IMPLEMENTED, NOT_CONNECTED, SERIAL, MSP, CLI, USB, FIRMWARE, CONFIG, DRIVER, IO.
+Codes: NOT_IMPLEMENTED, NOT_CONNECTED, SERIAL, MSP, CLI, USB, FIRMWARE, CONFIG,
+UNSUPPORTED_FIRMWARE, DRIVER, IO.
 The UI maps `code` → i18n key `errors.<code>`.
 
 ## 3. Tauri commands
@@ -104,15 +113,21 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `flasher_flash` | `image, dfuSerial, options` | – (events) | flasher |
 | `config_read_ports` | – | `FcSerialPort[]` | config |
 | `config_backup` | – | `Backup` | config |
-| `config_generate` | `model, ports` | `CliScript` | config |
-| `config_apply` | `script` | `ApplyResult` | config |
+| `config_generate` | `model, ports` | `CliScript` (**preview only**, never applied) | config |
+| `config_elrs_uid` | `phrase` | `number[6]` (phrase not stored/logged) | config |
+| `config_plan` | `model` | `CliScript` (read-only, see §5.1) | config |
+| `config_apply` | `script` | `ApplyResult` (events) | config |
 | `config_verify` | `model` | `VerifyReport` | config |
-| `config_rollback` | `backup` | `ApplyResult` | config |
+| `config_rollback` | `backup` | `ApplyResult` (events) | config |
+| `config_list_backups` | – | `Backup[]` | config |
+| `config_backups_dir` | – | `string` | config |
+| `config_restore` | `backupId` | `ApplyResult` (events) | config |
 | `system_driver_status` | – | `DriverStatus` | packaging |
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
 
-Events: `flasher://progress` → `FlashProgress`. New events are named `<module>://<name>`.
+Events: `flasher://progress` → `FlashProgress`; `config://progress` → `ConfigProgress`.
+New events are named `<module>://<name>`.
 
 ## 4. Rust interfaces between modules
 
@@ -137,10 +152,56 @@ transcripts (put fixtures in `src-tauri/tests/fixtures/<firmware>/`).
 | Concern | 4.4 / 4.5 | 2025.12+ |
 |---|---|---|
 | `serial` port identifier | UART1=0 … (n-1); VCP=20; SOFTSERIAL1=30; LPUART1=40 | UART1=51 … (50+n); VCP=20; SOFTSERIAL1=30; LPUART1=40 |
-| `save noreboot` | not available | available |
+| `save noreboot` | 4.4: no; 4.5: from 4.5.4 (backport PR #15151) | available |
+| ESC idle setting | `dshot_idle_value` | `motor_idle` (PR #13936) |
+| `feature -RX_MSP` | accepted | no CLI name (omit) |
+| `expresslrs_rate_index` / `_switch_mode` | exist (never written) | removed (PR #12936) |
 | Function bitmask | same (see `config/serial_functions.rs`) | same |
 
 Always take identifiers from `config_read_ports`; the table is only for tests.
+Supported lines: **4.4.x, 4.5.x, 2025.12.x**. Everything else (≤ 4.3, 2026.6.x and newer)
+fails with `UNSUPPORTED_FIRMWARE` before any write.
+
+### 5.1 Config engine contract
+
+- **`config_plan(model)`** is read-only. It reads `version`, `serial` and `dump all`, applies the firmware gate,
+  SPI ELRS detection, aux-slot allocation and setting availability, and returns the `CliScript`.
+  `cleared` lists the managed functions (RX_SERIAL, GPS, ESC_SENSOR, VTX_SMARTAUDIO, VTX_TRAMP,
+  VTX_MSP) removed from ports that no longer need them. MSP is also removed from an old MSP
+  DisplayPort port only when that port had exactly MSP|VTX_MSP. All other serial functions are
+  never touched. The UI shows `cleared` before applying. **The script returned by `config_plan` is the one
+  passed to `config_apply`.** `config_generate` is the pure core (ports supplied by the caller,
+  default bauds, all aux slots assumed free, no SPI hardware check): **preview only**, also used by
+  golden tests; its output is never applied.
+- **`config_apply(script)`** runs these stages: `BACKUP` (`diff all` saved to a file) → `SENDING` (`batch start` +
+  commands, stop at the first `###ERROR###`) → `SAVING` (`save` while the batch is still active,
+  so firmware refuses to save after any error) → `REBOOTING` → `RECONNECTED`. It **resolves only
+  after reconnect** and emits `config://progress` at every stage. On a rejected command the FC is
+  rebooted without saving (unchanged) and `ApplyResult.errors` is non-empty with `saved=false`.
+- **`config_verify(model)`** reads back `serial`, `feature`, `aux` and `get`, and compares only the keys the
+  plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
+- **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
+  backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
+- **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
+  `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
+  for the UI's "open backups folder" action.
+- **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
+  → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
+  `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.
+  The firmware keeps only one RX feature (config.c: PPM > MSP > SERIAL > SPI > PWM), so the
+  other feature is always disabled explicitly. SPI ELRS is offered only when `dump all` shows
+  `resource RX_SPI_CS` assigned (SX127x boards have no BUSY pin) and `rx_spi_protocol` and
+  `expresslrs_uid` exist. Other SPI protocols → `CONFIG` error in MVP.
+- **ELRS binding phrase:** only an input. The UI calls `config_elrs_uid(phrase)` and stores
+  the returned 6-byte UID in `receiver.elrsUid`; the phrase is never part of the model and is
+  never written to disk (models, backups, logs) or logged. Backups contain only `expresslrs_uid`.
+- **Telemetry:** `receiver.telemetry=true` with CRSF, FPORT or SPI EXPRESSLRS → `feature TELEMETRY`.
+  Otherwise the feature is left untouched.
+- **Aux:** only wizard-managed modes are replaced (freed slots are reused first, then free slots). All other
+  aux slots are kept.
+- **GPS:** provider, auto-config, Galileo and SBAS only. The u-blox model and `gps_auto_baud` stay at defaults.
+- **Out of MVP:** soft serial, per-motor DShot reversal (phase 2).
 
 ## 6. Flashing sequence (flasher + device + system)
 
