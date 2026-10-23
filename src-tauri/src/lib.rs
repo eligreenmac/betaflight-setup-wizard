@@ -45,6 +45,7 @@ pub fn run() {
             device::commands::device_identify,
             device::commands::device_cli_exec,
             device::commands::device_reboot_to_bootloader,
+            device::commands::device_reboot,
             device::commands::device_probe_board,
             device::commands::device_motor_test_start,
             device::commands::device_motor_test_keepalive,
@@ -76,6 +77,8 @@ pub fn run() {
             config::commands::config_list_backups,
             config::commands::config_backups_dir,
             config::commands::config_restore,
+            config::commands::config_osd_default_layout,
+            config::commands::config_firmware_catalog,
             // system (packaging)
             system::commands::system_driver_status,
             system::commands::system_install_dfu_driver,

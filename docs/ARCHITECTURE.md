@@ -91,6 +91,78 @@ is written; the generator rejects out-of-range values with `CONFIG`, nothing sen
 
 The `gps.*` fields only apply when `gps.enabled`.
 
+#### 2.1.1 Model batch 2: modes, beepers, sensors, board alignment, OSD (shape; implementation follows)
+
+All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless noted. **null or absent = keep the FC's current state**; nothing is written for them. Sources: Betaflight `src/main` at tags 4.4.3, 4.5.5 and 2025.12.5.
+
+```jsonc
+{
+  "switches": [ { "mode": "AIR MODE", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100 },
+                { "mode": "FLIP OVER AFTER CRASH", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100 },
+                { "mode": "PREARM", "auxChannel": 3, "rangeMin": 1700, "rangeMax": 2100 } ],
+  "airmode": "SWITCH",                       // ALWAYS | SWITCH | OFF | null
+  "removeModes": [],                         // e.g. ["PREARM"]: delete that optional mode's FC ranges
+  "beepers": { "disabled": ["ON_USB"], "dshotBeaconDisabled": ["RX_SET"] },
+  "sensors": { "acc": true, "baro": false, "mag": null },
+  "boardAlignment": { "roll": 0, "pitch": 0, "yaw": 90 },
+  "osd": { "videoSystem": "HD",
+           "elements": [ { "name": "MAIN_BATT_VOLTAGE", "enabled": true, "x": 1, "y": 18 },
+                         { "name": "LINK_QUALITY", "enabled": true },        // x/y null = default layout
+                         { "name": "RSSI_VALUE", "enabled": false } ] }
+}
+```
+
+- **Optional modes.** The stable names follow `config::modes` (firmware box names): `PREARM` (permanent id 36), `FLIP OVER AFTER CRASH` (35, "turtle"), `AIR MODE` (28). Aliases like `AIRMODE` and `TURTLE` are also accepted, but the UI writes the canonical names. These three are managed **only when the model mentions them**:
+  - an entry in `switches` replaces that mode's FC ranges;
+  - a name in `removeModes` deletes them;
+  - otherwise the FC's ranges are kept.
+
+  The always-managed modes (ARM, ANGLE, …) keep today's rule: their FC ranges are replaced by `switches`.
+- **`airmode`.** On every supported line, air mode is `feature AIRMODE || box AIRMODE` (`fc/rc_modes.c`). The AIR MODE box is only offered when the feature is off (`msp/msp_box.c`). The feature is on by default (`config/feature.c`). 2025.12 renamed `airmodeIsEnabled()` to `isAirmodeEnabled()` but did not change the behaviour.
+  - `ALWAYS`: `feature AIRMODE`. Any AIR MODE range is removed, since it would be dead.
+  - `SWITCH`: `feature -AIRMODE` plus the `switches` entry. If that entry is missing, it's a `CONFIG` error.
+  - `OFF`: `feature -AIRMODE`, and AIR MODE ranges are removed.
+  - Rejected with `CONFIG`: an AIR MODE switch together with `ALWAYS` or `OFF`.
+- **`beepers`.** The stable names are the 4.4/4.5 CLI names from `beeper list` (`io/beeper.c` `beeperTable`). When `beepers` is set, the generator writes every condition the firmware has: `beeper -X` for the listed ones and `beeper X` for the rest. This gives a full, verifiable state. Per-version differences:
+  - On 2025.12, `CRASH_FLIP` is written as `CRASHFLIP`.
+  - `RC_SMOOTHING_INIT_FAIL` doesn't exist on 2025.12. Listing it there gives a warning and nothing is written for it.
+  - The CLI matches names by prefix (`strncasecmp`), so the generator always writes full names.
+  - Firmware default: all conditions on (`beeper_off_flags` = 0). The DShot beacon is off for both RX_LOST and RX_SET (`DEFAULT_DSHOT_BEACON_OFF_FLAGS`).
+  - `dshotBeaconDisabled` maps to `beacon -X` / `beacon X` for the only allowed conditions, RX_LOST and RX_SET.
+  - `beeper` and `beacon` become guard-allowlisted verbs in the implementation PR.
+  - The old `extras.beeper` boolean is not used by the generator. It stays accepted, is ignored, and is superseded by `beepers`.
+- **`sensors`.**
+  - `true` sets `acc_hardware` / `baro_hardware` / `mag_hardware` to `AUTO`. If the FC already names a specific chip, that chip is kept.
+  - `false` sets it to `NONE`. No `feature` is involved on 4.4+.
+  - The gyro is always on.
+  - With ACC off, the firmware hides ANGLE, HORIZON, HEADFREE and ACRO TRAINER (plus ALTHOLD and POSHOLD on 2025.12). Failsafe and GPS rescue can't self-level, because angle mode requires `sensors(SENSOR_ACC)` (`fc/core.c`). So `acc: false` together with an ANGLE, HORIZON, ALTHOLD, POSHOLD or GPS RESCUE switch is a `CONFIG` error.
+  - `baro: false` with ALTHOLD gives a warning: ALTHOLD can fall back to GPS altitude.
+  - Turning ACC on needs an accelerometer calibration before arming (Device's `device_acc_calibrate`).
+  - Device's `SensorState.configuredHardware` reads the same settings: `NONE` = `false` (disabled), anything else = `true`.
+  - **Calibration is never interleaved with a config batch.** The firmware saves the whole config to flash when an ACC calibration finishes. So the UI runs `device_acc_calibrate` only after `config_apply` has returned (saved, rebooted, reconnected), or before `config_plan`, never between them. The config script doesn't rely on unsaved RAM state outside its own batch: every batch ends in `save` + reboot (or `exit`), and the batch holds the port, so a calibration can't start mid-batch (`PORT_BUSY`).
+- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on all three lines (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device reports them as `SensorAlignment.boardRollDeg` / `boardPitchDeg` / `boardYawDeg` (signed whole degrees, #63), which are the same values as `boardAlignment.roll` / `pitch` / `yaw`.
+- **`osd`.**
+  - **Setting `osd` writes:**
+    - always: `feature OSD`;
+    - when `videoSystem` is set: `vcd_video_system`;
+    - for HD: `osd_displayport_device = MSP` and `osd_canvas_width = 53` / `osd_canvas_height = 20`. The CLI doesn't resize the canvas; only MSP_SET_OSD_CONFIG does that (`msp/msp.c`).
+    - for analog: `osd_displayport_device = AUTO`.
+  - **Grids:** PAL 30×16, NTSC 30×13, AUTO 30×13 (fits either camera), HD 53×20 (`drivers/display.h`, `osd/osd.h`).
+  - **Elements:**
+    - Each element maps to `osd_<cli>_pos`. The stable name is the `osd_items_e` name without `OSD_`, e.g. `MAIN_BATT_VOLTAGE` → `osd_vbat_pos`, `ITEM_TIMER_2` → `osd_tim_2_pos`.
+    - The 4.4 list has 77 elements; 4.5 adds `GPS_LAP_TIME_*`; 2025.12 adds `DEBUG2` and `LIDAR_DIST`. An unknown name for the firmware is a `CONFIG` error.
+    - Elements not listed keep the FC's state.
+    - An element whose x/y doesn't fit the grid is a `CONFIG` error.
+  - **Position encoding** is identical on all three lines (`osd/osd.h`):
+    - x bits 0–4 plus bit 10 (x ≤ 63);
+    - y bits 5–9;
+    - bits 11–13: visible in OSD profile 1/2/3;
+    - bits 14–15: element variant (type).
+
+    `enabled` sets or clears all three profile bits. The type bits are kept from the FC.
+  - **Catalog:** `config_firmware_catalog(firmwareVersion)` lists, per firmware line, the beeper conditions, DShot beacon events, OSD element names and stable mode names, so the UI doesn't hard-code them. It describes the line, not one board's build; plan checks the FC's `dump all`.
+  - **Defaults:** config owns the default positions. The firmware's own defaults put every element hidden at the centre, so they aren't useful. `config_osd_default_layout(videoSystem, firmwareVersion)` returns `OsdLayout {videoSystem, cols, rows, elements: {name, x, y, enabled}[]}` for that firmware line. The UI preview and the generator use the same table.
+
 ### 2.2 Other types (see model.rs for fields)
 
 `HostPort`, `HostPortKind`, `FcInfo {…, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
@@ -166,6 +238,7 @@ plus the device/flasher codes:
 | `ACC_NOT_AVAILABLE` | `device_acc_calibrate`: no accelerometer detected, or disabled (`acc_hardware = NONE`), or firmware built without one; nothing was sent | `{ present: boolean, enabled: boolean }` | `enabled: false`: "The accelerometer is turned off"; else "No accelerometer found" (skip the level step) |
 | `BOARD_MOVING` | `device_acc_calibrate`: gyro rate above the limit (§4.3). `during: false`: checked before, nothing was sent. `during: true`: moved while calibrating, the FC already stored the (bad) result | `{ maxRateDps: number, limitDps: number, during: boolean }` | "Put the drone down level and keep it still", then retry |
 | `ACC_CALIBRATION_FAILED` | `device_acc_calibrate`: the FC still reports calibrating after 4 s, or still reports "accelerometer needs calibration" afterwards | – | Retry; then suggest a power cycle |
+| `PENDING_UNSAVED_CHANGES` | `device_acc_calibrate`: the FC may hold unsaved changes in RAM (§4.1 "RAM state"), e.g. a config apply failed and its cleanup reboot was not confirmed. Calibration saves the whole RAM config to EEPROM, so it is refused (checked first, nothing was sent) | `{ reason: "CLI_COMMAND" \| "EXIT_NOREBOOT" \| "MSP_WRITE" }` | Offer "Reboot board" (`device_reboot`), then retry. A plain reconnect or USB replug does **not** clear it (a battery-powered FC keeps its RAM) |
 
 Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
 `DRIVER` stays for driver-installation failures (packaging).
@@ -189,6 +262,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_identify` | – | `FcInfo` | device |
 | `device_cli_exec` | `line` | `string` | device |
 | `device_reboot_to_bootloader` | – | – | device |
+| `device_reboot` | – | – (resolves once the reboot is confirmed; §4.1 "RAM state") | device |
 | `device_probe_board` | – | `FcInfo` (identify + read-only CLI probe, §4.1) | device |
 | `device_motor_test_start` | `motorIndex: number\|null, throttle, propsOffConfirmed, limits: MotorTestLimits\|null` | `MotorTestSession` (first call starts, later calls update; §4.2) | device |
 | `device_motor_test_keepalive` | – | – (every 200 ms) | device |
@@ -218,6 +292,8 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `config_list_backups` | – | `Backup[]` | config |
 | `config_backups_dir` | – | `string` | config |
 | `config_restore` | `backupId` | `ApplyResult` (events) | config |
+| `config_osd_default_layout` | `videoSystem: OsdVideoSystem, firmwareVersion: string` | `OsdLayout` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
+| `config_firmware_catalog` | `firmwareVersion: string` | `FirmwareCatalog {beepers: BeeperName[], beaconEvents: DshotBeaconCondition[], osdElements: string[], modes: string[]}` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
 | `system_driver_status` | – | `DriverStatus` | packaging |
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
@@ -276,13 +352,61 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   read-only commands do, because on 4.4 leaving reboots the FC). The next MSP call — from
   `msp_request`, `device_identify`, motor test or RC stream — first leaves it transparently:
   plain `exit` (on every firmware, so unsaved RAM changes are dropped; `exit noreboot` is
-  never used here), wait for the reboot (if none is seen: MSP_REBOOT `[0]`), wait for the
+  never used here), wait for the reboot (if no `Rebooting` line was seen: MSP_REBOOT `[0]`
+  when the RAM state is dirty or nothing at all was seen; a port drop alone only suffices
+  while RAM is clean, see "RAM state"), wait for the
   port to come back, re-verify MSP_API_VERSION + MSP_UID. One `exit` per transition, `save`
   is never sent. The link is detached before the `exit` is written, so a failure leaves no
   CLI state: the call fails with `SERIAL` (timed out coming back / a different flight
   controller came back) and later calls get `SERIAL` "reconnect first", never a second
   `exit`. `device_reboot_to_bootloader` from an open CLI sends `bl rom` directly. The
   emergency stop never waits for this (it does not take the port lock).
+- **RAM state ("dirty RAM")**: the connection tracks whether the FC's RAM may hold changes
+  that are not in EEPROM, because some FC operations save the *whole* RAM config (accelerometer
+  calibration calls `saveConfigAndNotify()`), which would persist a half-applied config.
+  Tracked entirely inside the device link; callers need no extra calls.
+  - **Set** (first reason kept) when, through the link: `cli_exec` sends a line that is not
+    read-only (`CLI_COMMAND`; read-only = empty / `#` comment, `version`, `status`, `tasks`,
+    `help`, `dump …`, `diff …`, `get …`, and listing commands without arguments such as
+    `serial`, `feature`, `aux`, `resource`; `batch start` counts as a change); `exit_cli(false)`
+    leaves with `exit noreboot` on 4.5+ (`EXIT_NOREBOOT`); `msp_request` sends any code that
+    is not a known read (`MSP_WRITE`: every `MSP_SET_*`, `MSP_EEPROM_WRITE`, `MSP_RESET_CONF`,
+    `MSP_SELECT_SETTING`, `MSP_COPY_PROFILE`, unknown codes, …). `MSP_REBOOT` itself does not
+    set it. The flag is set before the line/frame is written, so a failed send still counts.
+  - **Cleared only by a confirmed reboot**: a reboot **the app issued** in the same sequence
+    whose effect is acknowledged by the FC, i.e. it answered `MSP_REBOOT`, or printed
+    `Rebooting` after our `exit` / `save`, **and** the port then came back (or reopened, UART
+    bridge) with MSP_API_VERSION + MSP_UID re-verified as the same board. Where that happens:
+    `reconnect` after an acknowledged reboot (config's save / discard), the CLI exit of the
+    previous bullet, `device_reboot`, the connect-time reboot below. A change after the
+    acknowledgement voids it.
+  - **Never cleared by a port drop or reconnect alone.** With the battery connected a USB
+    unplug/replug drops the port but the FC keeps its RAM, so a port drop, a plain
+    `reconnect`, or a `device_connect` is never proof of a reboot. In particular: an
+    `MSP_REBOOT` answered with an error frame (or not answered) followed by a port drop does
+    not clear it, and after our `exit` a port drop without `Rebooting` does not count (the
+    link then sends `MSP_REBOOT [0]` and needs its reply). `save` alone does not clear it;
+    `save` printing `Rebooting` + reconnect does.
+  - **Boot evidence is not used.** No MSP message carries an uptime or boot counter on 4.4,
+    4.5 or 2025.12 (`msp.c` has no `millis()`; `MSP_STATUS(_EX)` / `MSP_ANALOG` carry cycle
+    time, sensors, flags, battery). Uptime only exists in CLI `status` ("System Uptime"), and
+    reading it needs the CLI, which on 4.4 can only be left by rebooting.
+  - **`device_reboot`** ("Reboot board"): leaves an open CLI with plain `exit` (never `save`),
+    otherwise sends `MSP_REBOOT [0]`; waits for the port to drop and return (UART bridge:
+    reopens), re-verifies MSP_API_VERSION + MSP_UID, clears the flag, resolves. Betaflight
+    replies to `MSP_REBOOT` before resetting (`msp.c` sets `mspRebootFn` as post-process;
+    `msp_serial.c` waits for the TX to finish before running it). Errors: not confirmed (no
+    reply / error frame / no `Rebooting`) but the same board answered →
+    `PENDING_UNSAVED_CHANGES {reason}` if the flag is set (still set), else `MSP`; the board
+    did not come back in time or a different board came back → `SERIAL`; also
+    `NOT_CONNECTED`, `PORT_BUSY`.
+  - **Fresh connect**: a new connection starts clean, except for a board that was dirty when
+    this app last closed its port (`device_disconnect`, `device_connect` to another port, port
+    lost; matched by MSP_UID, else the path): `device_connect` then issues the same
+    confirmed reboot once before returning. `device_connect` to the already-open port reopens
+    it (same reboot) while the flag is set, instead of returning early. If that reboot is not
+    confirmed, `device_connect` fails (`PENDING_UNSAVED_CHANGES` / `MSP` / `SERIAL`, as
+    `device_reboot`) and the board stays marked.
 - **`FcInfo.uid`**: exactly the CLI `mcu_id` string: 24 lowercase hex chars, the three
   MSP_UID (160) words `U_ID_0, U_ID_1, U_ID_2` (each u32 little-endian on the wire), each
   zero-padded to 8 digits, in that order (`cli.c`: `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`).
@@ -357,6 +481,11 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
   (`PROBLEM_ACC_NEEDS_CALIBRATION`) clear. Optional parts the firmware does not answer are
   `null`.
 - **`device_acc_calibrate`** (holds the port for the whole run; others get `PORT_BUSY`):
+  0. Leave an open CLI first (§4.1: plain `exit` reboots; it only counts as a confirmed
+     reboot if the FC printed `Rebooting` or acknowledged the fallback `MSP_REBOOT`), then
+     refuse `PENDING_UNSAVED_CHANGES {reason}` if the RAM state (§4.1) is dirty. Checked
+     before everything below; nothing is sent to the FC. Only a confirmed reboot clears it
+     (`device_reboot`); a plain reconnect does not.
   1. Refuse `BOARD_ARMED` if armed. Betaflight itself ignores the request while armed but still
      ACKs it (msp.c 3238 / 3285 / 3314: `if (!ARMING_FLAG(ARMED)) accStartCalibration();`).
   2. Refuse `ACC_NOT_AVAILABLE {present, enabled}` if the ACC bit is clear or `acc_hardware =
@@ -380,8 +509,9 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
   - **Auto-save**: the FC saves by itself. The last calibration cycle sets the trims and calls
     `saveConfigAndNotify()` (acceleration_init.c 4.4.3:445-455, 4.5.5:461-471,
     2025.12.5:428-438) = `writeEEPROM(); readEEPROM(); beeperConfirmationBeeps(1);` (config.c
-    786 / 826 / 738). Side effect: **any other unsaved MSP change in RAM is saved too**. CLI
-    changes cannot be pending (device leaves the CLI with `exit` before MSP).
+    786 / 826 / 738). Side effect: **any other unsaved change in RAM is saved too**, which is
+    why step 0 refuses while the RAM state is dirty (e.g. after `exit noreboot` + a failed
+    `MSP_REBOOT` in config's cleanup).
   - `MSP_MAG_CALIBRATION` is not offered: it needs the craft rotated in all directions for 30 s
     and the algorithm/completion differs between 4.4 and 4.5+ (compass.c).
 - **Attitude** — `MSP_ATTITUDE` (108): roll and pitch int16 decidegrees, yaw int16 whole degrees

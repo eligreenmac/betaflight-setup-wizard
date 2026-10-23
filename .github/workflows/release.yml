@@ -18,6 +18,8 @@ on:
       - .github/workflows/release.yml
       - .github/actions/build-wdi-simple/**
       - .github/scripts/check-release-version.mjs
+      - .github/scripts/check-windows-versions.ps1
+      - src-tauri/windows/**
   workflow_dispatch:
 
 permissions:
@@ -98,6 +100,14 @@ jobs:
           $actual = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1)
           Write-Host "$($msi.Name): ProductVersion $actual (app version $env:APP_VERSION)"
           if ($actual -ne $expected) { throw "MSI ProductVersion $actual, expected $expected" }
+      # Same rule for the NSIS installer and the app exe VERSIONINFO (X.Y.Z-N -> X.Y.Z.N,
+      # X.Y.Z -> X.Y.Z.0): see src-tauri/windows/ and docs/PACKAGING.md.
+      - name: Check numeric Windows versions (setup.exe, app exe)
+        shell: pwsh
+        run: >-
+          ./.github/scripts/check-windows-versions.ps1 -Expected '${{ steps.version.outputs.windows_version }}'
+          -Path (Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe).FullName,
+          src-tauri/target/release/betaflight-setup-wizard.exe
       - name: libwdi Corresponding Source (LGPL-3.0)
         shell: bash
         run: |

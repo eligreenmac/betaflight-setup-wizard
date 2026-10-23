@@ -21,7 +21,8 @@ use super::session;
 use crate::device::{ConnectionManager, FcLink};
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ApplyResult, Backup, CliScript, ConfigProgress, DroneModel, FcSerialPort, VerifyReport,
+    ApplyResult, Backup, CliScript, ConfigProgress, DroneModel, FcSerialPort, FirmwareCatalog,
+    OsdLayout, OsdVideoSystem, VerifyReport,
 };
 
 /// `config://progress`, payload [`ConfigProgress`] (stages BACKUP, SENDING, SAVING,
@@ -185,6 +186,27 @@ pub async fn config_elrs_uid(phrase: String) -> AppResult<[u8; 6]> {
         return Err(AppError::Config("binding phrase is empty".into()));
     }
     Ok(super::md5::elrs_uid(&phrase))
+}
+
+/// Config's default OSD layout for a video system on a firmware line (every element the
+/// line has, with x/y and default visibility). Pure, no FC I/O; UNSUPPORTED_FIRMWARE
+/// outside 4.4.x / 4.5.x / 2025.12.x.
+#[tauri::command]
+pub async fn config_osd_default_layout(
+    video_system: OsdVideoSystem,
+    firmware_version: String,
+) -> AppResult<OsdLayout> {
+    let _ = (video_system, firmware_version);
+    Err(AppError::NotImplemented("config_osd_default_layout"))
+}
+
+/// Per-firmware catalog (beepers, DShot beacon events, OSD elements, stable mode names) so
+/// the UI does not hard-code them. Pure, no FC I/O; UNSUPPORTED_FIRMWARE outside the
+/// supported lines.
+#[tauri::command]
+pub async fn config_firmware_catalog(firmware_version: String) -> AppResult<FirmwareCatalog> {
+    let _ = firmware_version;
+    Err(AppError::NotImplemented("config_firmware_catalog"))
 }
 
 /// Read-only plan against the connected FC: reads `version`, `serial`, `dump all`

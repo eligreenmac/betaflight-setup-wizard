@@ -3,22 +3,26 @@
 //!
 //! One [`ConnectionManager`] lives in Tauri managed state and owns the single open FC port.
 //! Callers borrow the link with [`ConnectionManager::with_link`]; a second caller while the
-//! link is borrowed (or lent to the motor-test / RC-stream worker) gets
+//! link is borrowed (or lent to the motor-test / RC-stream / attitude-stream worker) gets
 //! `PORT_BUSY {heldBy: "APP"}`.
 
+use super::attitude::{self, AttitudeStream, AttitudeStreamEvent, AttitudeStreamOptions};
 use super::cli::{BootloaderTarget, CliOptions, CliSession};
 use super::error::{DeviceError, Result as DResult};
 use super::motor::{
     self, EmergencyStop, MotorTest, MotorTestHandle, MotorTestRequest, StopReason, SystemClock,
 };
-use super::msp::{ApiVersion, FcIdentity, MspClient, RebootType, Uid};
+use super::msp::{codes, ApiVersion, FcIdentity, MspClient, RebootType, Uid};
+use super::ram_state;
 use super::rc::{RcStopReason as DevRcStop, RcStream, RcStreamEvent, RcStreamOptions};
+use super::sensors::{self, AccCalibrationOptions};
 use super::serial::{SerialConfig as OpenConfig, SerialLink, SystemSerial};
 use super::{usb_ids, Connection, FcLink, Reconnect};
-use crate::error::{AppError, AppResult, PortHolder};
+use crate::error::{AppError, AppResult, PortHolder, UnsavedChangesReason};
 use crate::model::{
-    FcInfo, FcSerialPort, HostPort, MotorOutputConfig, MotorTestLimits, MotorTestSession,
-    MotorTestStopReason, MotorTestStopped, RcChannels, RcStopReason, RcStopped, RxSpiInfo,
+    AccCalibrationResult, Attitude, AttitudeStopped, FcInfo, FcSerialPort, HostPort,
+    MotorOutputConfig, MotorTestLimits, MotorTestSession, MotorTestStopReason, MotorTestStopped,
+    RcChannels, RcStopReason, RcStopped, RxSpiInfo, SensorStatus,
 };
 use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant};
@@ -138,7 +142,27 @@ enum Link {
     Detached,
 }
 
+/// A board whose connection was closed while its RAM state was dirty (§4.1 "RAM state").
+#[derive(Debug, Clone)]
+struct CarriedDirty {
+    uid: Option<Uid>,
+    path: String,
+    reason: UnsavedChangesReason,
+}
+
+/// Shared between the manager and its connections: filled when a dirty connection is
+/// dropped, consumed by the next `connect` to the same board.
+type DirtyCarry = Arc<Mutex<Vec<CarriedDirty>>>;
+
 /// The open FC link. Implements [`Connection`] and [`Reconnect`], i.e. [`FcLink`].
+///
+/// **RAM state** (ARCHITECTURE.md §4.1): `ram_dirty` says the FC's RAM may hold changes
+/// that are not in EEPROM. It is set by [`mark_ram_dirty`](Self::mark_ram_dirty) (non-read-only
+/// CLI line, `exit noreboot`, MSP write; all in the `Connection` impl) and cleared only by
+/// [`confirm_reboot`](Self::confirm_reboot), i.e. after a reboot the app issued in the same
+/// sequence and the FC acknowledged (MSP_REBOOT reply, `Rebooting` after our `exit`/`save`),
+/// followed by a reconnect that re-verified the same board. A port drop or a reconnect alone
+/// never clears it: a battery-powered FC keeps its RAM over a USB unplug/replug.
 pub struct FcConnection {
     port: PortIdentity,
     link: Link,
@@ -149,6 +173,34 @@ pub struct FcConnection {
     cli_opts: CliOptions,
     poll: Duration,
     msp_timeout: Duration,
+    /// `Some(first reason)` while RAM may hold unsaved changes.
+    ram_dirty: Option<UnsavedChangesReason>,
+    /// The FC acknowledged an app-issued reboot (MSP_REBOOT reply, `Rebooting` after our
+    /// `exit`/`save`) since the last change. Consumed by the next reconnect: if that
+    /// re-verifies the same board, the reboot is confirmed.
+    reboot_acked: bool,
+    /// Confirmed reboots on this connection (including a stale-CLI recovery on open).
+    confirmed_reboots: u32,
+    carry: DirtyCarry,
+}
+
+impl Drop for FcConnection {
+    fn drop(&mut self) {
+        if let Some(reason) = self.ram_dirty {
+            log::warn!(
+                "{}: closing the port while the FC may hold unsaved changes ({reason}); the next \
+                 connect to this board reboots it first",
+                self.port.path
+            );
+            let mut carry = self.carry.lock().unwrap_or_else(|p| p.into_inner());
+            carry.retain(|c| !self.same_board(c));
+            carry.push(CarriedDirty {
+                uid: self.uid,
+                path: self.port.path.clone(),
+                reason,
+            });
+        }
+    }
 }
 
 /// "The FC did not answer MSP at all" (as opposed to a closed port or an MSP-level error).
@@ -166,6 +218,7 @@ impl FcConnection {
         lister: Lister,
         poll: Duration,
         msp_timeout: Duration,
+        carry: DirtyCarry,
     ) -> DResult<Self> {
         let link = opener(&port.path)?;
         let mut c = FcConnection {
@@ -178,6 +231,10 @@ impl FcConnection {
             cli_opts: CliOptions::default(),
             poll,
             msp_timeout,
+            ram_dirty: None,
+            reboot_acked: false,
+            confirmed_reboots: 0,
+            carry,
         };
         let mut m = c.client(link);
         match m.api_version() {
@@ -208,6 +265,123 @@ impl FcConnection {
         let mut m = MspClient::new(link);
         m.timeout = self.msp_timeout;
         m
+    }
+
+    // ------------------------------------------------------------------ RAM state
+
+    /// Why the FC's RAM may hold unsaved changes; `None` = clean.
+    pub fn ram_dirty(&self) -> Option<UnsavedChangesReason> {
+        self.ram_dirty
+    }
+
+    /// RAM may now hold unsaved changes. Keeps the first reason; voids an earlier reboot
+    /// acknowledgement (the change came after it).
+    fn mark_ram_dirty(&mut self, reason: UnsavedChangesReason, what: &str) {
+        if self.ram_dirty.is_none() {
+            log::info!(
+                "{}: FC RAM may now hold unsaved changes ({what})",
+                self.port.path
+            );
+            self.ram_dirty = Some(reason);
+        }
+        self.reboot_acked = false;
+    }
+
+    /// The FC verifiably rebooted and the same board answered again: RAM = EEPROM.
+    fn confirm_reboot(&mut self, how: &str) {
+        if let Some(r) = self.ram_dirty.take() {
+            log::info!(
+                "{}: confirmed reboot ({how}); pending RAM changes ({r}) discarded",
+                self.port.path
+            );
+        }
+        self.reboot_acked = false;
+        self.confirmed_reboots += 1;
+    }
+
+    /// Same physical board as `c` (MSP_UID if both known, else the port path).
+    fn same_board(&self, c: &CarriedDirty) -> bool {
+        match (self.uid, c.uid) {
+            (Some(a), Some(b)) => a == b,
+            _ => self.port.path == c.path,
+        }
+    }
+
+    /// Fresh connect: if this board was closed while dirty (and has not been rebooted by this
+    /// connection yet, e.g. by the stale-CLI recovery), reboot it once so RAM is discarded.
+    fn resolve_carried_ram_state(&mut self) -> DResult<()> {
+        let carried = {
+            let mut carry = self.carry.lock().unwrap_or_else(|p| p.into_inner());
+            let i = carry.iter().position(|c| self.same_board(c));
+            i.map(|i| carry.remove(i))
+        };
+        let Some(c) = carried else {
+            return Ok(());
+        };
+        if self.confirmed_reboots > 0 {
+            return Ok(());
+        }
+        self.ram_dirty = Some(c.reason);
+        log::warn!(
+            "{}: this board was disconnected with unsaved RAM changes ({}); rebooting it to \
+             discard them",
+            self.port.path,
+            c.reason
+        );
+        self.reboot_confirmed()
+    }
+
+    /// `device_reboot` ("Reboot board"), also the connect-time reboot of a board closed dirty:
+    /// an app-issued firmware reboot that only succeeds once it is confirmed.
+    ///
+    /// Our CLI open: plain `exit` (never `save`), see
+    /// [`exit_cli_and_reconnect`](Self::exit_cli_and_reconnect). Otherwise (or if that exit
+    /// was not confirmed): MSP_REBOOT `[0]`, which Betaflight answers before resetting
+    /// (msp.c `*mspPostProcessFn = mspRebootFn`; msp_serial.c waits for TX before running
+    /// it), then wait for the port to drop and return, re-verify API version + UID.
+    ///
+    /// Not confirmed (no reply / error frame) → `PENDING_UNSAVED_CHANGES {reason}` if RAM is
+    /// dirty (it stays dirty), else [`DeviceError::RebootNotConfirmed`] (`MSP`). The board did
+    /// not come back / a different board came back → the reconnect's `SERIAL` error.
+    pub fn reboot_confirmed(&mut self) -> DResult<()> {
+        let before = self.confirmed_reboots;
+        if matches!(self.link, Link::Cli(_)) {
+            self.leave_cli_for_msp()?;
+            if self.confirmed_reboots > before {
+                return Ok(());
+            }
+        }
+        let Link::Msp(mut m) = std::mem::replace(&mut self.link, Link::Detached) else {
+            return Err(self.lost());
+        };
+        let acked = match m.reboot(RebootType::Firmware) {
+            Ok(a) => a,
+            // Error frame: the FC refused, nothing rebooted; the link is still good.
+            Err(e @ (DeviceError::MspUnsupported(_) | DeviceError::MspMalformed(_))) => {
+                self.link = Link::Msp(m);
+                return Err(self.reboot_not_confirmed(&e.to_string()));
+            }
+            Err(e) => {
+                self.link = Link::Msp(m);
+                return Err(e);
+            }
+        };
+        drop(m);
+        self.reboot_acked = acked;
+        self.reconnect_inner(DEFAULT_RECONNECT_TIMEOUT)?;
+        if self.confirmed_reboots > before {
+            Ok(())
+        } else {
+            Err(self.reboot_not_confirmed("no reply to MSP_REBOOT"))
+        }
+    }
+
+    fn reboot_not_confirmed(&self, why: &str) -> DeviceError {
+        log::warn!("{}: reboot not confirmed: {why}", self.port.path);
+        match self.ram_dirty {
+            Some(r) => DeviceError::PendingUnsavedChanges(r),
+            None => DeviceError::RebootNotConfirmed(format!("{}: {why}", self.port.path)),
+        }
     }
 
     /// How long to wait for a rebooting USB VCP to disappear (UART bridges never do).
@@ -288,6 +462,8 @@ impl FcConnection {
             "{}: no MSP answer; assuming a stale CLI session, sending `exit`",
             self.port.path
         );
+        // Whoever left the CLI open may have changed settings in it.
+        self.mark_ram_dirty(UnsavedChangesReason::CliCommand, "stale CLI session");
         self.exit_cli_and_reconnect(link, deadline, timeout, "a stale CLI")
     }
 
@@ -314,10 +490,11 @@ impl FcConnection {
     ///    changes and any open batch. Only `exit noreboot` (4.5+) keeps them.
     /// 2. Follow the reboot like `reconnect`: a USB VCP disappears and re-enumerates, a UART
     ///    bridge stays. Settle, drain, retry MSP exactly once; still silent → error.
-    /// 3. If neither `Rebooting` nor a port drop was seen, the exit may not have rebooted
-    ///    (unknown firmware, lost output), so RAM may still hold the changes: reboot over
-    ///    MSP (MSP_REBOOT 68, `[0]` = firmware, like `config::session::discard` on 4.5+)
-    ///    once and wait for the FC again.
+    /// 3. `Rebooting` printed: confirmed reboot (RAM state cleared) once the board is
+    ///    re-verified. A port drop without it is no proof (a battery-powered FC keeps RAM over
+    ///    a USB replug); it is accepted only while the RAM state is clean (nothing to discard).
+    ///    Otherwise reboot over MSP (MSP_REBOOT 68, `[0]` = firmware, like
+    ///    `config::session::discard` on 4.5+) once, wait for the FC again; its reply confirms.
     /// 4. [`adopt`](Self::adopt) re-verifies MSP_UID: a different board is an error.
     fn exit_cli_and_reconnect(
         &mut self,
@@ -327,28 +504,51 @@ impl FcConnection {
         from: &str,
     ) -> DResult<()> {
         self.link = Link::Detached;
-        let mut rebooted = match link.write_all(STALE_CLI_EXIT) {
+        let seen = match link.write_all(STALE_CLI_EXIT) {
             Ok(()) => saw_reboot(&mut link, self.settle()),
-            Err(DeviceError::Disconnected) => true,
+            Err(DeviceError::Disconnected) => ExitSeen::PortDropped,
             Err(e) => return Err(e),
         };
         drop(link); // close the port so a re-enumerated VCP can be reopened
-        rebooted |= self.wait_gone(timeout);
+        let gone = self.wait_gone(timeout);
         let after_exit = format!("after leaving {from}");
         let (found, m, api) = self.wait_back(deadline, timeout, &after_exit)?;
-        if rebooted {
+        if seen == ExitSeen::Rebooting {
+            self.adopt(found, m, api)?;
+            self.confirm_reboot("CLI `exit` printed `Rebooting`");
+            return Ok(());
+        }
+        let dropped = gone || seen == ExitSeen::PortDropped;
+        if dropped && self.ram_dirty.is_none() {
+            // Nothing to discard; the drop is consistent with `exit`'s reboot. Not counted as
+            // a confirmed reboot.
             return self.adopt(found, m, api);
         }
         log::warn!(
-            "{}: `exit` did not visibly reboot the FC; rebooting over MSP to discard RAM changes",
-            found.path
+            "{}: `exit` did not print `Rebooting`{}; rebooting over MSP to discard RAM changes",
+            found.path,
+            if dropped {
+                " (a port drop alone is no proof)"
+            } else {
+                ""
+            }
         );
         let mut m = m;
-        m.reboot(RebootType::Firmware)?;
+        let acked = m.reboot(RebootType::Firmware)?;
         drop(m);
         self.wait_gone(timeout);
         let (found, m, api) = self.wait_back(deadline, timeout, "after MSP_REBOOT")?;
-        self.adopt(found, m, api)
+        self.adopt(found, m, api)?;
+        if acked {
+            self.confirm_reboot("MSP_REBOOT after `exit` acknowledged");
+        } else if let Some(r) = self.ram_dirty {
+            log::warn!(
+                "{}: MSP_REBOOT after `exit` not acknowledged; RAM may still hold unsaved \
+                 changes ({r})",
+                self.port.path
+            );
+        }
+        Ok(())
     }
 
     /// Accept a reopened port after checking it is the same board (MSP_UID).
@@ -509,15 +709,30 @@ impl FcConnection {
         self.link = Link::Detached; // closes the port
         let start = Instant::now();
         let deadline = start + timeout;
+        // Only an acknowledged, app-issued reboot (consumed here) can be confirmed by this
+        // reconnect; a port drop alone is no proof.
+        let acked = std::mem::take(&mut self.reboot_acked);
         // USB VCPs disappear while the FC reboots; UART bridges never do, so cap this wait.
-        self.wait_gone(timeout);
+        let gone = self.wait_gone(timeout);
         loop {
             if let Some(found) = self.present() {
                 if let Ok(link) = (self.opener)(&found.path) {
                     let mut m = self.client(link);
                     match m.api_version() {
                         Ok(api) => match self.adopt(found, m, api) {
-                            Ok(()) => return Ok(()),
+                            Ok(()) => {
+                                if acked {
+                                    self.confirm_reboot("acknowledged reboot, board re-verified");
+                                } else if let Some(r) = self.ram_dirty {
+                                    log::warn!(
+                                        "{}: reconnected (port dropped: {gone}) without an \
+                                         acknowledged reboot; RAM may still hold unsaved \
+                                         changes ({r})",
+                                        self.port.path
+                                    );
+                                }
+                                return Ok(());
+                            }
                             Err(e @ DeviceError::Serial(_)) => return Err(e), // other board
                             Err(_) => {}                                      // retry
                         },
@@ -541,9 +756,18 @@ impl FcConnection {
     }
 }
 
-/// Read the FC's answer to `exit` for up to `window`: true once `Rebooting` shows up or the
-/// port drops (the FC reset under us).
-fn saw_reboot(link: &mut BoxLink, window: Duration) -> bool {
+/// What the FC showed after `exit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitSeen {
+    /// `Rebooting` printed (`cliRebootEx`): the FC acknowledged the reboot.
+    Rebooting,
+    /// The port dropped (FC reset, or the cable was pulled: no proof).
+    PortDropped,
+    Nothing,
+}
+
+/// Read the FC's answer to `exit` for up to `window`.
+fn saw_reboot(link: &mut BoxLink, window: Duration) -> ExitSeen {
     let mut seen = Vec::new();
     let mut buf = [0u8; 256];
     let until = Instant::now() + window;
@@ -555,14 +779,14 @@ fn saw_reboot(link: &mut BoxLink, window: Duration) -> bool {
                     .windows(CLI_REBOOT_MARKER.len())
                     .any(|w| w == CLI_REBOOT_MARKER)
                 {
-                    return true;
+                    return ExitSeen::Rebooting;
                 }
             }
-            Err(DeviceError::Disconnected) => return true,
-            Err(_) => return false,
+            Err(DeviceError::Disconnected) => return ExitSeen::PortDropped,
+            Err(_) => return ExitSeen::Nothing,
         }
     }
-    false
+    ExitSeen::Nothing
 }
 
 /// Discard whatever the FC sent (CLI banner, "Rebooting...", boot noise).
@@ -579,7 +803,20 @@ fn drain(link: &mut BoxLink, quiet: Duration) {
 }
 
 impl Connection for FcConnection {
+    /// RAM state: MSP_REBOOT answered → reboot acknowledged; any code that is not a known
+    /// read → dirty (set before sending, after leaving an open CLI).
     fn msp_request(&mut self, code: u16, payload: &[u8]) -> AppResult<Vec<u8>> {
+        self.msp()?;
+        if code == codes::MSP_REBOOT {
+            let r = self.msp()?.request(code, payload);
+            if r.is_ok() {
+                self.reboot_acked = true;
+            }
+            return Ok(r?);
+        }
+        if !ram_state::msp_is_read_only(code) {
+            self.mark_ram_dirty(UnsavedChangesReason::MspWrite, &format!("MSP {code}"));
+        }
         Ok(self.msp()?.request(code, payload)?)
     }
 
@@ -588,7 +825,12 @@ impl Connection for FcConnection {
         Ok(())
     }
 
+    /// RAM state: a line that is not read-only marks RAM dirty (set before sending).
     fn cli_exec(&mut self, line: &str) -> AppResult<String> {
+        self.cli()?;
+        if !ram_state::cli_line_is_read_only(line) {
+            self.mark_ram_dirty(UnsavedChangesReason::CliCommand, line);
+        }
         Ok(self.cli()?.run(line)?)
     }
 
@@ -604,11 +846,21 @@ impl Connection for FcConnection {
             unreachable!()
         };
         if save {
-            s.save()?;
+            // `Rebooting` printed = the FC acknowledged; the reconnect confirms it.
+            if s.save()?.contains("Rebooting") {
+                self.reboot_acked = true;
+            }
         } else if self.supports_noreboot() {
+            self.mark_ram_dirty(UnsavedChangesReason::ExitNoReboot, "exit noreboot");
             self.link = Link::Msp(self.client(s.exit_no_reboot()?));
         } else {
-            drop(s.exit()?);
+            // 4.4: plain `exit` reboots; `Rebooting` printed = acknowledged, the reconnect
+            // confirms it.
+            let (link, rebooting) = s.exit_reporting_reboot()?;
+            drop(link);
+            if rebooting {
+                self.reboot_acked = true;
+            }
         }
         Ok(())
     }
@@ -637,11 +889,17 @@ struct RcSlot {
     stream: RcStream<BoxLink>,
 }
 
+struct AttitudeSlot {
+    conn: FcConnection,
+    stream: AttitudeStream<BoxLink>,
+}
+
 enum Slot {
     Empty,
     Idle(FcConnection),
     MotorTest(MotorSlot),
     Rc(RcSlot),
+    Attitude(AttitudeSlot),
 }
 
 /// The single owner of the FC port. Put it in Tauri state:
@@ -658,6 +916,9 @@ pub struct ConnectionManager {
     lister: Lister,
     poll: Duration,
     msp_timeout: Duration,
+    acc_calibration: AccCalibrationOptions,
+    /// Boards closed with unsaved RAM changes (see [`FcConnection`]'s RAM state).
+    dirty_carry: DirtyCarry,
 }
 
 impl Default for ConnectionManager {
@@ -676,6 +937,8 @@ impl ConnectionManager {
             lister,
             poll: Duration::from_millis(200),
             msp_timeout: Duration::from_secs(1),
+            acc_calibration: AccCalibrationOptions::default(),
+            dirty_carry: DirtyCarry::default(),
         }
     }
 
@@ -688,6 +951,12 @@ impl ConnectionManager {
     /// MSP response timeout for the connection's own requests (tests use a short one).
     pub fn with_msp_timeout(mut self, t: Duration) -> Self {
         self.msp_timeout = t;
+        self
+    }
+
+    /// Timing of `acc_calibrate` (tests use short waits).
+    pub fn with_acc_calibration(mut self, o: AccCalibrationOptions) -> Self {
+        self.acc_calibration = o;
         self
     }
 
@@ -730,7 +999,7 @@ impl ConnectionManager {
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
             Slot::Idle(c) => f(c),
-            Slot::MotorTest(_) | Slot::Rc(_) => Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
         }
     }
 
@@ -739,7 +1008,7 @@ impl ConnectionManager {
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
             Slot::Idle(c) => Ok(f(c)?),
-            Slot::MotorTest(_) | Slot::Rc(_) => Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
         }
     }
 
@@ -750,11 +1019,13 @@ impl ConnectionManager {
             .unwrap_or(true)
     }
 
-    /// Open `path` as the active connection (closing a previous one first).
+    /// Open `path` as the active connection (closing a previous one first). Already open
+    /// and clean: no-op. A board closed (or still open) with unsaved RAM changes is rebooted
+    /// once on (re)connect (§4.1 "RAM state").
     pub fn connect(&self, path: &str) -> AppResult<()> {
         let mut g = self.lock()?;
         if let Slot::Idle(c) = &*g {
-            if c.path() == path {
+            if c.path() == path && c.ram_dirty().is_none() {
                 return Ok(());
             }
         }
@@ -768,19 +1039,22 @@ impl ConnectionManager {
                 path: path.to_string(),
                 ..Default::default()
             });
-        let conn = FcConnection::open(
+        let mut conn = FcConnection::open(
             ident,
             self.opener.clone(),
             self.lister.clone(),
             self.poll,
             self.msp_timeout,
+            self.dirty_carry.clone(),
         )?;
+        // On failure `conn` is dropped still dirty, so the board stays marked.
+        conn.resolve_carried_ram_state()?;
         *g = Slot::Idle(conn);
         self.set_port(Some(path.to_string()));
         Ok(())
     }
 
-    /// Stop any motor test / RC stream, then close the port.
+    /// Stop any motor test / RC stream / attitude stream, then close the port.
     pub fn disconnect(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         Self::stop_workers(&mut g);
@@ -799,6 +1073,12 @@ impl ConnectionManager {
 
     pub fn cli_exec(&self, line: &str) -> AppResult<String> {
         self.with_link(|l| l.cli_exec(line))
+    }
+
+    /// `device_reboot` ("Reboot board"): app-issued firmware reboot, resolved once confirmed;
+    /// clears the RAM state. See [`FcConnection::reboot_confirmed`] for the errors.
+    pub fn reboot(&self) -> AppResult<()> {
+        self.with_conn(|c| c.reboot_confirmed())
     }
 
     /// Reboot to DFU; the connection is closed afterwards (the VCP disappears).
@@ -828,7 +1108,7 @@ impl ConnectionManager {
         let mut g = self.lock()?;
         match &mut *g {
             Slot::Empty => Err(AppError::NotConnected),
-            Slot::Rc(_) => Err(self.busy()),
+            Slot::Rc(_) | Slot::Attitude(_) => Err(self.busy()),
             Slot::MotorTest(m) => {
                 let r = m.handle.set(req);
                 let session = m.session.clone();
@@ -926,8 +1206,8 @@ impl ConnectionManager {
         Ok(())
     }
 
-    /// Safety net for window close / app exit: stops a running motor test and the RC
-    /// stream. Returns whether a motor-test session was open. Never blocks:
+    /// Safety net for window close / app exit: stops a running motor test and the RC /
+    /// attitude stream. Returns whether a motor-test session was open. Never blocks:
     ///
     /// 1. Lock-free: sets the motor test's halt flag (checked by the worker before every
     ///    MSP_SET_MOTOR, by keepalive and every ~20 ms) and writes an all-stop
@@ -976,7 +1256,7 @@ impl ConnectionManager {
         running
     }
 
-    /// Ends a motor test / RC stream and puts the connection back to Idle (or Empty if
+    /// Ends a motor test / RC stream / attitude stream and puts the connection back to Idle (or Empty if
     /// the port is gone).
     fn stop_workers(g: &mut MutexGuard<'_, Slot>) {
         match std::mem::replace(&mut **g, Slot::Empty) {
@@ -992,6 +1272,13 @@ impl ConnectionManager {
             }
             Slot::Rc(r) => {
                 let RcSlot { mut conn, stream } = r;
+                if let Some(link) = stream.stop() {
+                    conn.give_back(link);
+                    **g = Slot::Idle(conn);
+                }
+            }
+            Slot::Attitude(a) => {
+                let AttitudeSlot { mut conn, stream } = a;
                 if let Some(link) = stream.stop() {
                     conn.give_back(link);
                     **g = Slot::Idle(conn);
@@ -1014,7 +1301,7 @@ impl ConnectionManager {
         match &*g {
             Slot::Empty => return Err(AppError::NotConnected),
             Slot::Rc(_) => return Ok(()),
-            Slot::MotorTest(_) => return Err(self.busy()),
+            Slot::MotorTest(_) | Slot::Attitude(_) => return Err(self.busy()),
             Slot::Idle(_) => {}
         }
         let Slot::Idle(mut conn) = std::mem::replace(&mut *g, Slot::Empty) else {
@@ -1056,6 +1343,102 @@ impl ConnectionManager {
     pub fn rc_stream_stop(&self) -> AppResult<()> {
         let mut g = self.lock()?;
         if matches!(*g, Slot::Rc(_)) {
+            Self::stop_workers(&mut g);
+            if matches!(*g, Slot::Empty) {
+                self.set_port(None);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ConnectionManager {
+    // -------------------------------------------------------------------- sensors
+
+    /// Sensor presence / enable state, hardware names, acc calibration state and the
+    /// alignment readout. Read-only.
+    pub fn get_sensors(&self) -> AppResult<SensorStatus> {
+        self.with_conn(|c| sensors::read_sensors(c.msp()?))
+    }
+
+    /// One MSP_ATTITUDE sample (`seq` = 0, `timestampMs` = 0).
+    pub fn get_attitude(&self) -> AppResult<Attitude> {
+        self.with_conn(|c| sensors::read_attitude(c.msp()?))
+    }
+
+    /// Calibrate the accelerometer and return once the FC is done (holds the port for
+    /// the whole calibration, ~0.5-2 s). See [`sensors::acc_calibrate`].
+    ///
+    /// Refused with `PENDING_UNSAVED_CHANGES` (before the armed / acc / moving checks, nothing
+    /// sent) while the RAM state is dirty: the FC saves its whole RAM config at the end of the
+    /// calibration. An open CLI is left first (plain `exit` = confirmed reboot).
+    pub fn acc_calibrate(&self) -> AppResult<AccCalibrationResult> {
+        let opts = self.acc_calibration;
+        self.with_conn(|c| {
+            c.msp()?;
+            if let Some(reason) = c.ram_dirty() {
+                return Err(DeviceError::PendingUnsavedChanges(reason));
+            }
+            sensors::acc_calibrate(c.msp()?, &opts)
+        })
+    }
+
+    /// The open connection's RAM state (`None` = clean). `NOT_CONNECTED` / `PORT_BUSY` like
+    /// every other call.
+    pub fn pending_unsaved_changes(&self) -> AppResult<Option<UnsavedChangesReason>> {
+        self.with_conn(|c| Ok(c.ram_dirty()))
+    }
+
+    // -------------------------------------------------------------- attitude stream
+
+    /// Poll MSP_ATTITUDE at `rate_hz` (default 10, clamped 1..=30) on a worker thread.
+    /// Already running: Ok (rate unchanged). Motor test / RC stream running: PORT_BUSY.
+    pub fn attitude_stream_start(
+        &self,
+        rate_hz: Option<u32>,
+        on_attitude: impl Fn(Attitude) + Send + 'static,
+        on_stopped: impl Fn(AttitudeStopped) + Send + 'static,
+    ) -> AppResult<()> {
+        let mut g = self.lock()?;
+        match &*g {
+            Slot::Empty => return Err(AppError::NotConnected),
+            Slot::Attitude(_) => return Ok(()),
+            Slot::MotorTest(_) | Slot::Rc(_) => return Err(self.busy()),
+            Slot::Idle(_) => {}
+        }
+        let Slot::Idle(mut conn) = std::mem::replace(&mut *g, Slot::Empty) else {
+            unreachable!()
+        };
+        let link = match conn.lend() {
+            Ok(l) => l,
+            Err(e) => {
+                *g = Slot::Idle(conn);
+                return Err(e.into());
+            }
+        };
+        let opts = AttitudeStreamOptions {
+            rate_hz: attitude::effective_rate(rate_hz),
+            ..Default::default()
+        };
+        let stream = AttitudeStream::start(link, opts, move |ev: AttitudeStreamEvent| match ev {
+            AttitudeStreamEvent::Attitude(a) => on_attitude(a),
+            AttitudeStreamEvent::Stopped { reason, error } => on_stopped(AttitudeStopped {
+                reason: match reason {
+                    DevRcStop::Requested => RcStopReason::Requested,
+                    DevRcStop::Disconnected => RcStopReason::Disconnected,
+                    DevRcStop::Error => RcStopReason::Error,
+                },
+                error,
+            }),
+        });
+        *g = Slot::Attitude(AttitudeSlot { conn, stream });
+        Ok(())
+    }
+
+    /// Idempotent.
+    pub fn attitude_stream_stop(&self) -> AppResult<()> {
+        let mut g = self.lock()?;
+        if matches!(*g, Slot::Attitude(_)) {
             Self::stop_workers(&mut g);
             if matches!(*g, Slot::Empty) {
                 self.set_port(None);
@@ -1744,5 +2127,133 @@ mod tests {
             ..Default::default()
         };
         assert!(bridge.same_device(&bridge.clone()));
+    }
+
+    // ------------------------------------------------------------ sensors / attitude
+
+    fn sensor_manager(sim: crate::device::sensors::sim::Sim) -> (ConnectionManager, FakeFc) {
+        let (fc, _) = crate::device::sensors::sim::fake(sim);
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)))
+            .with_acc_calibration(crate::device::sensors::sim::fast());
+        m.connect(PORT).unwrap();
+        (m, fc)
+    }
+
+    #[test]
+    fn attitude_stream_borrows_the_port_exclusively() {
+        let (m, fc) = sensor_manager(Default::default());
+        let (tx, rx) = mpsc::channel();
+        let (stx, srx) = mpsc::channel();
+        let (tx, stx) = (Mutex::new(tx), Mutex::new(stx));
+        m.attitude_stream_start(
+            Some(500),
+            move |a| {
+                let _ = tx.lock().unwrap().send(a);
+            },
+            move |s| {
+                let _ = stx.lock().unwrap().send(s.reason);
+            },
+        )
+        .unwrap();
+        let a = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!((a.seq, a.roll, a.pitch, a.yaw), (0, -12.5, 4.7, 271.0));
+        // Idempotent start.
+        m.attitude_stream_start(None, |_| {}, |_| {}).unwrap();
+
+        // Everyone else gets PORT_BUSY {APP}.
+        let busy = |e: AppError| {
+            assert_eq!(e.code(), "PORT_BUSY");
+            assert_eq!(e.details().unwrap()["heldBy"], "APP");
+        };
+        busy(m.rc_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        busy(
+            m.motor_test_start(req(Some(1), 1100), None, |_| {})
+                .unwrap_err(),
+        );
+        busy(m.get_sensors().unwrap_err());
+        busy(m.acc_calibrate().unwrap_err());
+        busy(m.with_link(|_| Ok(())).unwrap_err());
+        assert!(
+            fc.motors.lock().unwrap().is_empty(),
+            "no motor command sent"
+        );
+
+        m.attitude_stream_stop().unwrap();
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        m.attitude_stream_stop().unwrap(); // idempotent
+        assert_eq!(m.get_attitude().unwrap().yaw, 271.0);
+
+        // And the other way round.
+        m.rc_stream_start(None, |_| {}, |_| {}).unwrap();
+        busy(m.attitude_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        m.rc_stream_stop().unwrap();
+        m.motor_test_start(req(Some(1), 1100), None, |_| {})
+            .unwrap();
+        busy(m.attitude_stream_start(None, |_| {}, |_| {}).unwrap_err());
+        m.motor_test_stop().unwrap();
+        m.attitude_stream_start(None, |_| {}, |_| {}).unwrap();
+        m.attitude_stream_stop().unwrap();
+    }
+
+    #[test]
+    fn attitude_stream_stops_on_disconnect_and_emergency_stop() {
+        let (m, _fc) = sensor_manager(Default::default());
+        let (stx, srx) = mpsc::channel();
+        let stx = Mutex::new(stx);
+        let start = |m: &ConnectionManager| {
+            let stx = Mutex::new(stx.lock().unwrap().clone());
+            m.attitude_stream_start(
+                None,
+                |_| {},
+                move |s| {
+                    let _ = stx.lock().unwrap().send(s.reason);
+                },
+            )
+            .unwrap();
+        };
+        start(&m);
+        assert!(!m.emergency_stop_all(), "no motor test was running");
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        assert!(
+            m.with_link(|_| Ok(())).is_ok(),
+            "port back with the manager"
+        );
+        start(&m);
+        m.disconnect().unwrap();
+        assert_eq!(
+            srx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RcStopReason::Requested
+        );
+        assert!(!m.is_connected());
+    }
+
+    #[test]
+    fn acc_calibration_through_the_manager() {
+        let (m, _) = sensor_manager(Default::default());
+        let s = m.get_sensors().unwrap();
+        assert_eq!(s.acc_calibrated, Some(false));
+        let r = m.acc_calibrate().unwrap();
+        assert_eq!(
+            r.completion,
+            crate::model::AccCalibrationCompletion::CalibratingFlag
+        );
+        assert_eq!(m.get_sensors().unwrap().acc_calibrated, Some(true));
+
+        let (m, _) = sensor_manager(crate::device::sensors::sim::Sim {
+            armed: true,
+            ..Default::default()
+        });
+        assert_eq!(m.acc_calibrate().unwrap_err().code(), "BOARD_ARMED");
+        let (m, _) = sensor_manager(crate::device::sensors::sim::Sim {
+            sensors: crate::device::sensors::sensor_bits::GYRO,
+            ..Default::default()
+        });
+        assert_eq!(m.acc_calibrate().unwrap_err().code(), "ACC_NOT_AVAILABLE");
     }
 }

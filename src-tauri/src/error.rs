@@ -1,8 +1,8 @@
 //! Shared error type. Serialized to the UI as
 //! `{ "code": "...", "message": "...", "details"?: {...} }`.
 //! `details` is present only for codes that carry structured data (see
-//! docs/ARCHITECTURE.md §2.3): `PORT_BUSY`, `DRIVER_MISSING`, `ACC_NOT_AVAILABLE` and
-//! `BOARD_MOVING`.
+//! docs/ARCHITECTURE.md §2.3): `PORT_BUSY`, `DRIVER_MISSING`, `ACC_NOT_AVAILABLE`,
+//! `BOARD_MOVING` and `PENDING_UNSAVED_CHANGES`.
 
 use serde::Serialize;
 
@@ -21,6 +21,30 @@ impl std::fmt::Display for PortHolder {
         f.write_str(match self {
             PortHolder::App => "in use by another operation in this app",
             PortHolder::External => "in use by another program",
+        })
+    }
+}
+
+/// Why the flight controller's RAM may hold changes that are not in its EEPROM
+/// (`PENDING_UNSAVED_CHANGES`, ARCHITECTURE.md §4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnsavedChangesReason {
+    /// A CLI command other than a read-only one (`version`, `dump`, `diff`, `get`, ...) was sent.
+    CliCommand,
+    /// The CLI was left with `exit noreboot` (4.5+), which keeps CLI changes live in RAM.
+    #[serde(rename = "EXIT_NOREBOOT")]
+    ExitNoReboot,
+    /// An MSP command that may change settings (`MSP_SET_*`, ...) was sent.
+    MspWrite,
+}
+
+impl std::fmt::Display for UnsavedChangesReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            UnsavedChangesReason::CliCommand => "a CLI command that can change settings was sent",
+            UnsavedChangesReason::ExitNoReboot => "the CLI was left without a reboot",
+            UnsavedChangesReason::MspWrite => "a setting may have been written over MSP",
         })
     }
 }
@@ -100,6 +124,12 @@ pub enum AppError {
     /// The FC did not report a finished accelerometer calibration in time.
     #[error("accelerometer calibration failed: {0}")]
     AccCalibrationFailed(String),
+    /// The FC may hold unsaved changes in RAM (e.g. a config apply failed and its cleanup
+    /// reboot was not confirmed). Refused because the operation (accelerometer calibration)
+    /// saves the whole RAM configuration to EEPROM. Nothing was sent; a confirmed reboot or a
+    /// reconnect clears it.
+    #[error("the flight controller may have unsaved changes ({reason}); reboot the board first")]
+    PendingUnsavedChanges { reason: UnsavedChangesReason },
     /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
@@ -134,6 +164,7 @@ impl AppError {
             AppError::AccNotAvailable { .. } => "ACC_NOT_AVAILABLE",
             AppError::BoardMoving { .. } => "BOARD_MOVING",
             AppError::AccCalibrationFailed(_) => "ACC_CALIBRATION_FAILED",
+            AppError::PendingUnsavedChanges { .. } => "PENDING_UNSAVED_CHANGES",
             AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Io(_) => "IO",
         }
@@ -165,6 +196,9 @@ impl AppError {
                 "limitDps": limit_dps,
                 "during": during,
             })),
+            AppError::PendingUnsavedChanges { reason } => {
+                Some(serde_json::json!({ "reason": reason }))
+            }
             _ => None,
         }
     }
@@ -252,6 +286,22 @@ mod tests {
             json!({ "maxRateDps": 42, "limitDps": 8, "during": true })
         );
         assert!(v["message"].as_str().unwrap().ends_with("calibrate again"));
+        let v = serde_json::to_value(AppError::PendingUnsavedChanges {
+            reason: UnsavedChangesReason::ExitNoReboot,
+        })
+        .unwrap();
+        assert_eq!(v["code"], "PENDING_UNSAVED_CHANGES");
+        assert_eq!(v["details"], json!({ "reason": "EXIT_NOREBOOT" }));
+        assert!(v["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("; reboot the board first"));
+        for (r, s) in [
+            (UnsavedChangesReason::CliCommand, "CLI_COMMAND"),
+            (UnsavedChangesReason::MspWrite, "MSP_WRITE"),
+        ] {
+            assert_eq!(serde_json::to_value(r).unwrap(), json!(s));
+        }
     }
 
     /// `src/types/model.ts` (`AppErrorCode`) is the TypeScript source of truth for codes;
@@ -302,6 +352,9 @@ mod tests {
                 during: false,
             },
             AppError::AccCalibrationFailed(String::new()),
+            AppError::PendingUnsavedChanges {
+                reason: UnsavedChangesReason::CliCommand,
+            },
             AppError::InvalidArgument(String::new()),
             AppError::Io(String::new()),
         ];

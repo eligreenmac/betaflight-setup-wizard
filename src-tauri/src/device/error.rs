@@ -2,7 +2,7 @@
 //! Internal error type of the device module. Mapped to the shared `AppError` at the
 //! command boundary (`From<DeviceError> for AppError`).
 
-use crate::error::{AppError, PortHolder};
+use crate::error::{AppError, PortHolder, UnsavedChangesReason};
 use std::time::Duration;
 
 /// Why the motor-test safety gate said no.
@@ -57,6 +57,23 @@ pub enum DeviceError {
     Armed,
     #[error("motor test is not running")]
     MotorTestNotActive,
+    #[error("no usable accelerometer (present: {present}, enabled: {enabled})")]
+    AccNotAvailable { present: bool, enabled: bool },
+    #[error("the board is moving ({max_rate_dps} deg/s > {limit_dps} deg/s)")]
+    BoardMoving {
+        max_rate_dps: u16,
+        limit_dps: u16,
+        during: bool,
+    },
+    #[error("accelerometer calibration failed: {0}")]
+    AccCalibrationFailed(String),
+    /// An app-issued reboot was not confirmed (no MSP_REBOOT reply / no `Rebooting`) while
+    /// the RAM state was clean. Reported as `MSP`.
+    #[error("the flight controller did not confirm the reboot: {0}")]
+    RebootNotConfirmed(String),
+    /// The FC's RAM may hold unsaved changes (ARCHITECTURE.md §4.1 "RAM state").
+    #[error("the flight controller may have unsaved changes ({0})")]
+    PendingUnsavedChanges(UnsavedChangesReason),
 }
 
 impl DeviceError {
@@ -104,6 +121,23 @@ impl From<DeviceError> for AppError {
             DeviceError::MotorTestRefused(r) => AppError::MotorTestRefused(r.to_string()),
             DeviceError::Armed => AppError::BoardArmed,
             DeviceError::MotorTestNotActive => AppError::MotorTestNotActive,
+            DeviceError::AccNotAvailable { present, enabled } => {
+                AppError::AccNotAvailable { present, enabled }
+            }
+            DeviceError::BoardMoving {
+                max_rate_dps,
+                limit_dps,
+                during,
+            } => AppError::BoardMoving {
+                max_rate_dps,
+                limit_dps,
+                during,
+            },
+            DeviceError::AccCalibrationFailed(m) => AppError::AccCalibrationFailed(m),
+            DeviceError::RebootNotConfirmed(_) => AppError::Msp(msg),
+            DeviceError::PendingUnsavedChanges(reason) => {
+                AppError::PendingUnsavedChanges { reason }
+            }
         }
     }
 }
@@ -130,6 +164,37 @@ mod tests {
         );
         assert_eq!(c(DeviceError::Armed), "BOARD_ARMED");
         assert_eq!(c(DeviceError::MotorTestNotActive), "MOTOR_TEST_NOT_ACTIVE");
+        assert_eq!(
+            c(DeviceError::AccNotAvailable {
+                present: false,
+                enabled: true
+            }),
+            "ACC_NOT_AVAILABLE"
+        );
+        assert_eq!(
+            c(DeviceError::BoardMoving {
+                max_rate_dps: 30,
+                limit_dps: 8,
+                during: false
+            }),
+            "BOARD_MOVING"
+        );
+        assert_eq!(
+            c(DeviceError::AccCalibrationFailed("x".into())),
+            "ACC_CALIBRATION_FAILED"
+        );
+        let pending = AppError::from(DeviceError::PendingUnsavedChanges(
+            UnsavedChangesReason::MspWrite,
+        ));
+        assert_eq!(pending.code(), "PENDING_UNSAVED_CHANGES");
+        assert_eq!(
+            AppError::from(DeviceError::RebootNotConfirmed("COM7".into())).code(),
+            "MSP"
+        );
+        assert_eq!(
+            pending.details().unwrap(),
+            serde_json::json!({"reason": "MSP_WRITE"})
+        );
         let busy = AppError::from(DeviceError::AccessDenied("COM9".into()));
         assert_eq!(
             busy.details().unwrap(),

@@ -6,8 +6,8 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AccCalibrationResult, AppInfo, ApplyResult, Attitude, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
-  FcInfo, FcSerialPort, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
-  SensorStatus, VerifyReport,
+  FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
+  OsdLayout, OsdVideoSystem, SensorStatus, VerifyReport,
 } from "../types/model";
 
 /** Map of command name -> [args, result]. Single source of truth on the TS side. */
@@ -19,6 +19,7 @@ export interface CommandMap {
   device_identify: [Record<string, never>, FcInfo];
   device_cli_exec: [{ line: string }, string];
   device_reboot_to_bootloader: [Record<string, never>, void];
+  device_reboot: [Record<string, never>, void];
   device_probe_board: [Record<string, never>, FcInfo];
   device_motor_test_start: [
     { motorIndex: number | null; throttle: number; propsOffConfirmed: boolean; limits: MotorTestLimits | null },
@@ -55,6 +56,10 @@ export interface CommandMap {
   config_list_backups: [Record<string, never>, Backup[]];
   config_backups_dir: [Record<string, never>, string];
   config_restore: [{ backupId: string }, ApplyResult];
+  /** Pure: config's default OSD layout for that video system and firmware line. */
+  config_osd_default_layout: [{ videoSystem: OsdVideoSystem; firmwareVersion: string }, OsdLayout];
+  /** Pure: per-firmware beepers / beacon events / OSD elements / mode names. */
+  config_firmware_catalog: [{ firmwareVersion: string }, FirmwareCatalog];
   // system
   system_driver_status: [Record<string, never>, DriverStatus];
   system_install_dfu_driver: [Record<string, never>, void];
@@ -91,6 +96,8 @@ export const api = {
     identify: () => call("device_identify", none),
     cliExec: (line: string) => call("device_cli_exec", { line }),
     rebootToBootloader: () => call("device_reboot_to_bootloader", none),
+    /** "Reboot board": app-issued firmware reboot, resolves once it is confirmed (ack + same board back); clears PENDING_UNSAVED_CHANGES. PENDING_UNSAVED_CHANGES / MSP if not confirmed, SERIAL if the board did not come back. */
+    reboot: () => call("device_reboot", none),
     probeBoard: () => call("device_probe_board", none),
     /** First call starts the test, later calls change the throttle. Feeds the watchdog. */
     motorTestStart: (motorIndex: number | null, throttle: number, propsOffConfirmed: boolean, limits: MotorTestLimits | null = null) =>
@@ -102,7 +109,7 @@ export const api = {
     rcStreamStop: () => call("device_rc_stream_stop", none),
     /** Detected / enabled state of gyro, acc, baro, mag (+ hardware names, alignment readout). Read-only. */
     sensors: () => call("device_sensors", none),
-    /** Board level and still. Resolves when done (FC saves by itself). BOARD_ARMED / ACC_NOT_AVAILABLE / BOARD_MOVING / ACC_CALIBRATION_FAILED. */
+    /** Board level and still. Resolves when done (FC saves by itself). PENDING_UNSAVED_CHANGES (checked first) / BOARD_ARMED / ACC_NOT_AVAILABLE / BOARD_MOVING / ACC_CALIBRATION_FAILED. */
     accCalibrate: () => call("device_acc_calibrate", none),
     getAttitude: () => call("device_get_attitude", none),
     /** Default 10 Hz, clamped 1..30. Exclusive with the motor test and the RC stream (PORT_BUSY). */
@@ -135,6 +142,9 @@ export const api = {
     listBackups: () => call("config_list_backups", none),
     backupsDir: () => call("config_backups_dir", none),
     restore: (backupId: string) => call("config_restore", { backupId }),
+    osdDefaultLayout: (videoSystem: OsdVideoSystem, firmwareVersion: string) =>
+      call("config_osd_default_layout", { videoSystem, firmwareVersion }),
+    firmwareCatalog: (firmwareVersion: string) => call("config_firmware_catalog", { firmwareVersion }),
   },
   system: {
     driverStatus: () => call("system_driver_status", none),
