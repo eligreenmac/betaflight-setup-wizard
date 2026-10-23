@@ -144,7 +144,18 @@ impl<C: HttpClient> FirmwareService<C> {
                 ))
             })?
         } else {
-            self.online_or_cached(&name, || self.api.options(release))
+            // An empty reply is a failure too: it must not replace a good stored copy.
+            let fetch = || {
+                let list = self.api.options(release)?;
+                if options::offered(&list).is_empty() {
+                    return Err(FlashError::OptionsUnavailable {
+                        release: release.to_string(),
+                        reason: "the option list is empty".into(),
+                    });
+                }
+                Ok(list)
+            };
+            self.online_or_cached(&name, fetch)
                 .map_err(|e| FlashError::OptionsUnavailable {
                     release: release.to_string(),
                     reason: e.to_string(),
@@ -613,6 +624,30 @@ mod tests {
             ),
             Err(FlashError::OptionsUnavailable { .. })
         ));
+    }
+
+    #[test]
+    fn option_list_falls_back_to_the_stored_copy_and_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = svc(MockHttp::default().reply(200, OPTIONS_4_5_2), dir.path());
+        s.release_options("4.5.2", false).unwrap();
+        // API down, then an empty reply: both use the stored copy, which is not overwritten.
+        for (status, body) in [(503, ""), (200, "{}")] {
+            let s = svc(
+                build_replies(MockHttp::default().reply(status, body)),
+                dir.path(),
+            );
+            let img = s
+                .fetch(
+                    &req_with("4.5.2", &["USE_DSHOT", "USE_WING"], &[]),
+                    &mut |_| {},
+                    &AtomicBool::new(false),
+                )
+                .unwrap();
+            assert_eq!(img.dropped_options, ["USE_WING"], "{status} {body}");
+        }
+        let stored = std::fs::read_to_string(s.api_cache_path("options-4.5.2")).unwrap();
+        assert!(stored.contains("USE_DSHOT"));
     }
 
     #[test]
