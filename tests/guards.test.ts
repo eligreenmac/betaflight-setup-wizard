@@ -75,12 +75,12 @@ describe("guards map", () => {
     expect(keys(s, "vtx")).toEqual([]);
   });
 
-  it("esc requires motor confirmations only when the motor test exists", () => {
+  it("esc: motor confirmations never gate (battery-powered checks are phase 2)", () => {
     const s = ready();
     s.ui.motorTestAvailable = false;
     expect(keys(s, "esc")).toEqual([]);
     s.ui.motorTestAvailable = true;
-    expect(keys(s, "esc")).toEqual(["validation.motorOrderUnconfirmed", "validation.motorDirectionUnconfirmed"]);
+    expect(keys(s, "esc")).toEqual([]);
     s.model.esc.protocol = "ONESHOT125";
     s.model.esc.bidirectionalDshot = true;
     expect(keys(s, "esc")).toContain("validation.bidirNeedsDshot");

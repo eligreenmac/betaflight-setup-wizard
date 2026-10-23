@@ -128,11 +128,9 @@ export const guards: Record<string, StepGuard> = {
       if (e.bidirectionalDshot && (e.motorPoles === null || e.motorPoles < 2 || e.motorPoles % 2 !== 0))
         issues.push({ key: "validation.motorPolesInvalid" });
       issues.push(...portIssues(s, "escTelemetry"));
-      // Motor checks are only required when the backend can actually run a motor test.
-      if (s.ui.motorTestAvailable === true) {
-        if (!s.ui.motorOrderOk) issues.push({ key: "validation.motorOrderUnconfirmed" });
-        if (!s.ui.motorDirectionOk) issues.push({ key: "validation.motorDirectionUnconfirmed" });
-      }
+      // Motor order/direction checks are NOT gating: the safe motor test runs on USB power
+      // only (battery disconnected), where most ESCs cannot spin. Battery-powered checks
+      // are phase 2, so the confirmations are optional here.
       return issues;
     },
   },
