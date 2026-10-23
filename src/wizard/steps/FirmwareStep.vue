@@ -17,7 +17,7 @@ import type { GuidanceActionId } from "../../errors/guidance";
 import type { Backup, FirmwareRelease, FlashProgress } from "../../types/model";
 import RestoreResult from "../../components/RestoreResult.vue";
 import { retryRestore, runFirmwareUpdate, UPDATE_STAGES, type UpdateStage } from "../flash";
-import { crossLine, visibleSkips, type RestoreProgress, type RestoreReport } from "../restore";
+import { crossLine, visibleSkips, type RestoreProgress, type RestoreReport, lineResetsSettings } from "../restore";
 import { goTo, steps } from "../nav";
 import { optionLabel } from "../optionNames";
 import { rxProtocolLabel } from "../receiver";
@@ -79,6 +79,10 @@ const upToDate = computed(() => !!fc.value && !!latest.value && fc.value.fcVaria
 const hasSettings = computed(() => fc.value?.fcVariant === "BTFL");
 /** Settings saved on one firmware line, restored onto another (shown only then). */
 const lineChange = computed(() => hasSettings.value && keepSettings.value && crossLine(fc.value?.firmwareVersion, chosen.value));
+/** Keep off, normal flash, but the new line resets every setting anyway (ARCHITECTURE §6). */
+const lineResets = computed(() => hasSettings.value && !keepSettings.value && !fullErase.value && lineResetsSettings(fc.value?.firmwareVersion, chosen.value));
+/** This run erases the whole chip (it can take up to about 30 s). */
+const erasingFull = ref(false);
 /** The stages of this update: "restore" only when the settings are put back. */
 const shownStages = computed(() => UPDATE_STAGES.filter((s) => s !== "restore" || (phase.value === "idle" ? keepSettings.value && hasSettings.value : keptRequested.value)));
 const stageIndex = computed(() => (phase.value === "done" ? shownStages.value.length : stage.value ? shownStages.value.indexOf(stage.value) : -1));
@@ -120,6 +124,7 @@ function keep(): void {
 }
 
 async function update(erase = fullErase.value, withRequirements = true): Promise<void> {
+  erasingFull.value = erase;
   if (!fc.value || !chosen.value) return;
   if (lineSupport(wizard, chosen.value) === "unsupported") return;
   const requirements = withRequirements ? requirementsFor(wizard) : null;
@@ -303,6 +308,9 @@ watch(
         <p v-if="lineChange && fc" class="callout callout--warn" data-test="opt-warn-cross-line">
           {{ t("flashOptions.warnCrossLine", { from: fc.firmwareVersion, to: chosen }) }}
         </p>
+        <p v-if="lineResets && fc" class="callout callout--warn" data-test="opt-warn-line-reset">
+          {{ t("flashOptions.warnLineReset", { from: fc.firmwareVersion, to: chosen }) }}
+        </p>
       </fieldset>
 
       <div class="btn-row">
@@ -320,6 +328,7 @@ watch(
       <div class="callout callout--warn" v-if="phase === 'running'">{{ t("firmware.doNotUnplug") }}</div>
       <StageList :labels="shownStages.map((s) => `firmware.stages.${s}`)" :current="stageIndex" :failed="phase === 'error'" :fraction="stage === 'flash' ? progress?.fraction : stage === 'restore' && phase === 'running' ? restoreProgress?.fraction : null" />
       <p v-if="stage === 'flash' && progress && phase === 'running'" class="hint">{{ t(`firmware.flashStage.${progress.stage}`) }}</p>
+      <p v-if="stage === 'flash' && progress?.stage === 'ERASING' && erasingFull && phase === 'running'" class="hint" data-test="full-erase-wait">{{ t("flashOptions.eraseWait") }}</p>
       <p v-if="(stage === 'restore' && phase === 'running') || retryingRestore" class="hint" data-test="restore-progress">{{ restoreStageText }}</p>
       <div v-if="phase === 'done'" class="callout callout--ok">{{ t("firmware.done", { version: fc.firmwareVersion }) }}</div>
       <RestoreResult

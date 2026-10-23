@@ -16,7 +16,7 @@ import { runFirmwareUpdate } from "../src/wizard/flash";
 import { nav, resetNav } from "../src/wizard/nav";
 import { requestReflash } from "../src/wizard/reflash";
 import {
-  canRetryRestore, crossLine, refusalKind, refusalStage, RESTORE_COMMAND, RESTORE_REFUSAL_REASONS, RESTORE_SKIP_REASONS, visibleSkips, type RestoreReport,
+  canRetryRestore, crossLine, lineResetsSettings, refusalKind, refusalStage, RESTORE_COMMAND, RESTORE_REFUSAL_REASONS, RESTORE_SKIP_REASONS, visibleSkips, type RestoreReport,
 } from "../src/wizard/restore";
 import { resetWizard, wizard } from "../src/wizard/state";
 import type { FcInfo } from "../src/types/model";
@@ -46,8 +46,8 @@ const poll = { tries: 3, intervalMs: 0 };
 const hooks = { onStage: () => {}, onProgress: () => {} };
 const configError = (reason: string, extra: object = {}) => ({ ...uiError("CONFIG_UNSUPPORTED", "configuration error"), details: { reason, backupId: "uid/20261023T040000Z", ...extra } as never });
 
-async function boot(scenario: Scenario): Promise<VueWrapper> {
-  mock = installMock({ scenario, latencyMs: 0, stepMs: 0 });
+async function boot(scenario: Scenario, stepMs = 0): Promise<VueWrapper> {
+  mock = installMock({ scenario, latencyMs: 0, stepMs });
   w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
   await settle();
   await click(w, "next");
@@ -98,6 +98,17 @@ describe("restore helpers", () => {
       ],
     };
     expect(visibleSkips(r).map((s) => s.reason)).toEqual(["REMOVED_ON_TARGET"]);
+  });
+
+  it("a normal flash resets settings across lines whose config version differs (not 4.5 <-> 2025.12)", () => {
+    expect(lineResetsSettings("4.5.1", "4.5.2")).toBe(false);
+    expect(lineResetsSettings("4.5.1", "2025.12.0-RC1")).toBe(false);
+    expect(lineResetsSettings("2025.12.5", "4.5.5")).toBe(false);
+    expect(lineResetsSettings("4.4.3", "4.5.1")).toBe(true);
+    expect(lineResetsSettings("4.5.1", "4.4.3")).toBe(true);
+    expect(lineResetsSettings("2025.12.5", "2026.6.2")).toBe(true);
+    expect(lineResetsSettings("4.5.1", "2027.6.0")).toBe(true); // unknown line: assume it resets
+    expect(lineResetsSettings("", "4.5.2")).toBe(false);
   });
 
   it("the restore is a board write for the mixed-backend guard", () => {
@@ -182,6 +193,53 @@ describe("Firmware step: update options", () => {
     expect(w!.get('[data-test="opt-warn-cross-line"]').text()).toContain("4.4.3");
     await w!.get('[data-test="opt-keep"]').setValue(false);
     expect(has("opt-warn-cross-line")).toBe(false);
+  });
+
+  it("keep off + a version line that resets settings: says the board starts from defaults even without a full erase", async () => {
+    await boot("happy");
+    await w!.get('[data-test="opt-keep"]').setValue(false);
+    expect(has("opt-warn-line-reset")).toBe(false); // 4.5.1 -> 4.5.2 keeps them
+    await pick("4.4.3");
+    const warn = w!.get('[data-test="opt-warn-line-reset"]').text();
+    expect(warn).toContain("Betaflight 4.4.3 stores settings differently from 4.5.1");
+    expect(warn).toContain("even without erasing the chip");
+    expect(warn).toContain("Keep my settings");
+    await w!.get('[data-test="opt-erase"]').setValue(true); // the full-erase warning says it already
+    expect(has("opt-warn-line-reset")).toBe(false);
+    expect(has("opt-warn-erase-reset")).toBe(true);
+    await w!.get('[data-test="opt-erase"]').setValue(false);
+    await w!.get('[data-test="opt-keep"]').setValue(true); // kept: the cross-line note instead
+    expect(has("opt-warn-line-reset")).toBe(false);
+    expect(has("opt-warn-cross-line")).toBe(true);
+  });
+
+  it("the help says a line change resets settings and a full erase takes up to about 30 s; the wait is shown while erasing", async () => {
+    expect(en.flashOptions.keepHelp).toContain("even without erasing the chip");
+    expect(en.flashOptions.keepOffHelp).toContain("Moving to another version line, or erasing the whole chip, starts from default settings");
+    expect(en.flashOptions.eraseHelp).toContain("up to about 30 seconds");
+    expect(he.flashOptions.eraseHelp).toContain("30");
+    await boot("happy", 25);
+    await w!.get('[data-test="opt-erase"]').setValue(true);
+    await w!.get('[data-test="update"]').trigger("click");
+    const end = Date.now() + 3000;
+    while (!has("full-erase-wait") && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
+    expect(w!.get('[data-test="full-erase-wait"]').text()).toBe(en.flashOptions.eraseWait);
+    while (!wizard.ui.flashed && Date.now() < end + 3000) await new Promise((r) => setTimeout(r, 10));
+    await settle();
+    expect(has("full-erase-wait")).toBe(false);
+  });
+
+  it("no full-erase wait note on a normal flash", async () => {
+    await boot("happy", 25);
+    await w!.get('[data-test="update"]').trigger("click");
+    let sawErasing = false;
+    const end = Date.now() + 3000;
+    while (!wizard.ui.flashed && Date.now() < end) {
+      if (w!.text().includes(en.firmware.flashStage.ERASING)) sawErasing = true;
+      expect(has("full-erase-wait")).toBe(false);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(sawErasing).toBe(true);
   });
 
   it("a same-line update puts the settings back and says so", async () => {

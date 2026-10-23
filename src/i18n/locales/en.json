@@ -1272,13 +1272,15 @@
   "flashOptions": {
     "title": "Update options",
     "keep": "Keep my settings",
-    "keepHelp": "Before the update, the wizard saves a backup of the board's settings. When the new firmware is installed, it puts those settings back.",
-    "keepOffHelp": "When this is off, the wizard doesn't put your settings back. Depending on the version, the new firmware keeps them or starts with default settings. Your backup is still saved in the Backups list.",
+    "keepHelp": "Before the update, the wizard saves a backup of the board's settings. When the new firmware is installed, it puts those settings back. This matters even without erasing the chip: moving to a different version line (for example from 4.4 to 4.5) starts the board with default settings.",
+    "keepOffHelp": "When this is off, the wizard doesn't put your settings back. A normal update within the same version line keeps them on the board (so does going between 4.5 and 2025.12). Moving to another version line, or erasing the whole chip, starts from default settings. Your backup is still saved in the Backups list.",
     "erase": "Erase the whole chip first",
-    "eraseHelp": "Wipes the board's memory completely before the new firmware is written. Use it if an earlier update failed or the board acts strangely. It takes a little longer.",
+    "eraseHelp": "Wipes the board's memory completely before the new firmware is written. Use it if an earlier update failed or the board acts strangely. The erase alone can take up to about 30 seconds.",
     "warnEraseKeep": "The chip is wiped fully, then your saved settings are put back.",
     "warnEraseReset": "Everything on the board resets to default settings. If the board had Betaflight, your backup is still saved in the Backups list.",
-    "warnCrossLine": "Your settings come from Betaflight {from} and you're installing {to}, a different version line. Some settings may not carry over cleanly; the wizard asks again for what's needed."
+    "warnCrossLine": "Your settings come from Betaflight {from} and you're installing {to}, a different version line. Some settings may not carry over cleanly; the wizard asks again for what's needed.",
+    "warnLineReset": "Betaflight {to} stores settings differently from {from}, so the board starts with default settings after this update, even without erasing the chip. Turn on “Keep my settings” to put your settings back.",
+    "eraseWait": "Erasing the whole chip can take up to about 30 seconds. Keep the board plugged in."
   },
   "restore": {
     "progress": {

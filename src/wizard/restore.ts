@@ -129,6 +129,23 @@ export interface RestoreOutcome {
 
 export const restoreFailed = (e: unknown, backupId: string | null): RestoreOutcome => ({ report: null, error: toUiError(e), backupId });
 
+/**
+ * Betaflight's stored config version (EEPROM_CONF_VERSION) per line (ARCHITECTURE §6 "Settings
+ * after a normal flash"): when it changes, the new firmware resets every setting at boot, even
+ * without a full erase. 4.5 and 2025.12 share 177.
+ */
+const CONF_VERSION: Readonly<Record<string, number>> = { "4.4": 175, "4.5": 177, "2025.12": 177, "2026.6": 178 };
+
+/** A normal flash from `boardVersion` to `target` starts from default settings (different lines, not 4.5 <-> 2025.12; unknown lines count as resetting). */
+export function lineResetsSettings(boardVersion: string | null | undefined, target: string | null | undefined): boolean {
+  const a = firmwareLine(boardVersion);
+  const b = firmwareLine(target);
+  if (!a || !b || a === b) return false;
+  const ca = CONF_VERSION[a];
+  const cb = CONF_VERSION[b];
+  return ca === undefined || cb === undefined || ca !== cb;
+}
+
 /** Restoring settings saved on another firmware line (e.g. 4.5 -> 2025.12). */
 export function crossLine(boardVersion: string | null | undefined, target: string | null | undefined): boolean {
   const a = firmwareLine(boardVersion);
