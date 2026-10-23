@@ -14,7 +14,7 @@ import { guardFor } from "../src/wizard/guards";
 import { motorTest } from "../src/wizard/motorTest";
 import { nav, resetNav } from "../src/wizard/nav";
 import { createWizardState, resetWizard, setReceiverKind, setReceiverProtocol, wizard } from "../src/wizard/state";
-import { click, settle, walkToDone } from "./walk";
+import { click, settle, WALK_TIMEOUT_MS, walkToDone } from "./walk";
 
 const PHRASE = "my very secret phrase";
 let w: VueWrapper | null = null;
@@ -127,7 +127,7 @@ describe("binding screen", () => {
     expect(JSON.stringify({ ...sessionStorage })).not.toContain(PHRASE);
     expect(document.body.innerHTML).not.toContain(PHRASE);
     for (const s of spies) expect(JSON.stringify(s.mock.calls)).not.toContain(PHRASE);
-  });
+  }, WALK_TIMEOUT_MS);
 
   it("the phrase input is cleared even when hashing fails", async () => {
     await boot("onboard-elrs");

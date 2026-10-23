@@ -5,6 +5,13 @@ import { guardFor } from "../src/wizard/guards";
 import { nav } from "../src/wizard/nav";
 import { wizard } from "../src/wizard/state";
 
+/**
+ * Explicit per-test timeout for every test that walks the whole wizard to Done (walkToDone).
+ * The walk grows with every screen; on Windows CI it took 2–6 s against vitest's 5 s default.
+ * The global default stays as it is.
+ */
+export const WALK_TIMEOUT_MS = 20_000;
+
 export async function settle(): Promise<void> {
   for (let i = 0; i < 12; i++) await flushPromises();
 }
