@@ -128,7 +128,27 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   type H = { [K in CommandName]?: (args: CommandMap[K][0]) => CommandMap[K][1] | Promise<CommandMap[K][1]> };
   const handlers: H = {
     system_app_info: () => ({ version: "0.1.0-mock", os: "mock", cacheDir: "/tmp/bfsw" }),
-    system_driver_status: () => ({ dfuWinusb: device.dfuDriverOk, vcp: true, notes: [] }),
+    system_driver_status: () => ({
+      dfuWinusb: device.dfuDriverOk,
+      vcp: true,
+      notes: [],
+      devices: device.inDfu
+        ? [
+            {
+              vid: 0x0483,
+              pid: 0xdf11,
+              name: "STM32 BOOTLOADER",
+              kind: "DFU",
+              instanceId: "USB\\VID_0483&PID_DF11\\MOCKDFU1",
+              service: device.dfuDriverOk ? "WinUSB" : null,
+              driverOk: device.dfuDriverOk,
+              action: device.dfuDriverOk ? "NONE" : "INSTALL_DFU_DRIVER",
+              guidanceIndex: null,
+            },
+          ]
+        : [],
+      guidance: [],
+    }),
     system_install_dfu_driver: async () => {
       await sleep(latency * 2);
       device.dfuDriverOk = true;
