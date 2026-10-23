@@ -3,7 +3,7 @@
 import { api } from "../api/commands";
 import type { FcInfo, RxProtocol } from "../types/model";
 import type { WizardState } from "./state";
-import { compareVersions } from "./version";
+import { versionAtLeast } from "./version";
 
 /** Serial receiver protocols, most common first. */
 export const SERIAL_RX_PROTOCOLS: RxProtocol[] = ["CRSF", "GHST", "SBUS", "FPORT", "IBUS", "SRXL2", "SUMD", "SPEK2048"];
@@ -51,7 +51,7 @@ export const PROBE_WITHOUT_REBOOT_SINCE = "4.5.0";
  * on an older backend) keeps the identify result.
  */
 export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<FcInfo> = () => api.device.probeBoard()): Promise<FcInfo> {
-  if (info.fcVariant !== "BTFL" || compareVersions(info.firmwareVersion, PROBE_WITHOUT_REBOOT_SINCE) < 0) return info;
+  if (info.fcVariant !== "BTFL" || !versionAtLeast(info.firmwareVersion, PROBE_WITHOUT_REBOOT_SINCE)) return info;
   try {
     return await probe();
   } catch {

@@ -65,7 +65,7 @@ import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
-import { compareVersions } from "../wizard/version";
+import { versionAtLeast } from "../wizard/version";
 
 export const SCENARIOS = [
   "happy",
@@ -517,7 +517,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       fcVariant: "BTFL",
       firmwareVersion: device.firmwareVersion,
       // 2026.6.2 SITL capture (Device #82 fixtures): MSP API 1.48.
-      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : compareVersions(device.firmwareVersion, "2026.6.0") >= 0 ? "1.48" : "1.46",
+      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : versionAtLeast(device.firmwareVersion, "2026.6.0") ? "1.48" : "1.46",
       boardName: "SPEEDYBEEF405V4",
       manufacturerId: "SPBE",
       mcu: "STM32F405",
@@ -741,7 +741,7 @@ function mockLinesLabel(): string {
   return xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 }
 
-const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
+const isV2025 = (fw: string | null | undefined) => !!fw && versionAtLeast(fw, "2025.12.0");
 
 /**
  * OSD element names (osd_items_e without OSD_) with their `osd_<cli>_pos` stem. A subset
@@ -785,7 +785,7 @@ export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
   return {
     beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
     beaconEvents: ["RX_LOST", "RX_SET"],
-    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !MOCK_OSD_SINCE[n] || compareVersions(fw, MOCK_OSD_SINCE[n]) >= 0),
+    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !MOCK_OSD_SINCE[n] || versionAtLeast(fw, MOCK_OSD_SINCE[n])),
     modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
   };
 }
