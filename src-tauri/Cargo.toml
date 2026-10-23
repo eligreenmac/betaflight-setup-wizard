@@ -21,6 +21,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tauri-plugin-opener = "2"
+# device: serial ports (COM enumeration with USB VID/PID, 115200 8N1 I/O)
+serialport = "4"
+# device: debug logging of MSP/CLI traffic (already in the tree via tauri)
 log = "0.4"
 # flasher
 rusb = { version = "0.9", features = ["vendored"] }
