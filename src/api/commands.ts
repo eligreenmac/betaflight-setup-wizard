@@ -6,8 +6,8 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AppInfo, ApplyResult, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
-  FcInfo, FcSerialPort, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
-  VerifyReport,
+  FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
+  OsdLayout, OsdVideoSystem, VerifyReport,
 } from "../types/model";
 
 /** Map of command name -> [args, result]. Single source of truth on the TS side. */
@@ -50,6 +50,10 @@ export interface CommandMap {
   config_list_backups: [Record<string, never>, Backup[]];
   config_backups_dir: [Record<string, never>, string];
   config_restore: [{ backupId: string }, ApplyResult];
+  /** Pure: config's default OSD layout for that video system and firmware line. */
+  config_osd_default_layout: [{ videoSystem: OsdVideoSystem; firmwareVersion: string }, OsdLayout];
+  /** Pure: per-firmware beepers / beacon events / OSD elements / mode names. */
+  config_firmware_catalog: [{ firmwareVersion: string }, FirmwareCatalog];
   // system
   system_driver_status: [Record<string, never>, DriverStatus];
   system_install_dfu_driver: [Record<string, never>, void];
@@ -122,6 +126,9 @@ export const api = {
     listBackups: () => call("config_list_backups", none),
     backupsDir: () => call("config_backups_dir", none),
     restore: (backupId: string) => call("config_restore", { backupId }),
+    osdDefaultLayout: (videoSystem: OsdVideoSystem, firmwareVersion: string) =>
+      call("config_osd_default_layout", { videoSystem, firmwareVersion }),
+    firmwareCatalog: (firmwareVersion: string) => call("config_firmware_catalog", { firmwareVersion }),
   },
   system: {
     driverStatus: () => call("system_driver_status", none),
