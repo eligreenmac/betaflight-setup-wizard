@@ -1,13 +1,19 @@
 name: nsis-upgrade
 
-# Installs NSIS builds 0.1.0-1, then 0.1.0-2 over it, then 0.1.0 over that, all
-# silently (/S, per-user default install mode). After each step it asserts:
-# exactly one install entry, the new DisplayVersion, and that the installed app exe
-# is byte-identical to the one inside that installer (and differs from the previous
-# one).
-# Versions come from `tauri build --config` overrides; no files are changed.
-# Three NSIS builds (two incremental): runs on PRs only when packaging config
-# changes, on release tags, and on demand.
+# Two independent jobs, both silent (/S, per-user default install mode). After each
+# install they assert: exactly one install entry, the new DisplayVersion, and that the
+# installed app exe is byte-identical to the one inside that installer (and differs
+# from the previous one). Helpers: .github/scripts/nsis-upgrade-lib.ps1.
+#
+# upgrade: chain of rebuilt test versions 0.1.0-1 -> 0.1.0-2 -> 0.1.0-3 -> 0.1.0.
+#   Versions come from `tauri build --config` overrides on this commit; no files are
+#   changed. Four NSIS builds (three incremental).
+# upgrade-from-release: installs the setup.exe of the newest *published* GitHub
+#   release older than this commit's app version (verified against that release's
+#   SHA256SUMS.txt), then upgrades it with this commit's freshly built installer.
+#   Skips (notice, success) when there is no such release.
+#
+# Runs on PRs only when packaging config changes, on release tags, and on demand.
 on:
   workflow_dispatch:
   push:
@@ -21,6 +27,7 @@ on:
       - src-tauri/nsis/**
       - package.json
       - .github/workflows/nsis-upgrade.yml
+      - .github/scripts/nsis-upgrade-lib.ps1
 
 permissions:
   contents: read
@@ -43,12 +50,12 @@ jobs:
         with:
           workspaces: src-tauri
       - run: npm ci
-      - name: Build NSIS installers 0.1.0-1, 0.1.0-2, 0.1.0
+      - name: Build NSIS installers 0.1.0-1, 0.1.0-2, 0.1.0-3, 0.1.0
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $out = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/installers"
-          foreach ($v in '0.1.0-1', '0.1.0-2', '0.1.0') {
+          foreach ($v in '0.1.0-1', '0.1.0-2', '0.1.0-3', '0.1.0') {
             $cfg = "$env:RUNNER_TEMP/version-$v.json"
             @{ version = $v } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM $cfg
             npm run tauri build -- --bundles nsis --config $cfg
@@ -58,60 +65,109 @@ jobs:
             Copy-Item $setup[0].FullName "$out/setup-$v.exe"
           }
           Get-ChildItem $out | Format-Table Name, Length
-      - name: Silent install 0.1.0-1, upgrade to 0.1.0-2, then to 0.1.0
+      - name: Silent install 0.1.0-1, upgrade to 0.1.0-2, 0.1.0-3, then 0.1.0
+        shell: pwsh
+        run: |
+          . ./.github/scripts/nsis-upgrade-lib.ps1
+          $dir = "$env:RUNNER_TEMP/installers"
+          if ((Get-Entries).Count -ne 0) { throw 'runner already has an install entry' }
+          $prev = $null
+          foreach ($v in '0.1.0-1', '0.1.0-2', '0.1.0-3', '0.1.0') {
+            if ((Install-Silent "$dir/setup-$v.exe") -ne 0) { throw "install/upgrade to $v failed" }
+            $h = Assert-Installed $v "$dir/setup-$v.exe"
+            if ($prev -and $h -eq $prev) { throw "app exe was not replaced by $v" }
+            $prev = $h
+          }
+          Write-Host 'NSIS preview-to-preview upgrade OK'
+
+  upgrade-from-release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Find and download the previous published release
+        id: prev
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . ./.github/scripts/nsis-upgrade-lib.ps1
+          $app = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $appKey = Get-VersionKey $app
+          if (-not $appKey) { throw "app version '$app' is not X.Y.Z[-N]" }
+          # Published (non-draft) releases only; newest version strictly older than $app.
+          $rels = gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name'
+          if ($LASTEXITCODE -ne 0) { throw 'listing releases failed' }
+          $prev = @($rels | ForEach-Object {
+                    $v = $_ -replace '^v', ''
+                    $k = Get-VersionKey $v
+                    if ($k -and $k -lt $appKey) { [pscustomobject]@{ Tag = $_; Version = $v; Key = $k } }
+                  } | Sort-Object Key -Descending | Select-Object -First 1)
+          if ($prev.Count -eq 0) {
+            Write-Host "::notice::no published release older than $app; skipping the upgrade-from-release test"
+            "skip=true" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $prev = $prev[0]
+          $dl = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/prev"
+          $ok = $false
+          foreach ($i in 1..3) {
+            gh release download $prev.Tag -R $env:GITHUB_REPOSITORY -D $dl -p '*-setup.exe' -p 'SHA256SUMS.txt' --clobber
+            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            Start-Sleep -Seconds (10 * $i)
+          }
+          if (-not $ok) { throw "downloading $($prev.Tag) assets failed" }
+          $setup = @(Get-ChildItem "$dl/*-setup.exe")
+          if ($setup.Count -ne 1) { throw "$($prev.Tag): expected one *-setup.exe asset, found $($setup.Count)" }
+          $setup = $setup[0]
+          $line = @(Get-Content "$dl/SHA256SUMS.txt" | Where-Object { ((($_ -split '\s+', 2)[1]) -replace '^\*', '') -eq $setup.Name })
+          if ($line.Count -ne 1) { throw "$($prev.Tag): $($setup.Name) not listed in SHA256SUMS.txt" }
+          $want = ($line[0] -split '\s+')[0].ToUpperInvariant()
+          $got = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash
+          if ($got -ne $want) { throw "$($prev.Tag): $($setup.Name) sha256 $got != SHA256SUMS.txt $want" }
+          Write-Host "previous release $($prev.Tag): $($setup.Name) sha256 $got matches SHA256SUMS.txt; upgrading to $app"
+          "skip=false" >> $env:GITHUB_OUTPUT
+          "tag=$($prev.Tag)" >> $env:GITHUB_OUTPUT
+          "version=$($prev.Version)" >> $env:GITHUB_OUTPUT
+          "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "app=$app" >> $env:GITHUB_OUTPUT
+      - if: steps.prev.outputs.skip == 'false'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - if: steps.prev.outputs.skip == 'false'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.prev.outputs.skip == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - if: steps.prev.outputs.skip == 'false'
+        run: npm ci
+      - name: Build this commit's NSIS installer
+        if: steps.prev.outputs.skip == 'false'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dir = "$env:RUNNER_TEMP/installers"
-          $product = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).productName
-          $roots = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
-                   'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
-                   'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
-
-          function Get-Entries {
-            @(foreach ($r in $roots) {
-              if (Test-Path $r) {
-                Get-ChildItem $r | Get-ItemProperty | Where-Object { $_.DisplayName -eq $product }
-              }
-            })
-          }
-          function Install([string]$v) {
-            $p = Start-Process -FilePath "$dir/setup-$v.exe" -ArgumentList '/S' -Wait -PassThru
-            Write-Host "setup-$v.exe /S -> exit $($p.ExitCode)"
-            $p.ExitCode
-          }
-          function Get-ExpectedExeHash([string]$v, [string]$name) {
-            $x = "$env:RUNNER_TEMP/extract-$v"
-            7z x "$dir/setup-$v.exe" "-o$x" -y | Out-Null
-            $f = @(Get-ChildItem -Recurse -File $x | Where-Object { $_.Name -eq $name })
-            if ($f.Count -ne 1) { throw "found $($f.Count) '$name' in setup-$v.exe" }
-            (Get-FileHash $f[0].FullName).Hash
-          }
-          function Assert-Installed([string]$v) {
-            $e = Get-Entries
-            if ($e.Count -ne 1) { throw "after $v`: expected 1 install entry, found $($e.Count): $($e.PSPath -join '; ')" }
-            $e = $e[0]
-            if ($e.DisplayVersion -ne $v) { throw "after $v`: DisplayVersion is '$($e.DisplayVersion)'" }
-            $exe = Join-Path $e.InstallLocation.Trim('"') $e.MainBinaryName
-            if (-not (Test-Path $exe)) { throw "after $v`: $exe missing" }
-            $hash = (Get-FileHash $exe).Hash
-            $want = Get-ExpectedExeHash $v $e.MainBinaryName
-            if ($hash -ne $want) { throw "after $v`: installed exe ($hash) is not the one in setup-$v.exe ($want)" }
-            Write-Host "OK $v`: $($e.PSChildName) DisplayVersion=$($e.DisplayVersion) exe=$exe sha256=$hash ProductVersion=$((Get-Item $exe).VersionInfo.ProductVersion)"
-            $hash
-          }
-
+          npm run tauri build -- --bundles nsis
+          if ($LASTEXITCODE -ne 0) { throw 'tauri build failed' }
+          $v = '${{ steps.prev.outputs.app }}'
+          $setup = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*_${v}_x64-setup.exe")
+          if ($setup.Count -ne 1) { throw "expected one NSIS installer for $v, found $($setup.Count)" }
+          Copy-Item $setup[0].FullName "$env:RUNNER_TEMP/setup-new.exe"
+      - name: Install published ${{ steps.prev.outputs.tag }}, upgrade with this commit's installer
+        if: steps.prev.outputs.skip == 'false'
+        shell: pwsh
+        env:
+          PREV_VERSION: ${{ steps.prev.outputs.version }}
+          PREV_SETUP: ${{ steps.prev.outputs.setup }}
+          NEW_VERSION: ${{ steps.prev.outputs.app }}
+        run: |
+          . ./.github/scripts/nsis-upgrade-lib.ps1
           if ((Get-Entries).Count -ne 0) { throw 'runner already has an install entry' }
-
-          if ((Install '0.1.0-1') -ne 0) { throw 'install 0.1.0-1 failed' }
-          $h1 = Assert-Installed '0.1.0-1'
-
-          if ((Install '0.1.0-2') -ne 0) { throw 'upgrade to 0.1.0-2 failed' }
-          $h2 = Assert-Installed '0.1.0-2'
-          if ($h2 -eq $h1) { throw 'app exe was not replaced by 0.1.0-2' }
-
-          if ((Install '0.1.0') -ne 0) { throw 'upgrade to 0.1.0 failed' }
-          $h3 = Assert-Installed '0.1.0'
-          if ($h3 -eq $h2) { throw 'app exe was not replaced by 0.1.0' }
-
-          Write-Host 'NSIS preview-to-preview upgrade OK'
+          if ((Install-Silent $env:PREV_SETUP) -ne 0) { throw "install of published $env:PREV_VERSION failed" }
+          $h1 = Assert-Installed $env:PREV_VERSION $env:PREV_SETUP
+          $new = "$env:RUNNER_TEMP/setup-new.exe"
+          if ((Install-Silent $new) -ne 0) { throw "upgrade to $env:NEW_VERSION failed" }
+          $h2 = Assert-Installed $env:NEW_VERSION $new
+          if ($h2 -eq $h1) { throw "app exe was not replaced by $env:NEW_VERSION" }
+          Write-Host "NSIS upgrade from published $env:PREV_VERSION to $env:NEW_VERSION OK"

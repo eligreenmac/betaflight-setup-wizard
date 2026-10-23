@@ -155,13 +155,27 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 `cargo test`, `tauri build` NSIS+MSI, installer check, artifacts) and ubuntu
 (`cargo fmt/check/test`). All actions run on Node 24.
 
-`.github/workflows/nsis-upgrade.yml` (windows-latest) builds NSIS installers for
-0.1.0-1, 0.1.0-2 and 0.1.0 (version via `tauri build --config`). It installs them
-silently (`/S`) one over the other and asserts exactly one uninstall entry, the new
-`DisplayVersion`, and that the installed app exe matches the one inside each installer
-and was replaced. It runs on demand, on `v*` tags, and on PRs that change packaging
-config (`tauri.conf.json`, `Cargo.toml`, `package.json`, NSIS/Windows resources, the
-workflow itself).
+`.github/workflows/nsis-upgrade.yml` (windows-latest) has two jobs. Both install
+silently (`/S`, per-user default mode), using helpers in
+`.github/scripts/nsis-upgrade-lib.ps1`. After every install they assert exactly one
+uninstall entry, the new `DisplayVersion`, and that the installed app exe matches the
+one inside that installer and was replaced.
+
+- **`upgrade`** (rebuilt test versions): builds NSIS installers for 0.1.0-1, 0.1.0-2,
+  0.1.0-3 and 0.1.0 from the same commit (version via `tauri build --config`) and
+  installs them one over the other. It proves version ordering and the upgrade
+  mechanics; it does not install any shipped binary.
+- **`upgrade-from-release`** (real previous release): picks the newest **published**
+  (non-draft) GitHub release whose version is older than this commit's app version,
+  downloads its `*-setup.exe` and checks it against that release's `SHA256SUMS.txt`.
+  It installs it, then upgrades with this commit's freshly built installer. If there
+  is no such release, it emits a notice and skips (success). On a `vX.Y.Z-N` tag push
+  this is the previous preview: the new release is still a draft, so it's excluded.
+
+The workflow runs on demand, on `v*` tags, and on PRs that change packaging config
+(`tauri.conf.json`, `Cargo.toml`, `package.json`, NSIS/Windows resources, the workflow
+and its helper script). Neither job covers the MSI, interactive installs, per-machine
+mode or launching the app.
 
 ## 4. Release pipeline (issue #28)
 
