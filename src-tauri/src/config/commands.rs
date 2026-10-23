@@ -49,8 +49,11 @@ pub async fn config_generate(model: DroneModel, ports: Vec<FcSerialPort>) -> App
 /// the UI puts only the returned UID in `receiver.elrsUid`.
 #[tauri::command]
 pub async fn config_elrs_uid(phrase: String) -> AppResult<[u8; 6]> {
-    let _ = phrase;
-    Err(AppError::NotImplemented("config_elrs_uid"))
+    // Hashed exactly as typed (the ELRS tools do not trim either).
+    if phrase.is_empty() {
+        return Err(AppError::Config("binding phrase is empty".into()));
+    }
+    Ok(super::md5::elrs_uid(&phrase))
 }
 
 /// Read-only plan against the connected FC: reads `version`, `serial`, `dump all`

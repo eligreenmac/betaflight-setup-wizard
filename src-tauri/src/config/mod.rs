@@ -34,6 +34,8 @@ use firmware::Dialect;
 use snapshot::PortState;
 
 /// Pure: build the CLI script for `model` given the ports read from the FC.
+/// **Preview only** (`config_generate`): the script that gets applied is always the one
+/// from `session::plan` (`config_plan`).
 ///
 /// The dialect comes from `model.fc.firmware_version` (UNSUPPORTED_FIRMWARE outside
 /// 4.4.x / 4.5.x / 2025.12.x). Without a `dump all` snapshot the generator assumes

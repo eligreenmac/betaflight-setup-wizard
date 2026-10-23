@@ -3,7 +3,7 @@
   "fc": { "boardName": "CRAZYBEEF4SX1280", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
   "receiver": {
     "kind": "SPI", "protocol": "EXPRESSLRS", "port": null, "telemetry": true,
-    "elrsBindingPhrase": "example whoop phrase", "elrsDomain": "ISM2400"
+    "elrsUid": [30, 182, 235, 65, 136, 241], "elrsDomain": "ISM2400"
   },
   "vtx": { "kind": "NONE" },
   "gps": { "enabled": false },

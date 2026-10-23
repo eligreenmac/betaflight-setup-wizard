@@ -3,7 +3,6 @@
 use std::collections::BTreeMap;
 
 use super::firmware::Dialect;
-use super::md5::elrs_uid;
 use super::modes;
 use super::serial_functions::{self as sf, check_serial_config, functions_in};
 use super::snapshot::{AuxSlot, PortState, Snapshot};
@@ -277,9 +276,9 @@ fn receiver_section(cx: &mut Ctx) -> AppResult<()> {
                 "set serialrx_halfduplex = {}",
                 on_off(r.half_duplex)
             ));
-            if r.elrs_binding_phrase.is_some() || r.elrs_domain.is_some() {
+            if r.elrs_uid.is_some() || r.elrs_domain.is_some() {
                 cx.warnings
-                    .push("ELRS binding phrase/domain are only used for onboard SPI receivers; set them on the receiver itself".into());
+                    .push("ELRS UID/domain are only used for onboard SPI receivers; set them on the receiver itself".into());
             }
             if r.telemetry && matches!(proto, RxProtocol::Crsf | RxProtocol::Fport) {
                 cx.push("feature TELEMETRY");
@@ -322,12 +321,8 @@ fn receiver_section(cx: &mut Ctx) -> AppResult<()> {
                 cx.push("feature -RX_MSP");
             }
             cx.push("set rx_spi_protocol = EXPRESSLRS");
-            if let Some(phrase) = r.elrs_binding_phrase.as_deref().filter(|p| !p.is_empty()) {
-                let uid = elrs_uid(phrase)
-                    .iter()
-                    .map(u8::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",");
+            if let Some(uid) = r.elrs_uid {
+                let uid = uid.iter().map(u8::to_string).collect::<Vec<_>>().join(",");
                 cx.push(format!("set expresslrs_uid = {uid}"));
             }
             if let Some(d) = r.elrs_domain {
