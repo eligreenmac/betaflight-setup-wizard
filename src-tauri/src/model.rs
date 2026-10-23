@@ -403,6 +403,27 @@ pub struct DroneModel {
     pub switches: Vec<SwitchAssignment>,
     #[serde(default)]
     pub extras: Extras,
+    /// Air mode: ALWAYS = `feature AIRMODE`; SWITCH = `feature -AIRMODE` plus an "AIR MODE"
+    /// entry in `switches` (required); OFF = `feature -AIRMODE` and no AIR MODE range.
+    /// null = keep (feature and ranges untouched). Same mechanism on 4.4 / 4.5 / 2025.12.
+    #[serde(default)]
+    pub airmode: Option<Airmode>,
+    /// Optional modes (PREARM, FLIP OVER AFTER CRASH, AIR MODE) whose ranges on the FC are
+    /// removed. Optional modes not listed here and not in `switches` are kept as they are.
+    #[serde(default)]
+    pub remove_modes: Vec<String>,
+    /// Beeper conditions (`beeper` / `beacon` CLI commands); null = keep.
+    #[serde(default)]
+    pub beepers: Option<Beepers>,
+    /// Sensor enables (acc/baro/mag_hardware); null = keep. The gyro is always on.
+    #[serde(default)]
+    pub sensors: Option<Sensors>,
+    /// align_board_roll / _pitch / _yaw; null = keep.
+    #[serde(default)]
+    pub board_alignment: Option<BoardAlignment>,
+    /// OSD layout; null = keep the FC's OSD untouched.
+    #[serde(default)]
+    pub osd: Option<Osd>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -700,6 +721,164 @@ pub const VTX_POWER_MAX: u8 = 7;
 pub const VTX_BAND_MAX: u8 = 8;
 pub const VTX_CHANNEL_MAX: u8 = 8;
 
+// ---------------------------------------------------------------- drone model, batch 2
+
+/// `DroneModel.airmode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum Airmode {
+    Always,
+    Switch,
+    Off,
+}
+
+/// Stable beeper condition names = the 4.4 / 4.5 CLI names (`beeper list`). Config maps
+/// them per firmware: CRASH_FLIP is `CRASHFLIP` on 2025.12; RC_SMOOTHING_INIT_FAIL does
+/// not exist on 2025.12 (a warning, nothing written).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BeeperName {
+    GyroCalibrated,
+    RxLost,
+    RxLostLanding,
+    Disarming,
+    Arming,
+    ArmingGpsFix,
+    ArmingGpsNoFix,
+    BatCritLow,
+    BatLow,
+    GpsStatus,
+    RxSet,
+    AccCalibration,
+    AccCalibrationFail,
+    ReadyBeep,
+    MultiBeeps,
+    DisarmRepeat,
+    Armed,
+    SystemInit,
+    OnUsb,
+    BlackboxErase,
+    CrashFlip,
+    CamConnectionOpen,
+    CamConnectionClose,
+    RcSmoothingInitFail,
+}
+
+/// DShot beacon conditions (`beacon`): the only two the firmware allows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DshotBeaconCondition {
+    RxLost,
+    RxSet,
+}
+
+/// Full beeper state: every condition the firmware has is written, `beeper -X` for the
+/// listed ones and `beeper X` for the rest.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Beepers {
+    pub disabled: Vec<BeeperName>,
+    /// `beacon -X` for listed, `beacon X` for the other; null = keep.
+    #[serde(default)]
+    pub dshot_beacon_disabled: Option<Vec<DshotBeaconCondition>>,
+}
+
+/// true = `*_hardware = AUTO` (a specific chip already set on the FC is kept),
+/// false = `NONE`; null = keep. Gyro is always on.
+/// Device's `SensorState.configured_hardware` reads the same setting (`NONE` = false /
+/// disabled, anything else = true).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sensors {
+    #[serde(default)]
+    pub acc: Option<bool>,
+    #[serde(default)]
+    pub baro: Option<bool>,
+    #[serde(default)]
+    pub mag: Option<bool>,
+}
+
+/// Whole degrees, the firmware range -180..=360 on 4.4 / 4.5 / 2025.12 (cli/settings.c);
+/// the same values MSP_BOARD_ALIGNMENT_CONFIG reports (int16 each).
+/// `roll` / `pitch` / `yaw` = device `SensorAlignment.board_roll_deg` / `_pitch_deg` / `_yaw_deg`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardAlignment {
+    pub roll: i16,
+    pub pitch: i16,
+    pub yaw: i16,
+}
+pub const BOARD_ALIGNMENT_MIN: i16 = -180;
+pub const BOARD_ALIGNMENT_MAX: i16 = 360;
+
+/// `vcd_video_system` (same table on 4.4 / 4.5 / 2025.12). The OSD grid is
+/// PAL 30x16, NTSC 30x13, AUTO 30x13 (fits either camera), HD 53x20.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OsdVideoSystem {
+    Auto,
+    Pal,
+    Ntsc,
+    Hd,
+}
+
+impl OsdVideoSystem {
+    /// (columns, rows) of the grid elements must fit in.
+    pub fn grid(self) -> (u8, u8) {
+        match self {
+            OsdVideoSystem::Pal => (30, 16),
+            OsdVideoSystem::Ntsc | OsdVideoSystem::Auto => (30, 13),
+            OsdVideoSystem::Hd => (53, 20),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Osd {
+    /// null = keep the FC's video system (the grid then comes from the FC's settings).
+    #[serde(default)]
+    pub video_system: Option<OsdVideoSystem>,
+    /// Elements not listed keep the FC's state.
+    #[serde(default)]
+    pub elements: Vec<OsdElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsdElement {
+    /// Stable name = Betaflight's osd_items_e name without `OSD_` (e.g. MAIN_BATT_VOLTAGE,
+    /// written as `osd_vbat_pos`). Unknown for the firmware -> CONFIG.
+    pub name: String,
+    pub enabled: bool,
+    /// Column / row; null = config's default layout position for the video system.
+    #[serde(default)]
+    pub x: Option<u8>,
+    #[serde(default)]
+    pub y: Option<u8>,
+}
+
+/// `config_osd_default_layout` result: config's default positions (the single source
+/// of truth for the UI preview and the generator).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsdLayout {
+    pub video_system: OsdVideoSystem,
+    pub cols: u8,
+    pub rows: u8,
+    /// Every element the firmware line has, with config's default x/y and default visibility.
+    pub elements: Vec<OsdLayoutElement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OsdLayoutElement {
+    pub name: String,
+    pub x: u8,
+    pub y: u8,
+    pub enabled: bool,
+}
+
 // ---------------------------------------------------------------- config engine
 
 /// Firmware-version-specific CLI script produced by config::generate.
@@ -987,6 +1166,38 @@ mod tests {
             let m: DroneModel = serde_json::from_value(ex.clone()).unwrap();
             assert_eq!(m.schema_version, DRONE_MODEL_SCHEMA_VERSION);
         }
+    }
+
+    /// Batch-2 enums and limits agree with the schema; absent fields mean keep.
+    #[test]
+    fn batch2_shape_matches_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../schemas/drone-model.schema.json")).unwrap();
+        let names: Vec<BeeperName> =
+            serde_json::from_value(schema["$defs"]["beeperName"]["enum"].clone()).unwrap();
+        assert_eq!(names.len(), 24);
+        let roll = &schema["properties"]["boardAlignment"]["properties"]["roll"];
+        assert_eq!(roll["minimum"], BOARD_ALIGNMENT_MIN);
+        assert_eq!(roll["maximum"], BOARD_ALIGNMENT_MAX);
+        assert_eq!(OsdVideoSystem::Pal.grid(), (30, 16));
+        assert_eq!(OsdVideoSystem::Hd.grid(), (53, 20));
+        let ex = &schema["examples"][0];
+        let m: DroneModel = serde_json::from_value(ex.clone()).unwrap();
+        assert_eq!(m.airmode, Some(Airmode::Switch));
+        assert_eq!(m.beepers.unwrap().disabled, vec![BeeperName::OnUsb]);
+        let mut bare = ex.clone();
+        for k in [
+            "airmode",
+            "removeModes",
+            "beepers",
+            "sensors",
+            "boardAlignment",
+            "osd",
+        ] {
+            bare.as_object_mut().unwrap().remove(k);
+        }
+        let m: DroneModel = serde_json::from_value(bare).unwrap();
+        assert!(m.airmode.is_none() && m.remove_modes.is_empty() && m.osd.is_none());
     }
 
     #[test]
