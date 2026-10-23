@@ -13,20 +13,9 @@
  * shows a disabled control with guidance instead of failing.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { Backup, CliScript, DroneModel, FcSerialPort, VerifyReport } from "../types/model";
 import { toUiError, uiError, type UiError } from "../errors/codes";
 
 // ---- types (proposed shapes; confirm in the shared PR) -------------------------
-
-/** Stages emitted by config_apply on `config://apply-progress` (agreed). */
-export const APPLY_STAGES = ["BACKUP", "SENDING", "SAVING", "REBOOTING", "RECONNECTED"] as const;
-export type ApplyStage = (typeof APPLY_STAGES)[number];
-export interface ApplyProgress {
-  stage: ApplyStage;
-  /** 0..1 within the stage, or null if unknown. */
-  fraction: number | null;
-  message: string | null;
-}
 
 /** `rc://channels` (DESIGN.md §4): raw values, usually 1000..2000, Betaflight channel order. */
 export interface RcChannels {
@@ -80,38 +69,13 @@ export interface MotorTestStopped {
 
 
 export const UPCOMING_EVENTS = {
-  applyProgress: "config://apply-progress",
   /** DESIGN.md §4 */
   motorTestStopped: "motor-test://stopped",
   rcChannels: "rc://channels",
   rcStopped: "rc://stopped",
 } as const;
 
-/** Wizard-managed roles, as named in a config plan. */
-export const PLAN_ROLES = ["RX", "VTX", "GPS", "ESC_TELEMETRY"] as const;
-export type PlanRole = (typeof PLAN_ROLES)[number];
-
-/** One port the plan will clear managed roles from (board-reported port NAME). */
-export interface PlanClearing {
-  port: string;
-  roles: PlanRole[];
-}
-
-/** Read-only result of config_plan: what apply WOULD do, nothing is written. */
-export interface ConfigPlan {
-  commands: string[];
-  warnings: string[];
-  dialect: string;
-  clearings: PlanClearing[];
-}
-
-export const planToScript = (p: ConfigPlan): CliScript => ({ commands: p.commands, warnings: p.warnings, dialect: p.dialect });
-
 export interface UpcomingCommandMap {
-  /** Read-only preview of apply: CLI commands plus the managed roles/ports it clears. */
-  config_plan: [{ model: DroneModel; ports: FcSerialPort[] }, ConfigPlan];
-  /** Backups for the connected board (%APPDATA%/<app>/backups/<board-uid>/), newest first. */
-  config_list_backups: [Record<string, never>, Backup[]];
   /** DESIGN.md §4: starts the session on first call, later calls update the throttle; feeds the watchdog. */
   motor_test_start: [MotorTestStartArgs, { outputConfig: MotorOutputConfig; limits: MotorTestLimits }];
   /** Every MOTOR_KEEPALIVE_MS while a test runs; MOTOR_TEST_NOT_ACTIVE once the watchdog fired. */
@@ -124,29 +88,6 @@ export interface UpcomingCommandMap {
 }
 export type UpcomingCommand = keyof UpcomingCommandMap;
 export type UpcomingBackend = <K extends UpcomingCommand>(cmd: K, args: UpcomingCommandMap[K][0]) => Promise<UpcomingCommandMap[K][1]>;
-
-// ---- verify result normalisation ---------------------------------------------
-
-/**
- * Agreed verify shape is `{ ok, mismatches: [{ key, expected, actual }] }`, while
- * model.ts still says `Mismatch.setting`. Accept both until the shared PR lands.
- */
-export interface VerifyMismatch {
-  key: string;
-  expected: string;
-  actual: string;
-}
-export interface VerifyOutcome {
-  ok: boolean;
-  mismatches: VerifyMismatch[];
-}
-export function normalizeVerify(r: VerifyReport): VerifyOutcome {
-  const mismatches = (r.mismatches ?? []).map((m) => {
-    const raw = m as unknown as { key?: string; setting?: string; expected?: unknown; actual?: unknown };
-    return { key: String(raw.key ?? raw.setting ?? "?"), expected: String(raw.expected ?? ""), actual: String(raw.actual ?? "") };
-  });
-  return { ok: r.ok && mismatches.length === 0, mismatches };
-}
 
 // ---- backend -----------------------------------------------------------------
 
@@ -172,11 +113,9 @@ export function resetUpcomingBackend(): void {
   backend = tauriBackend;
 }
 
-/** TODO(shared): becomes `api.config.plan` / `api.config.listBackups` / `api.device.motorTest*` / `api.device.rcChannelsStream*`. */
+/** TODO(shared): becomes `api.device.motorTest*` / `api.device.rcChannelsStream*`. */
 const none = {} as Record<string, never>;
 export const upcoming = {
-  configPlan: (model: DroneModel, ports: FcSerialPort[]) => backend("config_plan", { model, ports }),
-  configListBackups: () => backend("config_list_backups", none),
   motorTestStart: (args: MotorTestStartArgs) => backend("motor_test_start", args),
   motorTestKeepalive: () => backend("motor_test_keepalive", none),
   motorTestStop: () => backend("motor_test_stop", none),

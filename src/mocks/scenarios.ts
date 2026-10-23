@@ -5,7 +5,10 @@
  *   UART2 = serial RX, UART3 = MSP + VTX_MSP (digital VTX), UART6 = plain MSP (foreign).
  *
  * Covers the shared contract (src/api/commands.ts) via createMockBackend() and the
- * agreed-but-not-yet-shared commands/events (src/api/upcoming.ts).
+ * agreed-but-not-yet-shared motor/RC commands (src/api/upcoming.ts). The
+ * `legacy-backend` scenario behaves like a Phase 0 backend: config_plan,
+ * config_list_backups, config_backups_dir, config_restore, config_elrs_uid and the
+ * motor/RC commands answer NOT_IMPLEMENTED.
  *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
@@ -13,9 +16,8 @@ import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
 import type { UpcomingBackend, UpcomingCommand, UpcomingCommandMap } from "../api/upcoming";
-import type { Backup, DroneModel, FcSerialPort, FlashStage } from "../types/model";
-import { FN, isReserved, plannedClearings, targetMask } from "../wizard/ports";
-import { ROLE_TO_PLAN } from "../wizard/plan";
+import type { Backup, ClearedPort, CliScript, DroneModel, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../api/upcoming";
 
@@ -110,8 +112,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
+    const stamp = createdAt.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
     const backup: Backup = {
-      path: `C:\\Users\\pilot\\AppData\\Roaming\\io.github.eligreenmac.bfsw\\backups\\${UID}\\${createdAt.replace(/[:.]/g, "-")}.txt`,
+      id: `${UID}/${stamp}`,
+      boardUid: UID,
+      path: `C:\\Users\\pilot\\AppData\\Roaming\\io.github.eligreenmac.bfsw\\backups\\${UID}\\${stamp}.txt`,
       boardName: "SPEEDYBEEF405V4",
       firmwareVersion: device.firmwareVersion,
       createdAt,
@@ -193,9 +198,10 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     config_backup: () => snapshot(),
     config_generate: ({ model, ports }) => generateCli(model, ports),
     config_apply: async ({ script }) => {
+      let backup: Backup | null = null;
       for (const stage of ["BACKUP", "SENDING", "SAVING", "REBOOTING", "RECONNECTED"] as const) {
-        if (stage === "BACKUP") snapshot();
-        events.emit("config://apply-progress", { stage, fraction: 0, message: null });
+        if (stage === "BACKUP") backup = snapshot();
+        events.emit("config://progress", { stage, fraction: 0, message: null });
         await sleep(stepMs);
       }
       // Reflect the serial changes on the "board" so a re-read shows them.
@@ -204,25 +210,54 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         const port = m ? device.ports.find((p) => p.identifier === Number(m[1])) : undefined;
         if (port && m) port.functionMask = Number(m[2]);
       }
-      return { applied: script.commands.length, errors: [], saved: true };
+      return { applied: script.commands.length, errors: [], saved: true, backup, reconnected: true };
     },
     config_verify: () => {
       if (device.verifyFailuresLeft > 0) {
         device.verifyFailuresLeft--;
-        // Agreed shape uses `key` (model.ts still says `setting`); see normalizeVerify().
-        return { ok: false, mismatches: [{ key: "serialrx_provider", expected: "CRSF", actual: "SBUS" }] } as unknown as CommandMap["config_verify"][1];
+        return { ok: false, mismatches: [{ setting: "serialrx_provider", expected: "CRSF", actual: "SBUS" }] };
       }
       return { ok: true, mismatches: [] };
     },
-    config_rollback: async ({ backup }) => {
-      await sleep(stepMs * 3);
-      if (scenario === "rollback-fail") throw err("CLI_ERROR", "###ERROR### in line 12: serial 2 131073 115200 57600 0 115200");
-      const hit = device.backups.find((b) => b.backup.path === backup.path);
-      if (!hit) throw err("IO_ERROR", `backup file not found: ${backup.path}`);
-      device.ports = hit.ports.map((p) => ({ ...p }));
-      return { applied: 42, errors: [], saved: true };
+    config_rollback: ({ backup }) => restore(backup.id),
+    config_plan: ({ model }) => {
+      legacy("config_plan");
+      if (model.receiver.kind === "SPI" && model.receiver.protocol !== "EXPRESSLRS")
+        throw { code: "CONFIG", message: `SPI receiver protocol ${model.receiver.protocol} is not supported` }; // error.rs AppError::Config
+      if (model.receiver.kind === "SPI" && scenario !== "onboard-elrs") throw { code: "CONFIG", message: "no onboard SPI receiver (resource RX_SPI_CS not assigned)" };
+      return generateCli(model, device.ports);
+    },
+    config_list_backups: () => {
+      legacy("config_list_backups");
+      return device.backups.map((b) => b.backup);
+    },
+    config_backups_dir: () => {
+      legacy("config_backups_dir");
+      return "C:\\Users\\pilot\\AppData\\Roaming\\io.github.eligreenmac.bfsw\\backups";
+    },
+    config_restore: ({ backupId }) => {
+      legacy("config_restore");
+      return restore(backupId);
+    },
+    config_elrs_uid: ({ phrase }) => {
+      legacy("config_elrs_uid");
+      // Not the real MD5-based derivation; just 6 deterministic bytes for the demo.
+      return Array.from({ length: 6 }, (_, i) => [...phrase].reduce((h, c) => (h * 31 + c.charCodeAt(0) + i) & 0xff, 7));
     },
   };
+
+  function legacy(cmd: string): void {
+    if (scenario === "legacy-backend") throw err("NOT_IMPLEMENTED", `mock: ${cmd}`);
+  }
+  async function restore(backupId: string) {
+    await sleep(stepMs * 3);
+    if (scenario === "rollback-fail") throw err("CLI_ERROR", "###ERROR### in line 12: serial 2 131073 115200 57600 0 115200");
+    const hit = device.backups.find((b) => b.backup.id === backupId);
+    if (!hit) throw err("IO_ERROR", `backup not found: ${backupId}`);
+    const safety = snapshot(); // safety backup first (ARCHITECTURE §5.1)
+    device.ports = hit.ports.map((p) => ({ ...p }));
+    return { applied: 42, errors: [], saved: true, backup: safety, reconnected: true };
+  }
 
   async function stages(list: FlashStage[]) {
     for (const stage of list) {
@@ -240,12 +275,6 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   }) as Backend;
 
   const upcomingHandlers: { [K in UpcomingCommand]: (a: UpcomingCommandMap[K][0]) => UpcomingCommandMap[K][1] } = {
-    config_plan: ({ model, ports }) => {
-      const opts = { escTelemetry: model.esc.telemetryPort !== null };
-      const clearings = plannedClearings(ports, model, opts).map((c) => ({ port: c.port, roles: c.roles.map((r) => ROLE_TO_PLAN[r]) }));
-      return { ...generateCli(model, ports), clearings };
-    },
-    config_list_backups: () => device.backups.map((b) => b.backup),
     motor_test_start: ({ motorIndex, throttle, propsOffConfirmed, limits }) => {
       device.motorLog.push(`start ${motorIndex} ${throttle}`);
       motorFault();
@@ -305,22 +334,42 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   return { backend, upcoming, events, device };
 }
 
-/** Rough stand-in for the config engine's generate(): enough for the Review screen. */
-export function generateCli(model: DroneModel, ports: FcSerialPort[]) {
+const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
+  MSP: "MSP",
+  GPS: "GPS",
+  RX_SERIAL: "RX_SERIAL",
+  ESC_SENSOR: "ESC_SENSOR",
+  TBS_SMARTAUDIO: "VTX_SMARTAUDIO",
+  IRC_TRAMP: "VTX_TRAMP",
+  VTX_MSP: "VTX_MSP",
+};
+
+/** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
+export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript {
   const opts = { escTelemetry: model.esc.telemetryPort !== null };
   const commands: string[] = [];
   const warnings: string[] = [];
-  for (const c of plannedClearings(ports, model, opts)) warnings.push(`clearing ${c.functions.join("+")} from ${c.port}`);
+  const cleared: ClearedPort[] = plannedClearings(ports, model, opts).map((c) => {
+    const p = ports.find((x) => x.name === c.port)!;
+    return {
+      port: c.port,
+      functions: c.functions.map((f) => TO_SERIAL_FUNCTION[f]).filter((f): f is SerialFunction => !!f),
+      functionMaskBefore: p.functionMask,
+      functionMaskAfter: targetMask(p, model, opts),
+    };
+  });
   for (const p of ports) {
     if (isReserved(p)) continue;
     const mask = targetMask(p, model, opts);
     if (mask !== p.functionMask) commands.push(`serial ${p.identifier} ${mask} 115200 57600 0 115200`);
   }
   if (model.receiver.kind === "SERIAL" && model.receiver.protocol) {
-    commands.push("feature RX_SERIAL", `set serialrx_provider = ${model.receiver.protocol}`);
+    commands.push("feature -RX_SPI", "feature RX_SERIAL", `set serialrx_provider = ${model.receiver.protocol}`);
     commands.push(`set serialrx_inverted = ${model.receiver.inverted ? "ON" : "OFF"}`, `set serialrx_halfduplex = ${model.receiver.halfDuplex ? "ON" : "OFF"}`);
   }
-  if (model.receiver.kind === "SPI" && model.receiver.protocol) commands.push("feature RX_SPI", `set rx_spi_protocol = ${model.receiver.protocol}`);
+  if (model.receiver.kind === "SPI" && model.receiver.protocol) commands.push("feature -RX_SERIAL", "feature RX_SPI", `set rx_spi_protocol = ${model.receiver.protocol}`);
+  const p = model.receiver.protocol;
+  if (model.receiver.telemetry && (p === "CRSF" || p === "FPORT" || (model.receiver.kind === "SPI" && p === "EXPRESSLRS"))) commands.push("feature TELEMETRY");
   if (model.gps.enabled) commands.push("feature GPS", `set gps_provider = ${model.gps.provider ?? "UBLOX"}`);
   if (model.vtx.kind === "DIGITAL") commands.push("set osd_displayport_device = MSP", "set vcd_video_system = HD");
   commands.push(`set motor_pwm_protocol = ${model.esc.protocol}`, `set dshot_bidir = ${model.esc.bidirectionalDshot ? "ON" : "OFF"}`);
@@ -330,5 +379,5 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]) {
   const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, BARO: 3, ALTHOLD: 3, BEEPER: 13, "GPS HOLD": 11, "POS HOLD": 11, "FLIP OVER AFTER CRASH": 35 };
   model.switches.forEach((s, i) => commands.push(`aux ${i} ${boxIds[s.mode] ?? 0} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`));
   commands.push("save");
-  return { commands, warnings, dialect: "4.5" };
+  return { commands, warnings, dialect: "4.5", cleared };
 }

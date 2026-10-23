@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Help links and the backups folder.
- *
- * In the desktop app these go through tauri-plugin-opener, which needs the scoped
- * capability from the separate `shared` PR (branch feat/opener-capability). This
- * branch does NOT depend on it: we call the plugin's IPC commands directly and, if
- * the plugin or the capability is missing (command not found / not allowed), the
- * caller gets `{ opened: false }` and shows the address as a normal link to copy.
- * In the browser demo a normal new-tab link is used.
+ * Help links and the backups folder, via @tauri-apps/plugin-opener (scoped
+ * capability in src-tauri/capabilities/default.json). If opening fails (e.g. a path
+ * outside the scope), the caller gets `{ opened: false }` and shows the address as
+ * text to copy. In the browser demo a normal new-tab link is used.
  */
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import { appDataDir, join } from "@tauri-apps/api/path";
+import { isTauri } from "@tauri-apps/api/core";
+import { join } from "@tauri-apps/api/path";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { api } from "./commands";
 
-/** Must match opener:allow-open-url in the shared capability. */
+/** Must match opener:allow-open-url in src-tauri/capabilities/default.json. */
 export const ALLOWED_URL_PREFIXES = [
   "https://betaflight.com/",
   "https://github.com/betaflight/",
@@ -29,42 +27,57 @@ export interface OpenResult {
   target: string;
 }
 
-type Invoker = (cmd: string, args: Record<string, unknown>) => Promise<unknown>;
-let invoker: Invoker = (cmd, args) => invoke(cmd, args);
-let inApp: () => boolean = () => isTauri();
+interface LinkRuntime {
+  inApp: () => boolean;
+  openUrl: (url: string) => Promise<void>;
+  openPath: (path: string) => Promise<void>;
+  backupsDir: () => Promise<string>;
+  join: (...parts: string[]) => Promise<string>;
+}
+const defaults: LinkRuntime = {
+  inApp: () => isTauri(),
+  openUrl: (url) => openUrl(url),
+  openPath: (path) => openPath(path),
+  backupsDir: () => api.config.backupsDir(),
+  join: (...parts) => join(...parts),
+};
+let rt: LinkRuntime = defaults;
 /** Test seam. */
-export function setLinkRuntime(rt: { invoke?: Invoker; inApp?: () => boolean } | null): void {
-  invoker = rt?.invoke ?? ((cmd, args) => invoke(cmd, args));
-  inApp = rt?.inApp ?? (() => isTauri());
+export function setLinkRuntime(over: Partial<LinkRuntime> | null): void {
+  rt = { ...defaults, ...(over ?? {}) };
 }
 
 export async function openExternal(url: string): Promise<OpenResult> {
   if (!isAllowedUrl(url)) return { opened: false, target: url };
-  if (!inApp()) {
+  if (!rt.inApp()) {
     const w = typeof window !== "undefined" ? window.open(url, "_blank", "noopener,noreferrer") : null;
     return { opened: w !== null, target: url };
   }
   try {
-    await invoker("plugin:opener|open_url", { url });
+    await rt.openUrl(url);
     return { opened: true, target: url };
   } catch {
-    // TODO(shared): plugin/capability not registered yet (feat/opener-capability).
     return { opened: false, target: url };
   }
 }
 
-/** %APPDATA%\<app>\backups\<board-uid>\ (Tauri appDataDir = bundle identifier folder). */
+/** `<config_backups_dir>/<boardUid>` (ARCHITECTURE §5.1), or the root without a board. */
 export async function backupsFolder(boardUid: string | null): Promise<string> {
-  const base = await join(await appDataDir(), "backups");
-  return boardUid ? join(base, boardUid) : base;
+  const base = await rt.backupsDir();
+  return boardUid ? rt.join(base, boardUid) : base;
 }
 
 /** Open the board's backups folder in Explorer; `{opened:false}` = show the path instead. */
 export async function openBackupsFolder(boardUid: string | null): Promise<OpenResult> {
-  if (!inApp()) return { opened: false, target: `%APPDATA%\\io.github.eligreenmac.bfsw\\backups\\${boardUid ?? ""}` };
-  const dir = await backupsFolder(boardUid);
+  if (!rt.inApp()) return { opened: false, target: `%APPDATA%\\io.github.eligreenmac.bfsw\\backups\\${boardUid ?? ""}` };
+  let dir: string;
   try {
-    await invoker("plugin:opener|open_path", { path: dir });
+    dir = await backupsFolder(boardUid);
+  } catch {
+    return { opened: false, target: `%APPDATA%\\io.github.eligreenmac.bfsw\\backups\\${boardUid ?? ""}` };
+  }
+  try {
+    await rt.openPath(dir);
     return { opened: true, target: dir };
   } catch {
     return { opened: false, target: dir };

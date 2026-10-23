@@ -104,7 +104,10 @@ describe("guards map", () => {
   it("review needs a generated script; apply needs verification", () => {
     const s = ready();
     expect(keys(s, "review")).toEqual(["validation.notGenerated"]);
-    s.ui.script = { commands: ["save"], warnings: [], dialect: "4.5" };
+    s.ui.planUnavailable = true;
+    expect(keys(s, "review")).toEqual(["validation.planUnavailable"]);
+    s.ui.planUnavailable = false;
+    s.ui.script = { commands: ["save"], warnings: [], dialect: "4.5", cleared: [] };
     expect(keys(s, "review")).toEqual([]);
     expect(keys(s, "apply")).toEqual(["validation.notApplied"]);
     s.ui.applyStatus = "verified";
@@ -138,11 +141,12 @@ describe("guards map", () => {
     setBoard(s, { ...fc(), buildOptions: ["USE_RX_EXPRESSLRS"] }, PORTS, "COM5");
     expect(hasOnboardElrs(s.fc)).toBe(true);
     expect(keys(s, "components")).toEqual([]);
-    expect(s.model.receiver.protocol).toBe("EXPRESSLRS");
+    expect(s.model.receiver).toMatchObject({ kind: "SPI", protocol: "EXPRESSLRS", telemetry: true, port: null });
+    expect(asksTelemetry("EXPRESSLRS")).toBe(true);
     expect(keys(s, "receiver")).toEqual([]); // no UART needed
   });
 
-  it("asks about telemetry for CRSF and FPort only, defaulting to yes", () => {
+  it("asks about telemetry for CRSF, FPort and SPI ExpressLRS only, defaulting to yes", () => {
     const s = ready();
     setReceiverKind(s, "SERIAL");
     expect(s.model.receiver.protocol).toBe("CRSF");

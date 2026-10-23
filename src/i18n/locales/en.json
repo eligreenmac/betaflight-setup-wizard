@@ -291,7 +291,7 @@
     "loading": "Preparing the changes…",
     "clearingsTitle": "These ports will be cleared first",
     "noClearings": "No existing port settings will be cleared.",
-    "clearing": "{port}: remove {roles}",
+    "clearing": "{port}: remove {functions}",
     "clearingsHint": "Only roles the wizard manages are removed. Other port settings stay as they are.",
     "summary": "Your setup",
     "board": "Board",
@@ -304,8 +304,10 @@
     "yes": "Yes",
     "warnings": "Warnings",
     "commands": "Show the commands ({n})",
-    "fallbackNote": "Preview built by the wizard. The board may report small differences when applying.",
-    "nothingWritten": "Nothing is written until you select Apply on the next step."
+    "nothingWritten": "Nothing is written until you select Apply on the next step.",
+    "planUnavailableTitle": "This app version cannot apply settings yet",
+    "planUnavailableBody": "The board connection in this version can only show a preview of the changes, so Apply is turned off. Update the app to apply settings. Nothing has been changed on the board.",
+    "clearingsUnknown": "The ports that will be cleared are shown once the board can prepare the exact changes."
   },
   "apply": {
     "ready": "{n} settings are ready to write.",
@@ -332,13 +334,14 @@
     "mismatch": {
       "title": "Some settings did not stick",
       "body": "The board was read back after saving, and these values are different:",
-      "key": "Setting",
+      "setting": "Setting",
       "expected": "Expected",
       "actual": "On the board",
       "step1": "Select Apply again. A second try often fixes it.",
       "step2": "If the same setting fails again, your firmware may not support it. Update the firmware and try again.",
       "step3": "You can restore the backup below to undo all changes."
-    }
+    },
+    "notReconnected": "The settings were saved, but the board did not reconnect by itself. Unplug the USB cable, plug it back in, and connect again to check them."
   },
   "done": {
     "success": "{board} is set up.",
@@ -401,11 +404,14 @@
     "gps": "GPS",
     "escTelemetry": "ESC telemetry"
   },
-  "planRoles": {
-    "RX": "receiver",
-    "VTX": "video transmitter",
+  "serialFunctions": {
+    "RX_SERIAL": "receiver",
     "GPS": "GPS",
-    "ESC_TELEMETRY": "ESC telemetry"
+    "ESC_SENSOR": "ESC telemetry",
+    "VTX_SMARTAUDIO": "video transmitter control (SmartAudio)",
+    "VTX_TRAMP": "video transmitter control (Tramp)",
+    "VTX_MSP": "digital video link (MSP)",
+    "MSP": "MSP link"
   },
   "stageState": {
     "done": "done",
@@ -424,7 +430,8 @@
     "goFirmware": "Go to the firmware step",
     "openFirmwareHelp": "Firmware help",
     "reportIssue": "Report a problem",
-    "technicalDetails": "Technical details"
+    "technicalDetails": "Technical details",
+    "editComponents": "Change components"
   },
   "validation": {
     "noBoard": "Connect a flight controller first.",
@@ -449,7 +456,8 @@
     "modeRangeInvalid": "The switch position for {mode} is not valid.",
     "auxInvalid": "The switch channel for {mode} is not valid.",
     "notGenerated": "Wait for the preview to finish.",
-    "notApplied": "Apply the settings and wait for the check to finish."
+    "notApplied": "Apply the settings and wait for the check to finish.",
+    "planUnavailable": "This app version cannot apply settings yet. Update the app."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -634,6 +642,12 @@
       "title": "Something went wrong",
       "body": "An unexpected error happened.",
       "step1": "Try again. If it repeats, report the problem."
+    },
+    "CONFIG_UNSUPPORTED": {
+      "title": "The board cannot use part of this setup",
+      "body": "The flight controller does not support something you chose, most often the receiver type.",
+      "step1": "Go back to Components and choose a different receiver, for example one wired to a UART.",
+      "step2": "If the board has a built-in receiver and you still see this, report the problem and include the details below."
     }
   }
 }

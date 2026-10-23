@@ -16,8 +16,8 @@ import {
   type RxProtocol,
   type VtxProtocol,
   type VtxKind,
+  type VerifyReport,
 } from "../types/model";
-import type { VerifyOutcome } from "../api/upcoming";
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
 import { MODES, renameModesForFirmware, SWITCH_POSITIONS } from "./switches";
 import { defaultTelemetry } from "./receiver";
@@ -39,11 +39,13 @@ export interface UiState extends RoleOptions {
   motorDirectionOk: boolean;
   /** null = not probed yet; false = backend has no motor_test_* commands yet. */
   motorTestAvailable: boolean | null;
-  /** Script from config_generate for the current model (Review). */
+  /** Script from config_plan for the current model (Review); exactly what Apply sends. */
   script: CliScript | null;
+  /** The backend has no config_plan yet: Review shows a preview and Apply is blocked. */
+  planUnavailable: boolean;
   applyStatus: ApplyStatus;
   applyResult: ApplyResult | null;
-  verify: VerifyOutcome | null;
+  verify: VerifyReport | null;
   /** Backups created in this session (fallback list when config_list_backups is missing). */
   sessionBackups: Backup[];
 }
@@ -68,6 +70,7 @@ function emptyUi(): UiState {
     motorDirectionOk: false,
     motorTestAvailable: null,
     script: null,
+    planUnavailable: false,
     applyStatus: "idle",
     applyResult: null,
     verify: null,
@@ -126,7 +129,8 @@ export function setReceiverKind(s: WizardState, kind: ReceiverKind): void {
   if (s.model.receiver.kind !== kind) {
     s.model.receiver.kind = kind;
     s.model.receiver.protocol = kind === "SERIAL" ? "CRSF" : kind === "SPI" ? "EXPRESSLRS" : null;
-    s.model.receiver.telemetry = s.model.receiver.protocol ? defaultTelemetry(s.model.receiver.protocol) : false;
+    // No receiver: keep the shared model default (telemetry true); the engine ignores it.
+    s.model.receiver.telemetry = s.model.receiver.protocol ? defaultTelemetry(s.model.receiver.protocol) : true;
   }
   afterComponentsChange(s);
 }

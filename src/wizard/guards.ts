@@ -137,7 +137,7 @@ export const guards: Record<string, StepGuard> = {
   switches: { canEnter: configured, validate: validateSwitches },
   review: {
     canEnter: configured,
-    validate: (s) => (s.ui.script ? [] : [{ key: "validation.notGenerated" }]),
+    validate: (s) => (s.ui.script ? [] : [{ key: s.ui.planUnavailable ? "validation.planUnavailable" : "validation.notGenerated" }]),
   },
   apply: {
     canEnter: (s) => configured(s) && s.ui.script !== null,

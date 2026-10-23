@@ -16,6 +16,7 @@ export type GuidanceActionId =
   | "installDriver"
   | "goFirmware"
   | "editPorts"
+  | "editComponents"
   | "openLink";
 
 export interface GuidanceAction {
@@ -91,6 +92,7 @@ const TABLE: Record<ErrorCode, Entry> = {
   INVALID_ARGUMENT: { steps: 1, actions: [reportIssue] },
   INTERNAL: { steps: 1, actions: [reportIssue] },
   NOT_IMPLEMENTED: { steps: 1, actions: [reportIssue], warning: true },
+  CONFIG_UNSUPPORTED: { steps: 2, actions: [{ id: "editComponents", labelKey: "actions.editComponents", primary: true }, reportIssue], showMessage: true },
   UNKNOWN: { steps: 1, actions: [retry, reportIssue] },
 };
 

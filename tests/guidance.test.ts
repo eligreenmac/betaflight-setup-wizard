@@ -38,6 +38,12 @@ describe("error guidance", () => {
 
   it("maps unknown and legacy codes", () => {
     expect(guidanceFor("SOMETHING_NEW").code).toBe("UNKNOWN");
+    // config engine: unsupported receiver (e.g. SPI protocol other than ExpressLRS)
+    const cfg = toUiError({ code: "CONFIG", message: "SPI receiver protocol FRSKY_X is not supported" });
+    expect(cfg.code).toBe("CONFIG_UNSUPPORTED");
+    expect(guidanceFor(cfg)).toMatchObject({ showMessage: true, titleKey: "errors.CONFIG_UNSUPPORTED.title" });
+    expect(guidanceFor(cfg).actions[0]!.id).toBe("editComponents");
+    expect(toUiError({ code: "UNSUPPORTED_FIRMWARE", message: "2026.6" })).toMatchObject({ code: "UNSUPPORTED_FIRMWARE", category: "Protocol" });
     expect(guidanceFor("DRIVER").code).toBe("DRIVER_MISSING");
   });
 

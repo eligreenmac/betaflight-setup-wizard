@@ -53,15 +53,17 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
 
 /**
  * UI-only codes: NOT_IMPLEMENTED is what the Phase 0 command stubs return (and what an
- * unknown command maps to); it drives the "not available yet" fallbacks. UNKNOWN is
- * the catch-all for anything unrecognised.
+ * unknown command maps to); it drives the "not available yet" fallbacks.
+ * CONFIG_UNSUPPORTED is the config engine's `CONFIG` error: the board cannot take part
+ * of the setup, in the MVP mostly the receiver (an SPI protocol other than ExpressLRS,
+ * or no onboard SPI receiver, ARCHITECTURE §5.1). UNKNOWN is the catch-all.
  */
-export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "UNKNOWN"] as const;
+export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "UNKNOWN"] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 export type ErrorCode = DesignErrorCode | UiOnlyCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES];
 
-/** Phase 0 error.rs codes -> DESIGN.md §6 codes. TODO(shared): drop once error.rs sends UiError. */
+/** error.rs codes -> DESIGN.md §6 / UI codes. UNSUPPORTED_FIRMWARE and NOT_IMPLEMENTED pass through as-is. */
 export const LEGACY_CODE_ALIASES: Record<string, ErrorCode> = {
   NOT_CONNECTED: "DISCONNECTED",
   SERIAL: "SERIAL_ERROR",
@@ -69,7 +71,7 @@ export const LEGACY_CODE_ALIASES: Record<string, ErrorCode> = {
   CLI: "CLI_ERROR",
   USB: "USB_ERROR",
   FIRMWARE: "INVALID_FIRMWARE",
-  CONFIG: "INVALID_ARGUMENT",
+  CONFIG: "CONFIG_UNSUPPORTED",
   DRIVER: "DRIVER_MISSING",
   IO: "IO_ERROR",
 };

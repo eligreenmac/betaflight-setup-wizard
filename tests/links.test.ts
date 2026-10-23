@@ -4,7 +4,7 @@ import { isAllowedUrl, openBackupsFolder, openExternal, setLinkRuntime } from ".
 
 afterEach(() => setLinkRuntime(null));
 
-describe("links (opener plugin optional)", () => {
+describe("links (@tauri-apps/plugin-opener)", () => {
   it("only the scoped hosts are allowed", () => {
     expect(isAllowedUrl("https://betaflight.com/docs/wiki")).toBe(true);
     expect(isAllowedUrl("https://github.com/betaflight/betaflight/issues")).toBe(true);
@@ -13,21 +13,21 @@ describe("links (opener plugin optional)", () => {
     expect(isAllowedUrl("https://betaflight.com.evil.example/")).toBe(false);
   });
 
-  it("in the app, uses plugin:opener|open_url", async () => {
-    const calls: [string, unknown][] = [];
-    setLinkRuntime({ inApp: () => true, invoke: async (c, a) => void calls.push([c, a]) });
+  it("in the app, uses the opener plugin's openUrl", async () => {
+    const calls: string[] = [];
+    setLinkRuntime({ inApp: () => true, openUrl: async (u) => void calls.push(u) });
     expect(await openExternal("https://betaflight.com/")).toEqual({ opened: true, target: "https://betaflight.com/" });
-    expect(calls).toEqual([["plugin:opener|open_url", { url: "https://betaflight.com/" }]]);
+    expect(calls).toEqual(["https://betaflight.com/"]);
   });
 
-  it("falls back to showing the link when the plugin/capability is missing", async () => {
-    setLinkRuntime({ inApp: () => true, invoke: async () => Promise.reject("plugin opener not found") });
+  it("falls back to showing the link when opening fails", async () => {
+    setLinkRuntime({ inApp: () => true, openUrl: async () => Promise.reject("not allowed") });
     expect(await openExternal("https://betaflight.com/")).toEqual({ opened: false, target: "https://betaflight.com/" });
   });
 
   it("never opens a URL outside the scope", async () => {
     const calls: string[] = [];
-    setLinkRuntime({ inApp: () => true, invoke: async (c) => void calls.push(c) });
+    setLinkRuntime({ inApp: () => true, openUrl: async (u) => void calls.push(u) });
     expect((await openExternal("https://example.com/")).opened).toBe(false);
     expect(calls).toEqual([]);
   });
@@ -37,5 +37,18 @@ describe("links (opener plugin optional)", () => {
     const r = await openBackupsFolder("abc");
     expect(r.opened).toBe(false);
     expect(r.target).toMatch(/backups\\abc$/);
+  });
+
+  it("opens <config_backups_dir>/<boardUid> in the app", async () => {
+    const opened: string[] = [];
+    setLinkRuntime({
+      inApp: () => true,
+      backupsDir: async () => "C:\\Users\\p\\AppData\\Roaming\\io.github.eligreenmac.bfsw\\backups",
+      join: async (...p) => p.join("\\"),
+      openPath: async (p) => void opened.push(p),
+    });
+    const r = await openBackupsFolder("uid1");
+    expect(r).toEqual({ opened: true, target: opened[0] });
+    expect(opened[0]).toMatch(/bfsw\\backups\\uid1$/);
   });
 });

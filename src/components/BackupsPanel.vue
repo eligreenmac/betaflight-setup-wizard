@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
-// U6: list backups, open the backups folder, restore one (config_rollback) after confirmation.
+// U6: list this board's backups, open the backups folder, restore one (config_restore) after confirmation.
 import { onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { openBackupsFolder } from "../api/links";
@@ -23,7 +23,7 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
   try {
-    const r = await listBackups(wizard.ui.sessionBackups);
+    const r = await listBackups(wizard.fc?.uid, wizard.ui.sessionBackups);
     backups.value = r.backups;
     source.value = r.source;
   } catch (e) {
@@ -43,9 +43,12 @@ async function restore(b: Backup): Promise<void> {
   error.value = null;
   try {
     const res = await restoreBackup(b);
+    // The backend takes a safety backup before restoring.
+    if (res.result.backup) wizard.ui.sessionBackups.unshift(res.result.backup);
     if (wizard.fc) setBoard(wizard, wizard.fc, res.ports, wizard.connectedPath);
     restored.value = b;
     confirming.value = null;
+    void load();
   } catch (e) {
     error.value = e;
   } finally {
@@ -77,10 +80,10 @@ defineExpose({ load });
     <p v-if="loading" class="hint">{{ t("backups.loading") }}</p>
     <p v-else-if="!backups.length" class="hint">{{ t("backups.none") }}</p>
     <ul v-else>
-      <li v-for="b in backups" :key="b.path">
+      <li v-for="b in backups" :key="b.id">
         <span>{{ t("backups.item", { board: b.boardName, version: b.firmwareVersion, date: when(b.createdAt) }) }}</span>
         <button
-          v-if="canRestoreOnto(b, wizard.fc?.boardName)"
+          v-if="canRestoreOnto(b, wizard.fc?.uid)"
           type="button"
           class="btn btn--small"
           :disabled="restoring"

@@ -1,30 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-/** Backup listing and restore (config_rollback). */
+/** Backup listing (config_list_backups) and restore (config_restore). */
 import { api } from "../api/commands";
-import { upcoming } from "../api/upcoming";
 import { isNotImplemented, uiError } from "../errors/codes";
 import type { ApplyResult, Backup, FcSerialPort } from "../types/model";
 
 export interface BackupList {
   backups: Backup[];
-  /** "backend" = config_list_backups; "session" = only backups made in this session (TODO(shared)). */
+  /** "backend" = config_list_backups; "session" = only backups made in this session (older backend). */
   source: "backend" | "session";
 }
 
 const newestFirst = (a: Backup, b: Backup) => b.createdAt.localeCompare(a.createdAt);
 
-export async function listBackups(sessionBackups: Backup[]): Promise<BackupList> {
+/** Backups of the connected board only (matched by boardUid), newest first. */
+export async function listBackups(boardUid: string | null | undefined, sessionBackups: Backup[]): Promise<BackupList> {
+  const mine = (list: Backup[]) => (boardUid ? list.filter((b) => b.boardUid === boardUid) : []).sort(newestFirst);
   try {
-    return { backups: [...(await upcoming.configListBackups())].sort(newestFirst), source: "backend" };
+    return { backups: mine([...(await api.config.listBackups())]), source: "backend" };
   } catch (e) {
     if (!isNotImplemented(e)) throw e;
-    return { backups: [...sessionBackups].sort(newestFirst), source: "session" };
+    return { backups: mine([...sessionBackups]), source: "session" };
   }
 }
 
-/** A backup may only be restored onto the board it came from. */
-export function canRestoreOnto(backup: Backup, boardName: string | null | undefined): boolean {
-  return !!boardName && backup.boardName === boardName;
+/** A backup may only be restored onto the board it came from (same UID). */
+export function canRestoreOnto(backup: Backup, boardUid: string | null | undefined): boolean {
+  return !!boardUid && backup.boardUid === boardUid;
 }
 
 export interface RestoreResult {
@@ -32,10 +33,14 @@ export interface RestoreResult {
   ports: FcSerialPort[];
 }
 
-/** Restore, then re-read the ports so the wizard reflects the restored board. */
+/**
+ * Restore by id; the backend takes a safety backup first and refuses another firmware
+ * line. Then re-read the ports so the wizard reflects the restored board.
+ */
 export async function restoreBackup(backup: Backup): Promise<RestoreResult> {
-  const result = await api.config.rollback(backup);
+  const result = await api.config.restore(backup.id);
   if (result.errors.length > 0) throw uiError("CLI_ERROR", result.errors.map((e) => `${e.command}: ${e.response}`).join("\n"));
+  if (!result.saved) throw uiError("CLI_ERROR", "restore was not saved");
   const ports = await api.config.readPorts();
   return { result, ports };
 }

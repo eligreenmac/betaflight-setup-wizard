@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
-// U6: read-only plan (config_plan, falling back to config_generate), clearings first.
+// U6: read-only plan (config_plan), cleared ports first. Without config_plan only a
+// config_generate preview is shown and Apply stays blocked (ARCHITECTURE §5.1).
 import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import ErrorPanel from "../../components/ErrorPanel.vue";
-import { planToScript, type ConfigPlan } from "../../api/upcoming";
+import type { CliScript } from "../../types/model";
+import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
 import { modeKeyOf } from "../switches";
@@ -12,8 +14,8 @@ import { wizard } from "../state";
 
 defineProps<{ stepId: string }>();
 const { t } = useI18n();
-const plan = ref<ConfigPlan | null>(null);
-const source = ref<"backend" | "wizard">("backend");
+const plan = ref<CliScript | null>(null);
+const previewOnly = ref(false);
 const error = ref<unknown>(null);
 const loading = ref(false);
 const m = computed(() => wizard.model);
@@ -22,11 +24,20 @@ async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
   wizard.ui.script = null;
+  wizard.ui.planUnavailable = false;
+  plan.value = null;
   try {
-    const r = await fetchPlan(wizard.model, wizard.ports, wizard.ui);
-    plan.value = r.plan;
-    source.value = r.source;
-    wizard.ui.script = planToScript(r.plan);
+    const r = await fetchPlan(wizard.model, wizard.ports);
+    if (r.status === "ready") {
+      plan.value = r.script;
+      previewOnly.value = false;
+      // Apply sends exactly this script.
+      wizard.ui.script = r.script;
+    } else {
+      plan.value = r.preview;
+      previewOnly.value = true;
+      wizard.ui.planUnavailable = true;
+    }
   } catch (e) {
     error.value = e;
   } finally {
@@ -54,15 +65,21 @@ const rows = computed(() => {
     <h2>{{ t("steps.review.title") }}</h2>
     <p class="lead">{{ t("steps.review.description") }}</p>
     <p v-if="loading" class="hint">{{ t("review.loading") }}</p>
-    <ErrorPanel v-if="error" :error="error" @action="load" />
+    <ErrorPanel v-if="error" :error="error" @action="(id) => (id === 'editComponents' ? goTo('components') : load())" />
+
+    <div v-if="previewOnly" class="callout callout--danger" data-test="plan-unavailable">
+      <strong>{{ t("review.planUnavailableTitle") }}</strong>
+      <p>{{ t("review.planUnavailableBody") }}</p>
+    </div>
 
     <template v-if="plan">
       <section class="callout callout--warn" data-test="clearings">
         <h3>{{ t("review.clearingsTitle") }}</h3>
-        <p v-if="!plan.clearings.length">{{ t("review.noClearings") }}</p>
+        <p v-if="previewOnly">{{ t("review.clearingsUnknown") }}</p>
+        <p v-else-if="!plan.cleared.length">{{ t("review.noClearings") }}</p>
         <ul v-else>
-          <li v-for="c in plan.clearings" :key="c.port">
-            {{ t("review.clearing", { port: c.port, roles: c.roles.map((r) => t(`planRoles.${r}`)).join(", ") }) }}
+          <li v-for="c in plan.cleared" :key="c.port">
+            {{ t("review.clearing", { port: c.port, functions: c.functions.map((f) => t(`serialFunctions.${f}`)).join(", ") }) }}
           </li>
         </ul>
         <p class="hint">{{ t("review.clearingsHint") }}</p>
@@ -82,7 +99,6 @@ const rows = computed(() => {
         <summary>{{ t("review.commands", { n: plan.commands.length }) }}</summary>
         <pre dir="ltr" data-test="cli">{{ plan.commands.join("\n") }}</pre>
       </details>
-      <p v-if="source === 'wizard'" class="hint" data-test="plan-fallback">{{ t("review.fallbackNote") }}</p>
       <p class="hint">{{ t("review.nothingWritten") }}</p>
     </template>
   </div>

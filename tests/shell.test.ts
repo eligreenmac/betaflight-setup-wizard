@@ -150,24 +150,43 @@ describe("steps", () => {
     expect(w!.find('[data-test="motor-test-unavailable"]').exists()).toBe(true);
   });
 
-  it("review lists clearings first, then apply verifies", async () => {
+  it("review lists cleared ports first, then apply sends exactly the config_plan script and verifies", async () => {
     await boot();
     await toComponents();
     nav.currentId = "review";
     await settle();
     const html = w!.html();
     expect(w!.find('[data-test="clearings"]').exists()).toBe(true);
+    expect(w!.get('[data-test="clearings"]').text()).toContain("UART2: remove receiver");
     expect(html.indexOf('data-test="clearings"')).toBeLessThan(html.indexOf('data-test="cli"'));
     expect(wizard.ui.script).not.toBeNull();
+    const planned = wizard.ui.script;
     await next();
     expect(nav.currentId).toBe("apply");
+    expect(wizard.ui.script).toBe(planned);
     await w!.get('[data-test="apply"]').trigger("click");
     await settle();
     expect(wizard.ui.applyStatus).toBe("verified");
+    expect(wizard.ui.applyResult).toMatchObject({ applied: planned!.commands.length, reconnected: true });
+    expect(wizard.ui.sessionBackups[0]).toEqual(wizard.ui.applyResult!.backup);
     expect(w!.find('[data-test="verified"]').exists()).toBe(true);
   });
 
-  it("apply shows a mismatch table with key / expected / actual", async () => {
+  it("review without config_plan shows only a preview and blocks Apply", async () => {
+    await boot("legacy-backend");
+    await toComponents();
+    nav.currentId = "review";
+    await settle();
+    expect(w!.find('[data-test="plan-unavailable"]').exists()).toBe(true);
+    expect(w!.find('[data-test="cli"]').exists()).toBe(true); // config_generate preview
+    expect(wizard.ui.script).toBeNull();
+    expect(wizard.ui.planUnavailable).toBe(true);
+    await next();
+    expect(nav.currentId).toBe("review");
+    expect(w!.text()).toContain("This app version cannot apply settings yet");
+  });
+
+  it("apply shows a mismatch table with setting / expected / actual", async () => {
     await boot("verify-mismatch");
     await toComponents();
     nav.currentId = "review";

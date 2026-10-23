@@ -3,9 +3,9 @@
 // U6: apply (BACKUP/SENDING/SAVING/REBOOTING/RECONNECTED) then verify; mismatches as a table.
 import { computed, onBeforeUnmount, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { api } from "../../api/commands";
+import { api, EVENTS } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
-import { APPLY_STAGES, normalizeVerify, UPCOMING_EVENTS, type ApplyStage } from "../../api/upcoming";
+import { APPLY_STAGES } from "../plan";
 import BackupsPanel from "../../components/BackupsPanel.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import StageList from "../../components/StageList.vue";
@@ -28,22 +28,24 @@ async function apply(): Promise<void> {
   wizard.ui.verify = null;
   wizard.ui.applyStatus = "applying";
   off?.();
-  off = await onEvent(UPCOMING_EVENTS.applyProgress, (p) => {
-    stage.value = APPLY_STAGES.indexOf(p.stage as ApplyStage);
+  off = await onEvent(EVENTS.configProgress, (p) => {
+    stage.value = APPLY_STAGES.indexOf(p.stage);
     fraction.value = p.fraction;
   });
   try {
+    // Exactly the config_plan script from Review (never a config_generate preview).
     const res = await api.config.apply(wizard.ui.script);
     wizard.ui.applyResult = res;
+    if (res.backup && !wizard.ui.sessionBackups.some((b) => b.id === res.backup!.id)) wizard.ui.sessionBackups.unshift(res.backup);
     stage.value = APPLY_STAGES.length;
     if (res.errors.length || !res.saved) {
       wizard.ui.applyStatus = "failed";
       return;
     }
     wizard.ui.applyStatus = "verifying";
-    const v = normalizeVerify(await api.config.verify(wizard.model));
+    const v = await api.config.verify(wizard.model);
     wizard.ui.verify = v;
-    wizard.ui.applyStatus = v.ok ? "verified" : "mismatch";
+    wizard.ui.applyStatus = v.ok && v.mismatches.length === 0 ? "verified" : "mismatch";
   } catch (e) {
     error.value = e;
     wizard.ui.applyStatus = "failed";
@@ -77,6 +79,9 @@ onBeforeUnmount(() => off?.());
         <button v-if="ui.applyStatus === 'idle'" type="button" class="btn btn--primary" data-test="apply" @click="apply">{{ t("apply.apply") }}</button>
       </div>
 
+      <p v-if="ui.applyResult && ui.applyResult.saved && !ui.applyResult.reconnected" class="callout callout--warn" data-test="not-reconnected">
+        {{ t("apply.notReconnected") }}
+      </p>
       <div v-if="ui.applyStatus === 'verified'" class="callout callout--ok" data-test="verified">
         <strong>{{ t("apply.verified") }}</strong>
         <p>{{ t("apply.verifiedBody", { n: ui.applyResult?.applied ?? 0 }) }}</p>
@@ -86,9 +91,9 @@ onBeforeUnmount(() => off?.());
         <h3>{{ t("apply.mismatch.title") }}</h3>
         <p>{{ t("apply.mismatch.body") }}</p>
         <table class="table">
-          <thead><tr><th>{{ t("apply.mismatch.key") }}</th><th>{{ t("apply.mismatch.expected") }}</th><th>{{ t("apply.mismatch.actual") }}</th></tr></thead>
+          <thead><tr><th>{{ t("apply.mismatch.setting") }}</th><th>{{ t("apply.mismatch.expected") }}</th><th>{{ t("apply.mismatch.actual") }}</th></tr></thead>
           <tbody>
-            <tr v-for="mm in ui.verify.mismatches" :key="mm.key"><td dir="ltr">{{ mm.key }}</td><td dir="ltr">{{ mm.expected }}</td><td dir="ltr">{{ mm.actual }}</td></tr>
+            <tr v-for="mm in ui.verify.mismatches" :key="mm.setting"><td dir="ltr">{{ mm.setting }}</td><td dir="ltr">{{ mm.expected }}</td><td dir="ltr">{{ mm.actual }}</td></tr>
           </tbody>
         </table>
         <ol>

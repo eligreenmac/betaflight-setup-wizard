@@ -18,14 +18,18 @@ export function hasOnboardElrs(fc: FcInfo | null): boolean {
   return !!fc && fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
 }
 
-/** Protocols where the wizard asks "send telemetry back to the radio?" (default yes). */
-export const TELEMETRY_QUESTION_PROTOCOLS: RxProtocol[] = ["CRSF", "FPORT"];
+/**
+ * Protocols where the wizard asks "send telemetry back to the radio?" (default yes).
+ * Same set the config engine sets telemetry for (ARCHITECTURE §5.1): CRSF, FPORT and
+ * onboard SPI ExpressLRS (receiver kind SPI, protocol EXPRESSLRS).
+ */
+export const TELEMETRY_QUESTION_PROTOCOLS: RxProtocol[] = ["CRSF", "FPORT", "EXPRESSLRS"];
 
 export function asksTelemetry(p: RxProtocol | null): boolean {
   return !!p && TELEMETRY_QUESTION_PROTOCOLS.includes(p);
 }
 
-/** Default telemetry answer: yes where we ask (and for onboard ELRS), otherwise off. */
+/** Default telemetry answer: yes where we ask, otherwise off (ignored by the engine). */
 export function defaultTelemetry(p: RxProtocol): boolean {
-  return asksTelemetry(p) || p === "EXPRESSLRS";
+  return asksTelemetry(p);
 }

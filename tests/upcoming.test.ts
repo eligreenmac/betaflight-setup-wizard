@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { afterEach, describe, expect, it } from "vitest";
-import { api } from "../src/api/commands";
+import { api, EVENTS } from "../src/api/commands";
 import { onEvent } from "../src/api/events";
-import { normalizeVerify, toNotImplemented, upcoming, type ApplyProgress } from "../src/api/upcoming";
+import { toNotImplemented, upcoming } from "../src/api/upcoming";
+import { toUiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
-import { emptyDroneModel, type VerifyReport } from "../src/types/model";
+import { emptyDroneModel, type ConfigStage } from "../src/types/model";
 
 afterEach(() => uninstallMock());
 
@@ -13,14 +14,6 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
     expect(toNotImplemented("motor_test_start", "Command motor_test_start not found")).toMatchObject({ code: "NOT_IMPLEMENTED" });
     const appErr = { code: "SERIAL", message: "x" };
     expect(toNotImplemented("motor_test_start", appErr)).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
-  });
-
-  it("normalises verify mismatches from both the agreed {key} and current {setting} shapes", () => {
-    const agreed = { ok: false, mismatches: [{ key: "gps_provider", expected: "UBLOX", actual: "NMEA" }] } as unknown as VerifyReport;
-    const current: VerifyReport = { ok: false, mismatches: [{ setting: "motor_pwm_protocol", expected: "DSHOT600", actual: "DSHOT300" }] };
-    expect(normalizeVerify(agreed).mismatches[0]).toEqual({ key: "gps_provider", expected: "UBLOX", actual: "NMEA" });
-    expect(normalizeVerify(current).mismatches[0]!.key).toBe("motor_pwm_protocol");
-    expect(normalizeVerify({ ok: true, mismatches: [] }).ok).toBe(true);
   });
 
   it("motor test and RC stream work against the mock; legacy backend reports NOT_IMPLEMENTED", async () => {
@@ -44,14 +37,14 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
     await expect(upcoming.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
   });
 
-  it("config_apply emits the agreed stages in order before resolving", async () => {
+  it("config_apply emits config://progress stages in order and returns its backup", async () => {
     installMock({ latencyMs: 0 });
-    const seen: ApplyProgress["stage"][] = [];
-    await onEvent("config://apply-progress", (p) => seen.push(p.stage));
-    const ports = await api.config.readPorts();
-    const script = await api.config.generate(emptyDroneModel(), ports);
+    const seen: ConfigStage[] = [];
+    await onEvent(EVENTS.configProgress, (p) => seen.push(p.stage));
+    const script = await api.config.plan(emptyDroneModel());
     const res = await api.config.apply(script);
-    expect(res.saved).toBe(true);
+    expect(res).toMatchObject({ saved: true, reconnected: true, errors: [] });
+    expect(res.backup).toMatchObject({ boardUid: "3a0021000c51333038363834" });
     expect(seen).toEqual(["BACKUP", "SENDING", "SAVING", "REBOOTING", "RECONNECTED"]);
   });
 
@@ -107,41 +100,59 @@ describe("flash verify mismatch (DESIGN.md §6)", () => {
   });
 });
 
-describe("review plan, backups and rollback", () => {
-  it("uses config_plan when present, else falls back to generate + UI clearings", async () => {
+describe("review plan, backups and restore", () => {
+  it("uses config_plan's script (cleared ports first); without config_plan only a preview, apply blocked", async () => {
     const { fetchPlan } = await import("../src/wizard/plan");
     const m = emptyDroneModel(); // nothing selected: UART2 (RX) and UART3 (VTX) get cleared
     installMock({ latencyMs: 0 });
     const ports = await api.config.readPorts();
-    const a = await fetchPlan(m, ports, { escTelemetry: false });
-    expect(a.source).toBe("backend");
-    expect(a.plan.clearings).toEqual([
-      { port: "UART2", roles: ["RX"] },
-      { port: "UART3", roles: ["VTX"] },
+    const a = await fetchPlan(m, ports);
+    expect(a.status).toBe("ready");
+    if (a.status !== "ready") return;
+    expect(a.script.cleared).toEqual([
+      { port: "UART2", functions: ["RX_SERIAL"], functionMaskBefore: 64, functionMaskAfter: 0 },
+      // old MSP DisplayPort port (exactly MSP|VTX_MSP): MSP goes too (ARCHITECTURE §5.1)
+      { port: "UART3", functions: ["MSP", "VTX_MSP"], functionMaskBefore: 1 | (1 << 17), functionMaskAfter: 0 },
     ]);
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "legacy-backend" });
-    const b = await fetchPlan(m, ports, { escTelemetry: false });
-    expect(b.source).toBe("wizard");
-    expect(b.plan.clearings).toEqual(a.plan.clearings);
-    expect(b.plan.commands).toEqual(a.plan.commands);
+    const b = await fetchPlan(m, ports);
+    expect(b.status).toBe("unavailable");
+    expect(b.status === "unavailable" && b.preview?.commands).toEqual(a.script.commands);
   });
 
-  it("lists backups (backend or session fallback) and restores one with config_rollback", async () => {
+  it("an unsupported receiver comes back as CONFIG and maps to CONFIG_UNSUPPORTED", async () => {
+    const { fetchPlan } = await import("../src/wizard/plan");
+    installMock({ latencyMs: 0 });
+    const m = emptyDroneModel();
+    m.receiver = { ...m.receiver, kind: "SPI", protocol: "FRSKY_X" };
+    const e = await fetchPlan(m, []).catch((x: unknown) => x);
+    expect(e).toMatchObject({ code: "CONFIG" }); // as error.rs sends it
+    expect(toUiError(e).code).toBe("CONFIG_UNSUPPORTED");
+  });
+
+  it("lists this board's backups (backend or session fallback) and restores one with config_restore", async () => {
     const { listBackups, restoreBackup, canRestoreOnto } = await import("../src/wizard/backups");
+    const UID = "3a0021000c51333038363834";
     const mock = installMock({ latencyMs: 0 });
     const before = await api.config.backup();
+    expect(before).toMatchObject({ boardUid: UID });
+    expect(before.id).toBeTruthy();
+    mock.device.backups.push({ backup: { ...before, id: "other/1", boardUid: "other" }, ports: [] });
     mock.device.ports.find((p) => p.name === "UART2")!.functionMask = 0;
-    const list = await listBackups([]);
+    const list = await listBackups(UID, []);
     expect(list.source).toBe("backend");
-    expect(list.backups[0]).toEqual(before);
-    expect(canRestoreOnto(before, "SPEEDYBEEF405V4")).toBe(true);
-    expect(canRestoreOnto(before, "MATEKH743")).toBe(false);
+    expect(list.backups).toEqual([before]); // other board filtered out
+    expect(await listBackups(null, [])).toMatchObject({ backups: [] });
+    expect(canRestoreOnto(before, UID)).toBe(true);
+    expect(canRestoreOnto(before, "other")).toBe(false);
     const res = await restoreBackup(before);
+    expect(res.result.backup).not.toBeNull(); // safety backup first
     expect(res.ports.find((p) => p.name === "UART2")!.functionMask).not.toBe(0);
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "legacy-backend" });
-    expect((await listBackups([before])).source).toBe("session");
+    expect(await listBackups(UID, [before])).toEqual({ backups: [before], source: "session" });
+    await expect(restoreBackup(before)).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "rollback-fail" });
     await expect(restoreBackup(before)).rejects.toMatchObject({ code: "CLI_ERROR", category: "Protocol" });

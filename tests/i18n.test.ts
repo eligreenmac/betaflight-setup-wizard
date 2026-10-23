@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { APPLY_STAGES, PLAN_ROLES } from "../src/api/upcoming";
+import { APPLY_STAGES, SERIAL_FUNCTIONS } from "../src/wizard/plan";
 import { ALL_ERROR_CODES } from "../src/errors/codes";
 import { guidanceFor } from "../src/errors/guidance";
 import { isRtl } from "../src/i18n";
@@ -83,7 +83,7 @@ describe("i18n", () => {
       ...["DOWNLOADING", "ENTERING_BOOTLOADER", "WAITING_FOR_DEVICE", "ERASING", "WRITING", "VERIFYING", "REBOOTING", "DONE", "FAILED"].map((s) => `firmware.flashStage.${s}`),
       ...PORT_ROLES.flatMap((r) => [`roles.${r}`, `ports.question.${r}`, `ports.wiring.${r}`]),
       ...["reserved_usb", "softserial_mvp", "assigned_elsewhere", "in_use"].map((r) => `ports.reason.${r}`),
-      ...PLAN_ROLES.map((r) => `planRoles.${r}`),
+      ...SERIAL_FUNCTIONS.map((f) => `serialFunctions.${f}`),
       ...MODE_KEYS.map((m) => `switches.modes.${m}`),
       ...Object.keys(SWITCH_POSITIONS).map((p) => `switches.positions.${p}`),
       ...[...SERIAL_RX_PROTOCOLS, ...SPI_RX_PROTOCOLS].map((p) => `receiver.protocols.${p}`),
