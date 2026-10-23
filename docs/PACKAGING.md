@@ -35,7 +35,9 @@ Windows binds nothing to these IDs by itself:
 - **Helper** = libwdi's unmodified `wdi-simple` example, v1.5.1 (commit pinned), built
   by `.github/actions/build-wdi-simple` on `windows-latest` with MSVC exactly like
   libwdi's own VS2022 CI (WDK 8.0 redistributable for the WinUSB co-installers),
-  WinUSB-only (libusb-win32/libusbK payloads disabled). The result is cached by commit.
+  WinUSB-only (libusb-win32/libusbK payloads disabled) and x86/x64-only (ARM64 installer
+  disabled: hosted runners lack the v143 ARM64 tools and the app ships x64 only). The
+  result is cached by commit.
   Command line: `--vid 0x0483 --pid 0xDF11 --type 0 --name "... (Betaflight Setup
   Wizard)" --inf bfsw_0483_df11.inf --dest %TEMP%\bfsw-winusb\0483_df11 --silent
   --timeout 120000`.

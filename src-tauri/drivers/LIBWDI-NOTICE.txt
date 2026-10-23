@@ -11,8 +11,10 @@ built WITHOUT modification (WinUSB driver support only) from:
   License : GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later)
             - full texts: COPYING.LGPL-3.0.txt and COPYING.GPL-3.0.txt
 
-The only build-time change is configuration: the libusb-win32 and libusbK
-driver payloads are disabled in msvc/config.h so that only WinUSB is embedded.
+The only build-time changes are configuration: the libusb-win32 and libusbK
+driver payloads are disabled in msvc/config.h so that only WinUSB is embedded,
+and ARM64 support (OPT_ARM, plus the installer_arm64 project reference in
+libwdi/.msvc/libwdi_static.vcxproj) is disabled so only x86/x64 are built.
 The exact build recipe is .github/actions/build-wdi-simple/action.yml in the
 Betaflight Setup Wizard repository:
   https://github.com/eligreenmac/betaflight-setup-wizard
