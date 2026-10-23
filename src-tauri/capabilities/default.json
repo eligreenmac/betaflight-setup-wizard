@@ -2,6 +2,35 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for the main window",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "https://betaflight.com/*"
+        },
+        {
+          "url": "https://github.com/betaflight/*"
+        },
+        {
+          "url": "https://github.com/eligreenmac/betaflight-setup-wizard/*"
+        }
+      ]
+    },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$APPDATA/backups"
+        },
+        {
+          "path": "$APPDATA/backups/**"
+        }
+      ]
+    }
+  ]
 }
