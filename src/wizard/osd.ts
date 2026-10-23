@@ -66,10 +66,17 @@ export function systemFromVtx(vtx: { kind: VtxKind; protocol?: string | null; di
   return null;
 }
 
-/** Build options that mean the firmware has an HD (MSP DisplayPort) OSD. */
-const HD_OSD_OPTIONS = ["USE_OSD_HD", "USE_MSP_DISPLAYPORT", "OSD_HD", "MSP_DISPLAYPORT"];
-/** Build options that show the OSD was chosen at build time (so a missing HD option is meaningful). */
-const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
+/**
+ * Build options (MSP_BUILD_INFO names, filled on 4.5+, Device #75) that mean the firmware has
+ * an HD OSD: only USE_OSD_HD (16417). Without it io/displayport_msp.c forces HD -> AUTO.
+ */
+const HD_OSD_OPTIONS = ["USE_OSD_HD", "OSD_HD"];
+/**
+ * Build options that show an OSD was built in, so a missing USE_OSD_HD means "no HD".
+ * USE_MSP_DISPLAYPORT is here, not above: target/common_pre.h defines it for every USE_OSD
+ * build, SD-only (USE_OSD_SD, 16416) included.
+ */
+const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "USE_MSP_DISPLAYPORT", "OSD", "OSD_SD", "MSP_DISPLAYPORT"];
 
 /**
  * The FC fields the HD gate reads. `hdOsdSupported` is Device's shared field

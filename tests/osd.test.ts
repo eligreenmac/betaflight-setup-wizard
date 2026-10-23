@@ -57,6 +57,8 @@ async function choose(): Promise<void> {
   await w!.get('[data-osd-mode="choose"]').setValue(true);
   await settle();
 }
+/** Typical 4.5 cloud-build options without the OSD ones (names from MSP_BUILD_INFO, Device #75). */
+const REAL_45 = ["USE_SERIALRX_CRSF", "USE_SERIALRX_GHST", "USE_SERIALRX_SBUS", "USE_DSHOT", "USE_ACRO_TRAINER", "USE_AKK_SMARTAUDIO", "USE_BATTERY_CONTINUE", "USE_GPS", "USE_LED_STRIP", "USE_MAG", "USE_PINIO", "USE_VTX", "USE_SOFTSERIAL", "USE_TELEMETRY_SMARTPORT"];
 // TODO(shared): FcInfo.hdOsdSupported is not in src/types/model.ts yet.
 const fcHd = () => (wizard.fc as { hdOsdSupported?: boolean | null } | null)?.hdOsdSupported;
 const previewNames = () => w!.findAll("[data-preview]").map((e) => e.attributes("data-preview"));
@@ -113,11 +115,24 @@ describe("video system", () => {
 describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
   it("hdOsdSupport: HD option = yes; OSD options without HD = no; nothing about the OSD = unknown", () => {
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD", "USE_OSD_SD"] })).toBe(true);
-    expect(hdOsdSupport({ buildOptions: ["use_msp_displayport"] })).toBe(true);
+    // USE_MSP_DISPLAYPORT is in every OSD build (SD-only too): it proves an OSD, not HD.
+    expect(hdOsdSupport({ buildOptions: ["use_msp_displayport"] })).toBe(false);
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD", "CRSF"] })).toBe(false);
     expect(hdOsdSupport({ buildOptions: ["CRSF", "GPS"] })).toBeNull();
     expect(hdOsdSupport({ buildOptions: [] })).toBeNull();
     expect(hdOsdSupport(null)).toBeNull();
+  });
+
+  it("hdOsdSupport: realistic Betaflight 4.5 MSP_BUILD_INFO lists (Device #75 names)", () => {
+    const base = REAL_45;
+    expect(hdOsdSupport({ buildOptions: [...base, "USE_OSD_SD", "USE_OSD_HD"] })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: [...base, "USE_OSD_HD"] })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: [...base, "USE_OSD_SD"] })).toBe(false);
+    // No OSD option at all: unknown here (Device decides those with MSP_OSD_CANVAS).
+    expect(hdOsdSupport({ buildOptions: base })).toBeNull();
+    // The field wins over the list; null falls back to it.
+    expect(hdOsdSupport({ buildOptions: [...base, "USE_OSD_SD"], hdOsdSupported: true })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: [...base, "USE_OSD_HD"], hdOsdSupported: null })).toBe(true);
   });
 
   it("hdOsdSupport: FcInfo.hdOsdSupported (TODO(shared)) wins when it is a boolean; null / missing / junk = build options", () => {
