@@ -7,7 +7,7 @@ import { validateSwitches } from "../src/wizard/guards";
 import { createWizardState, setBoard } from "../src/wizard/state";
 import type { FcInfo } from "../src/types/model";
 
-const fc = (firmwareVersion: string): FcInfo => ({ fcVariant: "BTFL", firmwareVersion, apiVersion: "1.46", boardName: "X", manufacturerId: null, mcu: null, uid: null, buildOptions: [], serialPorts: [], rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] } });
+const fc = (firmwareVersion: string): FcInfo => ({ fcVariant: "BTFL", firmwareVersion, apiVersion: "1.46", boardName: "X", manufacturerId: null, mcu: null, uid: null, buildOptions: [], hdOsdSupported: null, serialPorts: [], rxSpi: { present: null, expresslrsPins: false, protocol: null, featureEnabled: null, resources: [] } });
 
 describe("mode names: stable in the model, labels by firmware", () => {
   it("the model only ever holds the stable config::modes names", () => {

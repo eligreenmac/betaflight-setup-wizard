@@ -1560,6 +1560,7 @@ pub fn fc_info(id: &FcIdentity) -> FcInfo {
         mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
         uid: id.uid.map(|u| u.mcu_id()),
         build_options: Vec::new(),
+        hd_osd_supported: None,
         serial_ports,
         rx_spi: RxSpiInfo {
             present: r.has_rx_spi,

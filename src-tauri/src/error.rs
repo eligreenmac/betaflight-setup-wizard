@@ -2,7 +2,8 @@
 //! `{ "code": "...", "message": "...", "details"?: {...} }`.
 //! `details` is present only for codes that carry structured data (see
 //! docs/ARCHITECTURE.md §2.3): `PORT_BUSY`, `DRIVER_MISSING`, `ACC_NOT_AVAILABLE`,
-//! `BOARD_MOVING`, `PENDING_UNSAVED_CHANGES`, and `CONFIG` when it has a machine-readable
+//! `BOARD_MOVING`, `PENDING_UNSAVED_CHANGES`, `BUILD_OPTIONS_UNAVAILABLE`,
+//! `REQUIRED_OPTION_UNSUPPORTED`, and `CONFIG` when it has a machine-readable
 //! reason ([`ConfigErrorReason`]).
 
 use serde::Serialize;
@@ -149,6 +150,18 @@ pub enum AppError {
     /// reconnect clears it.
     #[error("the flight controller may have unsaved changes ({reason}); reboot the board first")]
     PendingUnsavedChanges { reason: UnsavedChangesReason },
+    /// The Build API option list of `release` (`/api/options/{release}`) could not be fetched
+    /// (network, HTTP status, bad JSON) and there is no cached copy. Nothing was built or
+    /// flashed (a build without the board's options is never requested). Retryable.
+    #[error("the build options of firmware {release} could not be loaded: {reason}")]
+    BuildOptionsUnavailable { release: String, reason: String },
+    /// A required build option (the wizard's choice, e.g. USE_OSD_HD) is not offered by the
+    /// target release. Nothing was built or flashed.
+    #[error("firmware {release} cannot be built with {}", options.join(", "))]
+    RequiredOptionUnsupported {
+        release: String,
+        options: Vec<String>,
+    },
     /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
@@ -184,6 +197,8 @@ impl AppError {
             AppError::BoardMoving { .. } => "BOARD_MOVING",
             AppError::AccCalibrationFailed(_) => "ACC_CALIBRATION_FAILED",
             AppError::PendingUnsavedChanges { .. } => "PENDING_UNSAVED_CHANGES",
+            AppError::BuildOptionsUnavailable { .. } => "BUILD_OPTIONS_UNAVAILABLE",
+            AppError::RequiredOptionUnsupported { .. } => "REQUIRED_OPTION_UNSUPPORTED",
             AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Io(_) => "IO",
         }
@@ -217,6 +232,12 @@ impl AppError {
             })),
             AppError::PendingUnsavedChanges { reason } => {
                 Some(serde_json::json!({ "reason": reason }))
+            }
+            AppError::BuildOptionsUnavailable { release, .. } => {
+                Some(serde_json::json!({ "release": release }))
+            }
+            AppError::RequiredOptionUnsupported { release, options } => {
+                Some(serde_json::json!({ "release": release, "options": options }))
             }
             AppError::ConfigRejected { reason, .. } => {
                 Some(serde_json::json!({ "reason": reason }))
@@ -252,6 +273,28 @@ pub type AppResult<T> = Result<T, AppError>;
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn build_option_errors_carry_details() {
+        let v = serde_json::to_value(AppError::RequiredOptionUnsupported {
+            release: "4.4.3".into(),
+            options: vec!["USE_RACE_PRO".into()],
+        })
+        .unwrap();
+        assert_eq!(v["code"], "REQUIRED_OPTION_UNSUPPORTED");
+        assert_eq!(
+            v["details"],
+            json!({ "release": "4.4.3", "options": ["USE_RACE_PRO"] })
+        );
+        let v = serde_json::to_value(AppError::BuildOptionsUnavailable {
+            release: "4.5.2".into(),
+            reason: "HTTP 503".into(),
+        })
+        .unwrap();
+        assert_eq!(v["code"], "BUILD_OPTIONS_UNAVAILABLE");
+        assert_eq!(v["details"], json!({ "release": "4.5.2" }));
+        assert!(v["message"].as_str().unwrap().contains("HTTP 503"));
+    }
 
     #[test]
     fn plain_errors_have_no_details() {
@@ -401,6 +444,14 @@ mod tests {
             AppError::AccCalibrationFailed(String::new()),
             AppError::PendingUnsavedChanges {
                 reason: UnsavedChangesReason::CliCommand,
+            },
+            AppError::BuildOptionsUnavailable {
+                release: String::new(),
+                reason: String::new(),
+            },
+            AppError::RequiredOptionUnsupported {
+                release: String::new(),
+                options: vec![],
             },
             AppError::InvalidArgument(String::new()),
             AppError::Io(String::new()),
