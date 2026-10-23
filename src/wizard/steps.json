@@ -1,0 +1,20 @@
+{
+  "$comment": "Wizard flow. Order = array order. `component` is a key in src/wizard/registry.ts. `when` (optional) is a list of conditions on the DroneModel that must ALL hold for the step to be shown: { path: dotted path in DroneModel, equals | notEquals | in }.",
+  "steps": [
+    { "id": "welcome",    "titleKey": "steps.welcome.title",    "component": "Welcome" },
+    { "id": "connect",    "titleKey": "steps.connect.title",    "component": "Connect" },
+    { "id": "firmware",   "titleKey": "steps.firmware.title",   "component": "Firmware" },
+    { "id": "components", "titleKey": "steps.components.title", "component": "Components" },
+    { "id": "receiver",   "titleKey": "steps.receiver.title",   "component": "Receiver",
+      "when": [{ "path": "receiver.kind", "notEquals": "NONE" }] },
+    { "id": "vtx",        "titleKey": "steps.vtx.title",        "component": "Vtx",
+      "when": [{ "path": "vtx.kind", "notEquals": "NONE" }] },
+    { "id": "gps",        "titleKey": "steps.gps.title",        "component": "Gps",
+      "when": [{ "path": "gps.enabled", "equals": true }] },
+    { "id": "esc",        "titleKey": "steps.esc.title",        "component": "Esc" },
+    { "id": "switches",   "titleKey": "steps.switches.title",   "component": "Switches" },
+    { "id": "review",     "titleKey": "steps.review.title",     "component": "Review" },
+    { "id": "apply",      "titleKey": "steps.apply.title",      "component": "Apply" },
+    { "id": "done",       "titleKey": "steps.done.title",       "component": "Done" }
+  ]
+}

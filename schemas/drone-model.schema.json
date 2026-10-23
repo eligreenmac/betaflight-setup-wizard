@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eligreenmac/betaflight-setup-wizard/schemas/drone-model.schema.json",
+  "title": "DroneModel",
+  "description": "Firmware-version-independent description of what is connected to the flight controller. Produced by the wizard UI, consumed by the config engine. Mirrors src-tauri/src/model.rs and src/types/model.ts.",
+  "type": "object",
+  "required": ["schemaVersion", "fc", "receiver", "vtx", "gps", "esc"],
+  "additionalProperties": false,
+  "$defs": {
+    "portName": {
+      "description": "FC serial port name as reported by config_read_ports.",
+      "type": ["string", "null"],
+      "pattern": "^(UART([1-9]|1[0-5])|LPUART1|SOFTSERIAL[12])$"
+    }
+  },
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "fc": {
+      "type": "object",
+      "required": ["boardName", "firmwareVersion", "apiVersion"],
+      "additionalProperties": false,
+      "properties": {
+        "boardName": { "type": "string", "examples": ["SPEEDYBEEF405V4"] },
+        "firmwareVersion": { "type": "string", "examples": ["4.5.2", "2025.12.1"] },
+        "apiVersion": { "type": "string", "examples": ["1.46"] }
+      }
+    },
+    "receiver": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["NONE", "SERIAL", "SPI", "PPM", "MSP"] },
+        "protocol": {
+          "enum": [null, "CRSF", "GHST", "SBUS", "FPORT", "IBUS", "SRXL2", "SPEK1024", "SPEK2048", "SUMD",
+                   "EXPRESSLRS", "FRSKY_D", "FRSKY_X", "FRSKY_X_LBT"]
+        },
+        "port": { "$ref": "#/$defs/portName" },
+        "telemetry": { "type": "boolean", "default": false },
+        "inverted": { "type": "boolean", "default": false },
+        "halfDuplex": { "type": "boolean", "default": false }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "SERIAL" } } },
+          "then": { "required": ["protocol", "port"], "properties": { "port": { "type": "string" } } } }
+      ]
+    },
+    "vtx": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["NONE", "ANALOG", "DIGITAL"] },
+        "protocol": { "enum": [null, "SMARTAUDIO", "TRAMP", "MSP"] },
+        "port": { "$ref": "#/$defs/portName" },
+        "digitalSystem": { "enum": [null, "DJI", "WALKSNAIL", "HDZERO", "OTHER"] },
+        "region": { "type": ["string", "null"], "pattern": "^[A-Z]{2}$", "description": "ISO-3166 alpha-2" }
+      }
+    },
+    "gps": {
+      "type": "object",
+      "required": ["enabled"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "$ref": "#/$defs/portName" },
+        "provider": { "enum": [null, "UBLOX", "NMEA"] }
+      }
+    },
+    "esc": {
+      "type": "object",
+      "required": ["protocol"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol": { "enum": ["DSHOT150", "DSHOT300", "DSHOT600", "ONESHOT125", "MULTISHOT", "PWM"] },
+        "bidirectionalDshot": { "type": "boolean", "default": false },
+        "motorPoles": { "type": ["integer", "null"], "minimum": 4, "maximum": 64 },
+        "telemetryPort": { "$ref": "#/$defs/portName" },
+        "propsOut": { "type": "boolean", "default": false }
+      }
+    },
+    "switches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["mode", "auxChannel", "rangeMin", "rangeMax"],
+        "additionalProperties": false,
+        "properties": {
+          "mode": { "type": "string", "examples": ["ARM", "ANGLE", "BEEPER"] },
+          "auxChannel": { "type": "integer", "minimum": 0, "maximum": 13 },
+          "rangeMin": { "type": "integer", "minimum": 900, "maximum": 2100, "multipleOf": 25 },
+          "rangeMax": { "type": "integer", "minimum": 900, "maximum": 2100, "multipleOf": 25 }
+        }
+      }
+    },
+    "extras": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "beeper": { "type": ["boolean", "null"] },
+        "ledStrip": { "type": ["boolean", "null"] },
+        "craftName": { "type": ["string", "null"], "maxLength": 16 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schemaVersion": 1,
+      "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
+      "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true },
+      "vtx": { "kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI" },
+      "gps": { "enabled": true, "port": "UART4", "provider": "UBLOX" },
+      "esc": { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14, "propsOut": true },
+      "switches": [{ "mode": "ARM", "auxChannel": 0, "rangeMin": 1800, "rangeMax": 2100 }],
+      "extras": { "craftName": "QUAD" }
+    }
+  ]
+}

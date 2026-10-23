@@ -1,0 +1,51 @@
+{
+  "app": {
+    "title": "אשף התקנת Betaflight"
+  },
+  "common": {
+    "next": "הבא",
+    "back": "הקודם",
+    "language": "שפה",
+    "notImplemented": "השלב הזה עדיין לא מומש.",
+    "propsOffWarning": "הסירו את כל הפרופלורים לפני חיבור הסוללה."
+  },
+  "steps": {
+    "welcome": {
+      "title": "ברוכים הבאים",
+      "body": "האשף צורב Betaflight ומגדיר את בקר הטיסה צעד אחר צעד, בלי צורך באתר."
+    },
+    "connect": {
+      "title": "חיבור"
+    },
+    "firmware": {
+      "title": "קושחה"
+    },
+    "components": {
+      "title": "מה מחובר?"
+    },
+    "receiver": {
+      "title": "מקלט"
+    },
+    "vtx": {
+      "title": "משדר וידאו"
+    },
+    "gps": {
+      "title": "GPS"
+    },
+    "esc": {
+      "title": "בקרי מהירות ומנועים"
+    },
+    "switches": {
+      "title": "מתגים"
+    },
+    "review": {
+      "title": "סיכום"
+    },
+    "apply": {
+      "title": "החלה"
+    },
+    "done": {
+      "title": "סיום"
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "app": {
+    "title": "Betaflight Setup Wizard"
+  },
+  "common": {
+    "next": "Next",
+    "back": "Back",
+    "language": "Language",
+    "notImplemented": "This step is not implemented yet.",
+    "propsOffWarning": "Remove all propellers before connecting the battery."
+  },
+  "steps": {
+    "welcome": {
+      "title": "Welcome",
+      "body": "This wizard flashes Betaflight and configures your flight controller step by step, no website needed."
+    },
+    "connect": {
+      "title": "Connect"
+    },
+    "firmware": {
+      "title": "Firmware"
+    },
+    "components": {
+      "title": "What is connected?"
+    },
+    "receiver": {
+      "title": "Receiver"
+    },
+    "vtx": {
+      "title": "Video transmitter"
+    },
+    "gps": {
+      "title": "GPS"
+    },
+    "esc": {
+      "title": "ESC & motors"
+    },
+    "switches": {
+      "title": "Switches"
+    },
+    "review": {
+      "title": "Review"
+    },
+    "apply": {
+      "title": "Apply"
+    },
+    "done": {
+      "title": "Done"
+    }
+  }
+}

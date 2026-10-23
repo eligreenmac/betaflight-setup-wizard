@@ -1,0 +1,16 @@
+:root {
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: #1e1e1e;
+  background: #f6f6f6;
+}
+body { margin: 0; }
+.app { max-width: 960px; margin: 0 auto; padding: 24px; }
+.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.card { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.steps { display: flex; gap: 8px; flex-wrap: wrap; padding: 0; list-style: none; }
+.steps li { padding: 4px 10px; border-radius: 999px; background: #e7e7e7; font-size: 13px; }
+.steps li.active { background: #ffbb00; font-weight: 600; }
+.nav { display: flex; justify-content: space-between; margin-top: 16px; }
+button { padding: 8px 16px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+button.primary { background: #ffbb00; border-color: #e0a400; }
+.error { color: #b00020; }

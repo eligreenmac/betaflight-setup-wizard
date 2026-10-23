@@ -1,0 +1,27 @@
+[package]
+name = "betaflight-setup-wizard"
+version = "0.1.0"
+description = "Offline-first Betaflight setup wizard for Windows"
+authors = ["Betaflight Setup Wizard contributors"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eligreenmac/betaflight-setup-wizard"
+edition = "2021"
+rust-version = "1.90"
+
+[lib]
+name = "bfsw_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Workstream-specific dependencies are added by their owners, e.g.:
+#   device:  serialport
+#   flasher: rusb (or bundled dfu-util), reqwest, sha2
+#   config:  (pure Rust, no I/O deps expected)
