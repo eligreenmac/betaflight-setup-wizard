@@ -1,8 +1,27 @@
 //! Tauri commands for workstream `config`. Signatures are a contract with the UI
 //! (src/api/commands.ts, docs/ARCHITECTURE.md §3 and §5.1).
 
+use std::path::PathBuf;
+
+use tauri::{AppHandle, Manager, Runtime};
+
+use super::backup::BackupStore;
 use crate::error::{AppError, AppResult};
 use crate::model::{ApplyResult, Backup, CliScript, DroneModel, FcSerialPort, VerifyReport};
+
+// The FC-facing commands below are implemented in `super::session` (read_ports, plan,
+// backup, apply, verify, rollback) against `device::Connection`. They stay
+// NOT_IMPLEMENTED here until the device workstream exposes the active connection in
+// Tauri state; wiring them is then a one-liner each.
+
+/// `<app_data_dir>/backups`
+fn backups_root<R: Runtime>(app: &AppHandle<R>) -> AppResult<PathBuf> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Io(format!("app data dir: {e}")))?;
+    Ok(base.join("backups"))
+}
 
 /// Read the FC's serial ports (names, firmware identifiers, current functions).
 #[tauri::command]
@@ -30,8 +49,11 @@ pub async fn config_generate(model: DroneModel, ports: Vec<FcSerialPort>) -> App
 /// the UI puts only the returned UID in `receiver.elrsUid`.
 #[tauri::command]
 pub async fn config_elrs_uid(phrase: String) -> AppResult<[u8; 6]> {
-    let _ = phrase;
-    Err(AppError::NotImplemented("config_elrs_uid"))
+    // Hashed exactly as typed (the ELRS tools do not trim either).
+    if phrase.is_empty() {
+        return Err(AppError::Config("binding phrase is empty".into()));
+    }
+    Ok(super::md5::elrs_uid(&phrase))
 }
 
 /// Read-only plan against the connected FC: reads `version`, `serial`, `dump all`
@@ -45,6 +67,8 @@ pub async fn config_plan(model: DroneModel) -> AppResult<CliScript> {
 
 /// Apply: `diff all` backup -> `batch start` + commands + `save` (batch still active) ->
 /// reboot -> reconnect. Resolves only after reconnect; emits `config://progress`.
+/// The script is checked first against the generator's verbs (`guard`): a line that
+/// would persist, reboot, wipe or leave the batch is a CONFIG error and nothing is sent.
 #[tauri::command]
 pub async fn config_apply(script: CliScript) -> AppResult<ApplyResult> {
     let _ = script;
@@ -59,6 +83,8 @@ pub async fn config_verify(model: DroneModel) -> AppResult<VerifyReport> {
 }
 
 /// Restore a backup: replay its `diff all` (`defaults nosave` + lines) + `save` + reconnect.
+/// Which backup lines are replayed is defined by `guard::replay_lines`; anything else in
+/// the file is a CONFIG error and nothing is sent.
 #[tauri::command]
 pub async fn config_rollback(backup: Backup) -> AppResult<ApplyResult> {
     let _ = backup;
@@ -67,14 +93,16 @@ pub async fn config_rollback(backup: Backup) -> AppResult<ApplyResult> {
 
 /// All backups on disk, newest first (all boards).
 #[tauri::command]
-pub async fn config_list_backups() -> AppResult<Vec<Backup>> {
-    Err(AppError::NotImplemented("config_list_backups"))
+pub async fn config_list_backups<R: Runtime>(app: AppHandle<R>) -> AppResult<Vec<Backup>> {
+    BackupStore::new(backups_root(&app)?).list()
 }
 
 /// Absolute path of the backups root folder (UI opens it with the opener plugin).
 #[tauri::command]
-pub async fn config_backups_dir() -> AppResult<String> {
-    Err(AppError::NotImplemented("config_backups_dir"))
+pub async fn config_backups_dir<R: Runtime>(app: AppHandle<R>) -> AppResult<String> {
+    let root = backups_root(&app)?;
+    std::fs::create_dir_all(&root)?;
+    Ok(root.to_string_lossy().into_owned())
 }
 
 /// Restore by id (from config_list_backups): safety backup, then the rollback path.

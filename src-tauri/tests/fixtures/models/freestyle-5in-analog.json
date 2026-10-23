@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
+  "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true },
+  "vtx": { "kind": "ANALOG", "protocol": "SMARTAUDIO", "port": "UART1" },
+  "gps": { "enabled": true, "port": "UART6", "provider": "UBLOX" },
+  "esc": { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14, "propsOut": true },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "ANGLE", "auxChannel": 1, "rangeMin": 1300, "rangeMax": 1700 },
+    { "mode": "HORIZON", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "BEEPER", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "FLIP OVER AFTER CRASH", "auxChannel": 3, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "GPS RESCUE", "auxChannel": 4, "rangeMin": 1700, "rangeMax": 2100 }
+  ],
+  "extras": {}
+}

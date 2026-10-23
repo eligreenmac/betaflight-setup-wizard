@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import ErrorPanel from "../../components/ErrorPanel.vue";
+import ReadProtectedPanel from "../../components/ReadProtectedPanel.vue";
 import StageList from "../../components/StageList.vue";
 import { isNotImplemented, toUiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
@@ -26,6 +27,10 @@ const stage = ref<UpdateStage | null>(null);
 const progress = ref<FlashProgress | null>(null);
 const error = ref<UiError | null>(null);
 const showPre = ref(false);
+/** DFU device of the last attempt (flasher_remove_read_protection needs its serial). */
+const dfuSerial = ref<string | null>(null);
+const backupThisRun = ref(false);
+const readProtected = computed(() => error.value?.code === "READ_PROTECTED");
 
 const fc = computed(() => wizard.fc);
 const supported = computed(() => !!fc.value && isSupportedFirmware(fc.value.fcVariant, fc.value.firmwareVersion));
@@ -61,11 +66,18 @@ async function update(fullErase = false): Promise<void> {
     const r = await runFirmwareUpdate(
       fc.value,
       chosen.value,
-      { onStage: (s) => (stage.value = s), onProgress: (p) => (progress.value = p) },
+      {
+        onStage: (s) => (stage.value = s),
+        onProgress: (p) => (progress.value = p),
+        onDfu: (d) => (dfuSerial.value = d.serial),
+        onBackup: (b) => {
+          wizard.ui.sessionBackups.unshift(b);
+          backupThisRun.value = true;
+        },
+      },
       undefined,
       { fullErase },
     );
-    if (r.backup) wizard.ui.sessionBackups.unshift(r.backup);
     setBoard(wizard, r.fc, r.ports, r.path);
     wizard.ui.flashed = true;
     phase.value = "done";
@@ -142,6 +154,8 @@ onMounted(loadReleases);
       <div v-if="phase === 'done'" class="callout callout--ok">{{ t("firmware.done", { version: fc.firmwareVersion }) }}</div>
     </template>
 
-    <ErrorPanel v-if="error" :error="error" :busy="phase === 'running'" @action="onAction" />
+    <!-- Read protection: never removed without the explicit confirmation in this panel. -->
+    <ReadProtectedPanel v-if="error && readProtected" :dfu-serial="dfuSerial" :has-backup="backupThisRun" @unprotected="update()" />
+    <ErrorPanel v-else-if="error" :error="error" :busy="phase === 'running'" @action="onAction" />
   </div>
 </template>
