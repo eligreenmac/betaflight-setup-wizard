@@ -450,6 +450,9 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   SD-only (`USE_OSD_SD` without `USE_OSD_HD`) builds (`target/common_pre.h`). Config's plan
   rejects HD when `displayport_msp_col_adjust` is missing, which agrees with every `false`
   above; the UI should hide/disable HD on `false` and allow it with a caution on `null`.
+  On `null` the UI (`src/wizard/osd.ts` `hdOsdSupport`) falls back to `FcInfo.buildOptions`:
+  `USE_OSD_HD` → `true`; any of `USE_OSD` / `USE_OSD_SD` / `USE_MSP_DISPLAYPORT` without it →
+  `false` (`USE_MSP_DISPLAYPORT` alone is never HD, see above); no OSD option (or `[]`) → `null`.
 
 ### 4.2 Motor test safety (device)
 
