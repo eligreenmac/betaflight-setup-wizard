@@ -29,10 +29,17 @@ export interface CommandMap {
   // config
   config_read_ports: [Record<string, never>, FcSerialPort[]];
   config_backup: [Record<string, never>, Backup];
+  /** Preview only: never apply this script; apply the one from config_plan. */
   config_generate: [{ model: DroneModel; ports: FcSerialPort[] }, CliScript];
+  /** Binding phrase -> ExpressLRS UID. Pure; the phrase is not stored or logged. */
+  config_elrs_uid: [{ phrase: string }, number[]];
   config_apply: [{ script: CliScript }, ApplyResult];
   config_verify: [{ model: DroneModel }, VerifyReport];
+  config_plan: [{ model: DroneModel }, CliScript];
   config_rollback: [{ backup: Backup }, ApplyResult];
+  config_list_backups: [Record<string, never>, Backup[]];
+  config_backups_dir: [Record<string, never>, string];
+  config_restore: [{ backupId: string }, ApplyResult];
   // system
   system_driver_status: [Record<string, never>, DriverStatus];
   system_install_dfu_driver: [Record<string, never>, void];
@@ -82,10 +89,17 @@ export const api = {
   config: {
     readPorts: () => call("config_read_ports", none),
     backup: () => call("config_backup", none),
+    /** Preview only (assumes default bauds, free aux slots); apply the script from `plan`. */
     generate: (model: DroneModel, ports: FcSerialPort[]) => call("config_generate", { model, ports }),
+    /** Hash a binding phrase to the 6-byte UID. Drop the phrase afterwards. */
+    elrsUid: (phrase: string) => call("config_elrs_uid", { phrase }),
     apply: (script: CliScript) => call("config_apply", { script }),
     verify: (model: DroneModel) => call("config_verify", { model }),
+    plan: (model: DroneModel) => call("config_plan", { model }),
     rollback: (backup: Backup) => call("config_rollback", { backup }),
+    listBackups: () => call("config_list_backups", none),
+    backupsDir: () => call("config_backups_dir", none),
+    restore: (backupId: string) => call("config_restore", { backupId }),
   },
   system: {
     driverStatus: () => call("system_driver_status", none),
@@ -97,4 +111,5 @@ export const api = {
 /** Event names emitted by Rust. */
 export const EVENTS = {
   flashProgress: "flasher://progress",
+  configProgress: "config://progress",
 } as const;

@@ -20,6 +20,9 @@ pub enum AppError {
     Firmware(String),
     #[error("configuration error: {0}")]
     Config(String),
+    /// Firmware outside the supported lines (4.4.x, 4.5.x, 2025.12.x).
+    #[error("unsupported firmware: {0}")]
+    UnsupportedFirmware(String),
     #[error("driver error: {0}")]
     Driver(String),
     #[error("I/O error: {0}")]
@@ -37,6 +40,7 @@ impl AppError {
             AppError::Usb(_) => "USB",
             AppError::Firmware(_) => "FIRMWARE",
             AppError::Config(_) => "CONFIG",
+            AppError::UnsupportedFirmware(_) => "UNSUPPORTED_FIRMWARE",
             AppError::Driver(_) => "DRIVER",
             AppError::Io(_) => "IO",
         }

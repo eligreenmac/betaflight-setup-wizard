@@ -19,6 +19,7 @@ pub mod system;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             // device
             device::commands::device_list_ports,
@@ -38,9 +39,14 @@ pub fn run() {
             config::commands::config_read_ports,
             config::commands::config_backup,
             config::commands::config_generate,
+            config::commands::config_elrs_uid,
+            config::commands::config_plan,
             config::commands::config_apply,
             config::commands::config_verify,
             config::commands::config_rollback,
+            config::commands::config_list_backups,
+            config::commands::config_backups_dir,
+            config::commands::config_restore,
             // system (packaging)
             system::commands::system_driver_status,
             system::commands::system_install_dfu_driver,
