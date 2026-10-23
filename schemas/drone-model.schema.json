@@ -12,6 +12,10 @@
       "type": ["string", "null"],
       "pattern": "^(UART([1-9]|1[0-5])|LPUART1|SOFTSERIAL[12])$"
     },
+    "beeperName": {
+      "description": "Stable beeper condition names = 4.4/4.5 CLI names. CRASH_FLIP is CRASHFLIP on 2025.12; RC_SMOOTHING_INIT_FAIL does not exist on 2025.12 (warning, not written).",
+      "enum": ["GYRO_CALIBRATED", "RX_LOST", "RX_LOST_LANDING", "DISARMING", "ARMING", "ARMING_GPS_FIX", "ARMING_GPS_NO_FIX", "BAT_CRIT_LOW", "BAT_LOW", "GPS_STATUS", "RX_SET", "ACC_CALIBRATION", "ACC_CALIBRATION_FAIL", "READY_BEEP", "MULTI_BEEPS", "DISARM_REPEAT", "ARMED", "SYSTEM_INIT", "ON_USB", "BLACKBOX_ERASE", "CRASH_FLIP", "CAM_CONNECTION_OPEN", "CAM_CONNECTION_CLOSE", "RC_SMOOTHING_INIT_FAIL"]
+    },
     "vtxTable": {
       "description": "Betaflight vtxtable; limits from drivers/vtx_table.h (same on 4.4/4.5/2025.12).",
       "type": "object",
@@ -154,6 +158,68 @@
         }
       }
     },
+    "airmode": { "enum": [null, "ALWAYS", "SWITCH", "OFF"],
+                 "description": "ALWAYS = feature AIRMODE; SWITCH = feature -AIRMODE + an \"AIR MODE\" entry in switches (required); OFF = feature -AIRMODE, AIR MODE ranges removed; null = keep. Same on 4.4/4.5/2025.12 (rc_modes.c: airmode = feature AIRMODE || box AIRMODE)." },
+    "removeModes": { "type": "array", "uniqueItems": true,
+                     "items": { "enum": ["PREARM", "FLIP OVER AFTER CRASH", "AIR MODE"] },
+                     "description": "Optional modes whose ranges on the FC are removed. Optional modes neither listed here nor in switches are kept as they are on the FC." },
+    "beepers": {
+      "type": ["object", "null"],
+      "required": ["disabled"],
+      "additionalProperties": false,
+      "description": "Full beeper state: beeper -X for listed conditions, beeper X for every other condition the firmware has; null = keep.",
+      "properties": {
+        "disabled": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/beeperName" } },
+        "dshotBeaconDisabled": { "type": ["array", "null"], "uniqueItems": true, "items": { "enum": ["RX_LOST", "RX_SET"] },
+                                 "description": "beacon -X for listed, beacon X for the other; null = keep" }
+      }
+    },
+    "sensors": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "true = <sensor>_hardware AUTO (a specific chip already set on the FC is kept), false = NONE, null = keep. Gyro is always on. acc=false makes ANGLE/HORIZON/ALTHOLD/POSHOLD/GPS RESCUE unusable (CONFIG error if such a switch is in the model).",
+      "properties": {
+        "acc": { "type": ["boolean", "null"] },
+        "baro": { "type": ["boolean", "null"] },
+        "mag": { "type": ["boolean", "null"] }
+      }
+    },
+    "boardAlignment": {
+      "type": ["object", "null"],
+      "required": ["roll", "pitch", "yaw"],
+      "additionalProperties": false,
+      "description": "align_board_roll/pitch/yaw in whole degrees (firmware range -180..360 on 4.4/4.5/2025.12; same values as MSP_BOARD_ALIGNMENT_CONFIG); null = keep",
+      "properties": {
+        "roll": { "type": "integer", "minimum": -180, "maximum": 360 },
+        "pitch": { "type": "integer", "minimum": -180, "maximum": 360 },
+        "yaw": { "type": "integer", "minimum": -180, "maximum": 360 }
+      }
+    },
+    "osd": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "OSD layout; null = keep. Writes feature OSD. HD also writes osd_displayport_device = MSP and osd_canvas_width/height = 53/20; analog writes osd_displayport_device = AUTO.",
+      "properties": {
+        "videoSystem": { "enum": [null, "AUTO", "PAL", "NTSC", "HD"],
+                         "description": "vcd_video_system. Grid: PAL 30x16, NTSC 30x13, AUTO 30x13, HD 53x20. null = keep (grid from the FC)." },
+        "elements": {
+          "type": "array",
+          "description": "Elements not listed keep the FC's state.",
+          "items": {
+            "type": "object",
+            "required": ["name", "enabled"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "pattern": "^[A-Z0-9_]+$",
+                        "description": "Betaflight osd_items_e name without OSD_, e.g. MAIN_BATT_VOLTAGE (osd_vbat_pos). Unknown for the firmware = CONFIG error." },
+              "enabled": { "type": "boolean", "description": "Visible in all 3 OSD profiles (true) or none (false)." },
+              "x": { "type": ["integer", "null"], "minimum": 0, "maximum": 63, "description": "null = default layout position" },
+              "y": { "type": ["integer", "null"], "minimum": 0, "maximum": 31 }
+            }
+          }
+        }
+      }
+    },
     "extras": {
       "type": "object",
       "additionalProperties": false,
@@ -166,6 +232,7 @@
     }
   },
   "examples": [
+    {"schemaVersion": 1, "fc": {"boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.5", "apiVersion": "1.46"}, "receiver": {"kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true}, "vtx": {"kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI"}, "gps": {"enabled": false}, "esc": {"protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14}, "switches": [{"mode": "ARM", "auxChannel": 0, "rangeMin": 1800, "rangeMax": 2100}, {"mode": "AIR MODE", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100}, {"mode": "FLIP OVER AFTER CRASH", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100}], "airmode": "SWITCH", "removeModes": ["PREARM"], "beepers": {"disabled": ["ON_USB"], "dshotBeaconDisabled": ["RX_SET"]}, "sensors": {"acc": true, "baro": false, "mag": null}, "boardAlignment": {"roll": 0, "pitch": 0, "yaw": 90}, "osd": {"videoSystem": "HD", "elements": [{"name": "MAIN_BATT_VOLTAGE", "enabled": true, "x": 1, "y": 18}, {"name": "LINK_QUALITY", "enabled": true}, {"name": "RSSI_VALUE", "enabled": false}]}},
     {
       "schemaVersion": 1,
       "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
