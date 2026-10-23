@@ -102,7 +102,7 @@ export const api = {
     rcStreamStop: () => call("device_rc_stream_stop", none),
     /** Detected / enabled state of gyro, acc, baro, mag (+ hardware names, alignment readout). Read-only. */
     sensors: () => call("device_sensors", none),
-    /** Board level and still. Resolves when done (FC saves by itself). BOARD_ARMED / ACC_NOT_AVAILABLE / BOARD_MOVING / ACC_CALIBRATION_FAILED. */
+    /** Board level and still. Resolves when done (FC saves by itself). PENDING_UNSAVED_CHANGES (checked first) / BOARD_ARMED / ACC_NOT_AVAILABLE / BOARD_MOVING / ACC_CALIBRATION_FAILED. */
     accCalibrate: () => call("device_acc_calibrate", none),
     getAttitude: () => call("device_get_attitude", none),
     /** Default 10 Hz, clamped 1..30. Exclusive with the motor test and the RC stream (PORT_BUSY). */
