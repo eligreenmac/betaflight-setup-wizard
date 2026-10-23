@@ -8,7 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
-import { effectiveSystem, hdOsdSupport } from "./osd";
+import { effectiveSystem, hdSupport } from "./osd";
 import { ACC_MODES, BARO_MODES, MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, NEEDS_DSHOT, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { catalogState } from "../api/catalog";
 import { validAlignment } from "./orientation";
@@ -265,8 +265,10 @@ export function canGoTo(targetId: string, currentId: string, s: WizardState, ste
  */
 export function validateOsd(s: WizardState): Issue[] {
   const system = effectiveSystem(s.model, s.osd, s.fc);
+  // "Keep the board's OSD" needs no video system (nothing OSD-related is sent).
+  if (s.osd.mode === "keep") return [];
   if (!system) return [{ key: "validation.osdSystem" }];
-  if (system === "HD" && hdOsdSupport(s.fc) === false) return [{ key: "validation.osdHdUnsupported" }];
+  if (system === "HD" && hdSupport(s.fc, s.osd) === false) return [{ key: "validation.osdHdUnsupported" }];
   if (s.osd.mode === null) return [{ key: "validation.osdChoose" }];
   if (s.osd.mode === "choose" && !s.osd.layout) return [{ key: "validation.osdLayout" }];
   return [];

@@ -27,6 +27,11 @@
  * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
  * side down, every 2 s.
  *
+ * HD OSD (FcInfo.hdOsdSupported, TODO(shared)): true by default. `osd-hd-unsupported`: false
+ * (HD disabled in the OSD step). `osd-hd-unknown`: null (HD allowed, with a note).
+ * `osd-hd-plan-error`: null, but the firmware has no MSP DisplayPort, so config_plan refuses
+ * an HD OSD with #67's CONFIG error. `osd-sd-only`: no field, build options say "OSD (SD)".
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
@@ -64,6 +69,9 @@ export const SCENARIOS = [
   "unsaved-ram",
   "unsaved-ram-reboot-fail",
   "osd-sd-only",
+  "osd-hd-unsupported",
+  "osd-hd-unknown",
+  "osd-hd-plan-error",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -343,6 +351,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       if (model.receiver.kind === "SPI" && model.receiver.protocol !== "EXPRESSLRS")
         throw { code: "CONFIG", message: `SPI receiver protocol ${model.receiver.protocol} is not supported` }; // error.rs AppError::Config
       if (model.receiver.kind === "SPI" && scenario !== "onboard-elrs") throw { code: "CONFIG", message: "no onboard SPI receiver (resource RX_SPI_CS not assigned)" };
+      // config::generate (#67): an HD OSD on firmware without MSP DisplayPort.
+      const osd = (model as { osd?: { videoSystem?: string | null } | null }).osd;
+      const hdOsd = !!osd && (osd.videoSystem === "HD" || (!osd.videoSystem && model.vtx.kind === "DIGITAL"));
+      if (hdOsd && NO_DISPLAYPORT.includes(scenario))
+        throw { code: "CONFIG", message: "configuration error: HD OSD needs MSP DisplayPort, which this firmware build does not have" };
       return generateCli(model, device.ports);
     },
     config_list_backups: () => {
@@ -404,6 +417,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       mcu: "STM32F405",
       uid: UID,
       buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : []), ...(scenario === "osd-sd-only" ? ["USE_OSD_SD"] : [])],
+      // TODO(shared): Device's FcInfo.hdOsdSupported (boolean | null), read via wizard/osd.ts hdOsdSupport.
+      // Absent for the old backends (legacy-backend, osd-sd-only: build-options heuristic).
+      ...(scenario === "legacy-backend" || scenario === "osd-sd-only"
+        ? {}
+        : { hdOsdSupported: scenario === "osd-hd-unsupported" ? false : scenario === "osd-hd-unknown" || scenario === "osd-hd-plan-error" ? null : true }),
       serialPorts: device.ports.map((p) => ({ ...p })),
       // present stays null until device_probe_board ran (ARCHITECTURE §4.1).
       rxSpi: device.probed
@@ -574,6 +592,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
 
   return { backend, events, device };
 }
+
+/** Scenarios whose firmware has no MSP DisplayPort: config_plan refuses an HD OSD (osd-hd-plan-error: the board reports "unknown"). */
+const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error"];
 
 const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
   MSP: "MSP",

@@ -72,27 +72,51 @@ const HD_OSD_OPTIONS = ["USE_OSD_HD", "USE_MSP_DISPLAYPORT", "OSD_HD", "MSP_DISP
 const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
 
 /**
- * Does this board's firmware support an HD OSD (MSP DisplayPort)?
- * true = the build options say so; false = the build options list OSD options but not
- * the HD one (e.g. a cloud build with "OSD (SD)" only); null = unknown (no FC, or the
- * build options don't tell), which allows HD.
- * TODO(shared): no probe field for DisplayPort support exists yet; this reads fc.buildOptions.
+ * The FC fields the HD gate reads. `hdOsdSupported` is Device's shared field
+ * (`FcInfo.hdOsdSupported: boolean | null`): true = HD / MSP DisplayPort OSD compiled in,
+ * false = confirmed absent, null = unknown.
+ * TODO(shared): add `hdOsdSupported` to FcInfo (types/model.ts) when Device's shared PR
+ * lands, then drop this optional mirror.
  */
-export function hdOsdSupport(fc: Pick<FcInfo, "buildOptions"> | null): boolean | null {
-  const opts = (fc?.buildOptions ?? []).map((o) => o.toUpperCase());
+export type HdOsdFc = Pick<FcInfo, "buildOptions"> & { hdOsdSupported?: boolean | null };
+
+/** Old heuristic: the build options (empty on real boards today, so usually "unknown"). */
+function hdFromBuildOptions(fc: Pick<FcInfo, "buildOptions"> | null): boolean | null {
+  const opts = (Array.isArray(fc?.buildOptions) ? fc!.buildOptions : []).map((o) => String(o).toUpperCase());
   if (opts.some((o) => HD_OSD_OPTIONS.includes(o))) return true;
   if (opts.some((o) => OSD_OPTIONS.includes(o))) return false;
   return null;
 }
 
 /**
+ * Does this board's firmware support an HD OSD (MSP DisplayPort)?
+ * true = yes; false = confirmed absent (HD disabled, with the reason); null = unknown
+ * (HD allowed, with a note that it could not be confirmed).
+ * Reads `fc.hdOsdSupported` tolerantly (only a real boolean counts); when it is missing,
+ * null or malformed, falls back to the build-options heuristic.
+ */
+export function hdOsdSupport(fc: HdOsdFc | null): boolean | null {
+  const v = (fc as { hdOsdSupported?: unknown } | null)?.hdOsdSupported;
+  if (typeof v === "boolean") return v;
+  return hdFromBuildOptions(fc);
+}
+
+/**
+ * HD support for the OSD step: false also when config_plan already said this firmware
+ * has no MSP DisplayPort (Review -> "Back to OSD settings"), otherwise hdOsdSupport.
+ */
+export function hdSupport(fc: HdOsdFc | null, s: Pick<OsdState, "hdRejected">): boolean | null {
+  return s.hdRejected ? false : hdOsdSupport(fc);
+}
+
+/**
  * The system to use: the user's answer wins over the detection (they can correct it).
  * A detected HD that this firmware can't do is not used: the user is asked instead.
  */
-export function effectiveSystem(model: DroneModel, s: OsdState, fc: Pick<FcInfo, "buildOptions"> | null = null): OsdVideoSystem | null {
+export function effectiveSystem(model: DroneModel, s: OsdState, fc: HdOsdFc | null = null): OsdVideoSystem | null {
   if (s.askedSystem) return s.askedSystem;
   const d = systemFromVtx(model.vtx);
-  return d === "HD" && hdOsdSupport(fc) === false ? null : d;
+  return d === "HD" && hdSupport(fc, s) === false ? null : d;
 }
 
 /** Digital VTX with an analog OSD: allowed (some setups do it on purpose), but probably wrong. */
@@ -140,8 +164,19 @@ export interface OsdState {
   enabled: Record<string, boolean>;
   /** Positions the user moved (grid cells). */
   moved: Record<string, { x: number; y: number }>;
+  /** config_plan refused HD for this board (no MSP DisplayPort): HD is off until the board changes. */
+  hdRejected: boolean;
 }
-export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, layout: null, layoutKey: null, catalog: [], enabled: {}, moved: {} });
+export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, layout: null, layoutKey: null, catalog: [], enabled: {}, moved: {}, hdRejected: false });
+
+/**
+ * config_plan's error for an HD OSD on firmware without MSP DisplayPort (config::generate,
+ * #67): AppError::Config "HD OSD needs MSP DisplayPort, which this firmware build does not
+ * have" (code CONFIG -> CONFIG_UNSUPPORTED in the UI).
+ */
+export function isHdOsdPlanError(e: { code: string; message: string }): boolean {
+  return (e.code === "CONFIG_UNSUPPORTED" || e.code === "CONFIG") && /HD OSD|MSP DisplayPort/i.test(e.message);
+}
 export const layoutKey = (system: OsdVideoSystem, firmwareVersion: string): string => `${system}@${firmwareVersion}`;
 
 /** The #65 `osd` field to send, or null (= keep). */

@@ -19,6 +19,7 @@ export type GuidanceActionId =
   | "goFirmware"
   | "editPorts"
   | "editComponents"
+  | "backToOsd"
   | "openLink";
 
 export interface GuidanceAction {
@@ -107,6 +108,8 @@ const TABLE: Record<ErrorCode, Entry> = {
   REBOOT_NOT_CONFIRMED: { steps: 2, actions: [rebootBoard] },
   REBOOT_BOARD_LOST: { steps: 2, actions: [goConnect] },
   CONNECT_REBOOT_NOT_CONFIRMED: { steps: 2, actions: [retry] },
+  // config_plan: HD OSD on firmware without MSP DisplayPort (Review step).
+  OSD_HD_UNSUPPORTED: { steps: 2, actions: [{ id: "backToOsd", labelKey: "actions.backToOsd", primary: true }] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */

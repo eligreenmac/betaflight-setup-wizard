@@ -12,19 +12,23 @@ import type { OsdVideoSystem } from "../../types/model";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
 import {
-  analogOnDigital, ANALOG_SYSTEMS, clampPos, effectiveSystem, hdOsdSupport, layoutKey, offeredElements, OSD_GROUPS, previewPos,
+  analogOnDigital, ANALOG_SYSTEMS, clampPos, effectiveSystem, hdSupport, layoutKey, offeredElements, OSD_GROUPS, previewPos,
   recommendedEnabled, systemFromVtx, type OsdElementInfo,
 } from "../osd";
+import { goTo } from "../nav";
 import { markDirty, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
 const { t } = useI18n();
 
 const detected = computed(() => systemFromVtx(wizard.model.vtx));
-const hd = computed(() => hdOsdSupport(wizard.fc));
+/** true = HD OSD in the firmware; false = confirmed absent (HD disabled); null = unknown (HD allowed, with a note). */
+const hd = computed(() => hdSupport(wizard.fc, wizard.osd));
 const system = computed(() => effectiveSystem(wizard.model, wizard.osd, wizard.fc));
-/** Detected HD, but this firmware has no HD OSD: explain and ask. */
+/** Detected HD, but this firmware has no HD OSD: warn and offer flash / keep / analog. */
 const hdBlocked = computed(() => detected.value === "HD" && hd.value === false);
+/** HD chosen, but support could not be confirmed. */
+const hdUnknown = computed(() => system.value === "HD" && hd.value === null);
 const changing = ref(false);
 const showChoices = computed(() => changing.value || !!wizard.osd.askedSystem || !system.value);
 const mismatch = computed(() => analogOnDigital(wizard.model, system.value));
@@ -72,6 +76,10 @@ async function loadLayout(): Promise<void> {
   }
 }
 
+function keepCurrent(): void {
+  wizard.osd.askedSystem = null;
+  setMode("keep");
+}
 function setMode(mode: "keep" | "choose"): void {
   wizard.osd.mode = mode;
   markDirty();
@@ -151,7 +159,15 @@ onMounted(loadLayout);
         <button type="button" class="btn btn--small btn--link" data-test="osd-change-system" @click="changing = true">{{ t("osd.system.change") }}</button>
       </p>
       <template v-else>
-        <p v-if="hdBlocked" class="callout callout--warn" data-test="osd-hd-blocked">{{ t("osd.system.hdBlocked") }}</p>
+        <div v-if="hdBlocked" class="callout callout--warn" role="alert" data-test="osd-hd-blocked">
+          <p>{{ t(wizard.osd.hdRejected ? "osd.system.hdRejected" : "osd.system.hdBlocked") }}</p>
+          <p>{{ t("osd.system.hdChoices") }}</p>
+          <div class="btn-row">
+            <button type="button" class="btn btn--small" data-test="osd-hd-flash" @click="goTo('firmware')">{{ t("actions.goFirmware") }}</button>
+            <button type="button" class="btn btn--small" data-test="osd-hd-keep" :aria-pressed="wizard.osd.mode === 'keep' && !system" @click="keepCurrent">{{ t("osd.system.keepCurrent") }}</button>
+          </div>
+          <p v-if="wizard.osd.mode === 'keep' && !system" class="hint" data-test="osd-kept">{{ t("osd.system.kept") }}</p>
+        </div>
         <p v-else-if="!detected">{{ t("osd.system.ask") }}</p>
         <div class="osd-choices" role="radiogroup" :aria-label="t('osd.system.title')">
           <p class="hint osd-choices__group">{{ t("osd.system.analogGroup") }}</p>
@@ -172,6 +188,7 @@ onMounted(loadLayout);
           </label>
         </div>
       </template>
+      <p v-if="hdUnknown" class="callout callout--info" role="note" data-test="osd-hd-unknown">{{ t("osd.system.hdUnknown") }}</p>
       <div v-if="mismatch" class="callout callout--warn" role="note" data-test="osd-analog-on-digital">
         {{ t("osd.system.analogOnDigital") }}
       </div>
