@@ -179,7 +179,7 @@ export const guards: Record<string, StepGuard> = {
         // Say plainly when the update can't be offered: then another protocol is the only way on.
         const block = reflashBlock(s);
         const key = !block ? "validation.rxOptionMissing" : block === "applied" ? "validation.rxOptionMissingApplied" : "validation.rxOptionMissingNoUpdate";
-        issues.push({ key, params: { protocol: r.protocol } });
+        issues.push({ key, params: { protocol: r.protocol ?? "" } });
       }
       return [...issues, ...portIssues(s, "receiver")];
     },
