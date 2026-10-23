@@ -747,6 +747,22 @@ pub struct OsdLayoutElement {
     pub enabled: bool,
 }
 
+/// `config_firmware_catalog` result: what a firmware line offers, so the UI does not
+/// hard-code per-version lists. Read-only, no FC I/O; a particular board's build may lack
+/// some of it (config checks the FC's `dump all` at plan time).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirmwareCatalog {
+    /// Beeper conditions the line has (stable names; 2025.12 lacks RC_SMOOTHING_INIT_FAIL).
+    pub beepers: Vec<BeeperName>,
+    /// DShot beacon conditions (RX_LOST, RX_SET on every line).
+    pub beacon_events: Vec<DshotBeaconCondition>,
+    /// OSD element stable names, in `cli/settings.c` order.
+    pub osd_elements: Vec<String>,
+    /// Stable mode names accepted in `switches` / `removeModes` (canonical names).
+    pub modes: Vec<String>,
+}
+
 // ---------------------------------------------------------------- config engine
 
 /// Firmware-version-specific CLI script produced by config::generate.

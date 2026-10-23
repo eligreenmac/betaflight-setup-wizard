@@ -199,6 +199,18 @@ export interface OsdLayout {
   elements: { name: OsdElementName; x: number; y: number; enabled: boolean }[];
 }
 
+/** config_firmware_catalog(firmwareVersion): what a firmware line offers (a board's build may lack some; plan checks the FC). */
+export interface FirmwareCatalog {
+  /** Beeper conditions on that line (2025.12 has no RC_SMOOTHING_INIT_FAIL). */
+  beepers: BeeperName[];
+  /** DShot beacon conditions: RX_LOST, RX_SET. */
+  beaconEvents: DshotBeaconCondition[];
+  /** OSD element stable names, cli/settings.c order (4.4: 77, 4.5: 80, 2025.12: 82). */
+  osdElements: OsdElementName[];
+  /** Canonical mode names accepted in switches / removeModes. */
+  modes: string[];
+}
+
 export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
 /** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
 export interface VtxTable {
