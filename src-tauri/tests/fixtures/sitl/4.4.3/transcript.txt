@@ -1,0 +1,113 @@
+>>> get serialrx_provider
+get serialrx_provider
+serialrx_provider = SPEK1024
+Allowed values: SPEK1024, SPEK2048, SBUS, SUMD, SUMH, XB-B, XB-B-RJ01, IBUS, JETIEXBUS, CRSF, SRXL, CUSTOM, FPORT, SRXL2, GHST
+
+# 
+>>> get motor_idle
+get motor_idle
+###ERROR IN get: INVALID NAME: motor_idle###
+
+# 
+>>> get dshot_idle_value
+get dshot_idle_value
+###ERROR IN get: INVALID NAME: dshot_idle_value###
+
+# 
+>>> get craft_name
+get craft_name
+craft_name = -
+String length: 1 - 16
+
+# 
+>>> bogus_cmd
+bogus_cmd
+###ERROR IN input: UNKNOWN COMMAND, TRY 'HELP'###
+# 
+>>> set foo = 1
+set foo = 1
+###ERROR IN set: INVALID NAME: foo = 1###
+
+# 
+>>> set serialrx_provider = NOPE
+set serialrx_provider = NOPE
+###ERROR IN set: INVALID VALUE###
+Allowed values: SPEK1024, SPEK2048, SBUS, SUMD, SUMH, XB-B, XB-B-RJ01, IBUS, JETIEXBUS, CRSF, SRXL, CUSTOM, FPORT, SRXL2, GHST
+
+# 
+>>> set serialrx_provider = CRSF
+set serialrx_provider = CRSF
+serialrx_provider set to CRSF
+# 
+>>> set serialrx_provider = SBUS
+set serialrx_provider = SBUS
+serialrx_provider set to SBUS
+# 
+>>> feature GPS
+feature GPS
+unavailable
+
+# 
+>>> feature -GPS
+feature -GPS
+unavailable
+
+# 
+>>> feature NOPE
+feature NOPE
+###ERROR IN feature: INVALID NAME: NOPE###
+
+# 
+>>> feature RX_MSP
+feature RX_MSP
+Enabled RX_MSP
+
+# 
+>>> serial 1 64 115200 57600 0 115200
+serial 1 64 115200 57600 0 115200
+serial 1 64 115200 57600 0 115200
+
+# 
+>>> serial 40 64 115200 57600 0 115200
+serial 40 64 115200 57600 0 115200
+###ERROR IN serial: INVALID ARGUMENT COUNT###
+
+# 
+>>> serial 1 0 115200 57600 0 115200
+serial 1 0 115200 57600 0 115200
+serial 1 0 115200 57600 0 115200
+
+# 
+>>> aux 0 0 0 1700 2100 0 0
+aux 0 0 0 1700 2100 0 0
+aux 0 0 0 1700 2100 0 0
+
+# 
+>>> aux 99 0 0 1700 2100 0 0
+aux 99 0 0 1700 2100 0 0
+###ERROR IN aux: INDEX NOT BETWEEN 0 AND 19###
+
+# 
+>>> aux 0 0 0 900 900 0 0
+aux 0 0 0 900 900 0 0
+aux 0 0 0 900 900 0 0
+
+# 
+>>> batch start
+batch start
+Command batch started
+
+# 
+>>> batch end
+batch end
+Command batch ended
+
+# 
+>>> resource
+resource
+###ERROR IN input: UNKNOWN COMMAND, TRY 'HELP'###
+# 
+>>> name
+name
+###ERROR IN input: UNKNOWN COMMAND, TRY 'HELP'###
+# 

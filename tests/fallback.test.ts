@@ -4,7 +4,6 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { api, type Backend } from "../src/api/commands";
-import { device, type DeviceBackend } from "../src/api/device";
 import { createEmitter } from "../src/api/events";
 import { demoState, installFallback, isDemoMode, resetDemoState } from "../src/api/fallback";
 import { i18n, setLocale } from "../src/i18n";
@@ -27,14 +26,14 @@ function phase0(overrides: Record<string, (args: unknown) => unknown> = {}) {
     throw { code: "NOT_IMPLEMENTED", message: `${cmd} is not implemented yet` };
   };
   const events = createEmitter();
-  return { backend: impl as unknown as Backend, deviceBackend: impl as unknown as DeviceBackend, events: events.on, calls };
+  return { backend: impl as unknown as Backend, events: events.on, calls };
 }
 
 let mock: ScenarioMock;
 let w: VueWrapper | null = null;
 function setup(real = phase0()) {
   mock = createScenarioMock({ latencyMs: 0, stepMs: 0 });
-  installFallback({ backend: mock.backend, deviceBackend: mock.deviceBackend, events: mock.events.on }, real);
+  installFallback({ backend: mock.backend, events: mock.events.on }, real);
   return real;
 }
 
@@ -58,7 +57,7 @@ describe("per-call mock fallback", () => {
     expect(await api.system.appInfo()).toMatchObject({ os: "windows" }); // real
     expect(isDemoMode()).toBe(false);
     expect(await api.device.listPorts()).toEqual(expect.arrayContaining([expect.objectContaining({ path: "COM5" })])); // NOT_IMPLEMENTED -> mock
-    await device.motorTestStop(); // "Command ... not found" -> mock
+    await api.device.motorTestStop(); // "Command ... not found" -> mock
     expect(demoState.simulated).toEqual(["device_list_ports", "device_motor_test_stop"]);
     expect(isDemoMode()).toBe(true);
     expect(real.calls).toEqual(["system_app_info", "device_list_ports", "device_motor_test_stop"]);
@@ -90,7 +89,7 @@ describe("demo mode end to end (no board connected)", () => {
       await settle();
       const seen = await walk(path);
       expect(nav.currentId).toBe("done");
-      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "vtx", "gps", "esc", "switches", "review", "apply"]);
+      expect(seen).toEqual(["welcome", "connect", "firmware", "components", "receiver", "binding", "vtx", "gps", "esc", "switches", "review", "apply"]);
       const banner = w.get('[data-test="demo-banner"]');
       expect(banner.text()).toContain("Demo mode.");
       expect(banner.text()).toContain("Some features are simulated");

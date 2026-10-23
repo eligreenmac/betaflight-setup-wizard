@@ -18,6 +18,18 @@
         },
         {
           "url": "https://github.com/eligreenmac/betaflight-setup-wizard/*"
+        },
+        {
+          "url": "https://silabs.com/*"
+        },
+        {
+          "url": "https://www.silabs.com/*"
+        },
+        {
+          "url": "https://wch-ic.com/*"
+        },
+        {
+          "url": "https://www.wch-ic.com/*"
         }
       ]
     },

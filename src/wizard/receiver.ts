@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /** Receiver options offered by the wizard (MVP). */
-import { device, type DeviceFcInfo } from "../api/device";
+import { api } from "../api/commands";
 import type { FcInfo, RxProtocol } from "../types/model";
+import type { WizardState } from "./state";
 import { compareVersions } from "./version";
 
 /** Serial receiver protocols, most common first. */
@@ -21,10 +22,10 @@ export const ONBOARD_ELRS_BUILD_OPTIONS = ["USE_RX_EXPRESSLRS", "USE_RX_SPI_EXPR
  * decides when known; before the probe (`present: null`) fall back to the ELRS pins
  * and build-option hints. config_plan still refuses non-ExpressLRS SPI protocols.
  */
-export function hasOnboardElrs(fc: DeviceFcInfo | null): boolean {
+export function hasOnboardElrs(fc: FcInfo | null): boolean {
   if (!fc) return false;
-  if (fc.rxSpi && fc.rxSpi.present !== null) return fc.rxSpi.present;
-  return !!fc.rxSpi?.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
+  if (fc.rxSpi.present !== null) return fc.rxSpi.present;
+  return fc.rxSpi.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
 }
 
 /** device_probe_board leaves the CLI without a reboot only on 4.5+ (on 4.4 the FC reboots). */
@@ -35,7 +36,7 @@ export const PROBE_WITHOUT_REBOOT_SINCE = "4.5.0";
  * Skipped before 4.5 and on non-Betaflight firmware; any failure (e.g. NOT_IMPLEMENTED
  * on an older backend) keeps the identify result.
  */
-export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<DeviceFcInfo> = () => device.probeBoard()): Promise<DeviceFcInfo> {
+export async function probeOnboardReceiver(info: FcInfo, probe: () => Promise<FcInfo> = () => api.device.probeBoard()): Promise<FcInfo> {
   if (info.fcVariant !== "BTFL" || compareVersions(info.firmwareVersion, PROBE_WITHOUT_REBOOT_SINCE) < 0) return info;
   try {
     return await probe();
@@ -58,4 +59,16 @@ export function asksTelemetry(p: RxProtocol | null): boolean {
 /** Default telemetry answer: yes where we ask, otherwise off (ignored by the engine). */
 export function defaultTelemetry(p: RxProtocol): boolean {
   return asksTelemetry(p);
+}
+
+/** The Binding step applies: ExpressLRS on SPI, or CRSF on a UART (ExpressLRS or Crossfire). */
+export function bindingApplies(s: WizardState): boolean {
+  const r = s.model.receiver;
+  return (r.kind === "SPI" && r.protocol === "EXPRESSLRS") || (r.kind === "SERIAL" && r.protocol === "CRSF");
+}
+
+/** The receiver is ExpressLRS (onboard SPI, or a UART CRSF receiver the user says is ExpressLRS). */
+export function isElrs(s: WizardState): boolean {
+  const r = s.model.receiver;
+  return (r.kind === "SPI" && r.protocol === "EXPRESSLRS") || (r.kind === "SERIAL" && r.protocol === "CRSF" && s.ui.crsfFamily === "ELRS");
 }

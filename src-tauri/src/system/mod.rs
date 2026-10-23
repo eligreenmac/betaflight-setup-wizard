@@ -4,6 +4,7 @@
 //! docs/PACKAGING.md.
 
 pub mod commands;
+pub mod elevated_install;
 pub mod usb_drivers;
 #[cfg(windows)]
 mod windows;
@@ -52,28 +53,36 @@ pub fn install_dfu_driver(helper: Option<PathBuf>) -> AppResult<()> {
     if todo.is_empty() {
         return Ok(());
     }
-    let helper = helper.filter(|p| p.is_file()).ok_or_else(|| {
+    // Fail early (unelevated) if the build has no helper.
+    helper.filter(|p| p.is_file()).ok_or_else(|| {
         AppError::Driver(format!(
             "WinUSB helper ({HELPER_EXE}) is not bundled with this build"
         ))
     })?;
-    for (vid, pid, name) in &todo {
-        let dest = std::env::temp_dir()
-            .join("bfsw-winusb")
-            .join(format!("{vid:04x}_{pid:04x}"));
-        std::fs::create_dir_all(&dest)?;
-        let args = usb_drivers::wdi_simple_args(*vid, *pid, name, &dest.to_string_lossy())
+    // One elevated relaunch of this exe (UAC prompt names the app) for all
+    // devices: see elevated_install.rs. It extracts the driver files into a fresh
+    // SYSTEM/Administrators-only folder under %ProgramData% (not the user-writable
+    // %TEMP%) and runs the bundled helper from there. The helper itself is located by
+    // the elevated process (next to its own exe), never passed on the command line.
+    let exe = std::env::current_exe()
+        .map_err(|e| AppError::Driver(format!("cannot locate the app executable: {e}")))?;
+    let cwd = exe
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let params = elevated_install::params(&todo);
+    let timeout_ms = 5 * 60 * 1000 * u32::try_from(todo.len()).unwrap_or(1).max(1);
+    let code = windows::run_elevated(&exe, &params, &cwd, timeout_ms)?;
+    if code != 0 {
+        let names = todo
             .iter()
-            .map(|a| usb_drivers::quote_windows_arg(a))
+            .map(|(vid, pid, name)| format!("{name} ({vid:04X}:{pid:04X})"))
             .collect::<Vec<_>>()
-            .join(" ");
-        let code = windows::run_elevated(&helper, &args, &dest, 5 * 60 * 1000)?;
-        if code != 0 {
-            return Err(AppError::Driver(format!(
-                "WinUSB install for {name} ({vid:04X}:{pid:04X}) failed: {} (libwdi {code})",
-                usb_drivers::wdi_error_message(code)
-            )));
-        }
+            .join(", ");
+        return Err(AppError::Driver(format!(
+            "WinUSB install for {names} failed: {}",
+            elevated_install::exit_message(code)
+        )));
     }
     // Verify: every device we touched must now be bound to WinUSB.
     let after = driver_status()?;

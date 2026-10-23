@@ -96,11 +96,13 @@ Enums:
 {
   "dfuWinusb": false,          // a DFU device is plugged in without WinUSB
   "vcp": true,                 // no VCP/bridge device is missing its driver
-  "notes": ["STM32 DFU (0483:DF11): no driver bound"],
+  "notes": ["STM32 DFU (0483:DF11) ...: service=STTub30, problem=0",
+            "STM32 DFU (0483:DF11): installing WinUSB replaces driver STTub30"],
   "devices": [
     { "vid": 1155, "pid": 57105, "name": "STM32 DFU", "kind": "DFU",
-      "instanceId": "USB\\VID_0483&PID_DF11\\205F32...", "service": null,
-      "driverOk": false, "action": "INSTALL_DFU_DRIVER", "guidanceIndex": null }
+      "instanceId": "USB\\VID_0483&PID_DF11\\205F32...", "service": "STTub30",
+      "driverOk": false, "action": "INSTALL_DFU_DRIVER", "guidanceIndex": null,
+      "replacesDriver": true }   // another driver is bound and will be replaced
   ],
   "guidance": [
     { "id": "CP210X", "vendor": "Silicon Labs", "chips": "CP210x ...",
@@ -111,6 +113,9 @@ Enums:
 ```
 
 UI rule: `action = INSTALL_DFU_DRIVER` → button calling `system_install_dfu_driver`;
+if `replacesDriver` is true, first warn that the current driver (`service`, e.g. ST's
+DfuSe `STTub30`) will be replaced by WinUSB (tools that rely on it, such as DfuSe,
+stop seeing the board) and require confirmation;
 `VENDOR_DOWNLOAD` → show `guidance[guidanceIndex]` (vendor + link, opened in the
 system browser); `REPLUG` → ask to replug / check Device Manager. Third-party
 bridge drivers are never bundled.
@@ -120,7 +125,7 @@ bridge drivers are never bundled.
 Every command returns `Result<T, AppError>`; the UI receives
 `{ "code": "...", "message": "...", "details"?: {...} }` (`details` only where listed below).
 Codes: NOT_IMPLEMENTED, NOT_CONNECTED, SERIAL, MSP, CLI, USB, FIRMWARE, CONFIG,
-UNSUPPORTED_FIRMWARE, DRIVER, IO,
+UNSUPPORTED_FIRMWARE, DRIVER, IO, INVALID_ARGUMENT (bad command argument, see the table),
 plus the device/flasher codes:
 
 | Code | When | `details` | Suggested UI |
@@ -131,6 +136,7 @@ plus the device/flasher codes:
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
 | `ERASE_CONFIRMATION_REQUIRED` | `flasher_remove_read_protection` called without `confirmErase: true`; nothing was sent | – | (programming error in the UI) |
+| `INVALID_ARGUMENT` | A command argument is invalid, e.g. `flasher_flash` given an image path that is not a file inside the firmware cache (canonicalized; `..` and symlink escapes rejected); nothing was sent | – | (programming error in the UI) |
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
 | `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |
@@ -209,6 +215,7 @@ pub trait Connection: Send {
     fn enter_cli(&mut self) -> AppResult<()>;
     fn cli_exec(&mut self, line: &str) -> AppResult<String>;
     fn exit_cli(&mut self, save: bool) -> AppResult<()>;
+    fn uid(&self) -> Option<String> { None } // cached FcInfo.uid (device implements it)
 }
 
 // config/mod.rs — pure, golden-tested
@@ -232,6 +239,19 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   returns once sent; the caller then calls `reconnect(timeout)`, which waits for the port to drop
   and come back (same VID/PID/serial number), reopens it and re-verifies MSP_API_VERSION and
   MSP_UID. Likewise after `exit` on 4.4 (reboots). `exit_cli(false)` uses `exit noreboot` on 4.5+.
+  `uid()` returns the connected board's cached `FcInfo.uid` (no I/O; `None` if unknown).
+- **CLI state on the link**: the manager remembers that the CLI is open from `enter_cli`
+  until `exit_cli`, `reconnect`, a reboot or an error. Callers may leave it open (config's
+  read-only commands do, because on 4.4 leaving reboots the FC). The next MSP call — from
+  `msp_request`, `device_identify`, motor test or RC stream — first leaves it transparently:
+  plain `exit` (on every firmware, so unsaved RAM changes are dropped; `exit noreboot` is
+  never used here), wait for the reboot (if none is seen: MSP_REBOOT `[0]`), wait for the
+  port to come back, re-verify MSP_API_VERSION + MSP_UID. One `exit` per transition, `save`
+  is never sent. The link is detached before the `exit` is written, so a failure leaves no
+  CLI state: the call fails with `SERIAL` (timed out coming back / a different flight
+  controller came back) and later calls get `SERIAL` "reconnect first", never a second
+  `exit`. `device_reboot_to_bootloader` from an open CLI sends `bl rom` directly. The
+  emergency stop never waits for this (it does not take the port lock).
 - **`FcInfo.uid`**: exactly the CLI `mcu_id` string: 24 lowercase hex chars, the three
   MSP_UID (160) words `U_ID_0, U_ID_1, U_ID_2` (each u32 little-endian on the wire), each
   zero-padded to 8 digits, in that order (`cli.c`: `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`).
@@ -270,7 +290,12 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   armed, `device_disconnect`, dropping the worker/handle, and the **emergency stop in the Tauri
   run loop**: `on_window_event` on `CloseRequested` and `Destroyed`, and the `App::run` callback on
   `RunEvent::ExitRequested` and `RunEvent::Exit` call `device::emergency_stop_all()` (event
-  `APP_CLOSING`). This does not depend on the UI being alive.
+  `APP_CLOSING`). This does not depend on the UI being alive, and it never waits on the
+  manager lock (a keepalive may hold it): it sets the test's halt flag, which the worker checks
+  before every `MSP_SET_MOTOR`, on keepalive/update and every ≤20 ms, and writes the all-stop
+  frame directly through a duplicated port handle (`SerialLink::try_clone_writer`). Port cleanup
+  is a single `try_lock`; if the manager is busy the worker stops the motors itself as soon as
+  the in-flight exchange returns. After a halt, keepalive/update get `MOTOR_TEST_NOT_ACTIVE`.
 - `MSP_SET_ARMING_DISABLED` is **not** sent. Betaflight has no firmware-side MSP motor timeout:
   if USB drops mid-test the last value stays applied, so the UI must tell the user to test on
   USB power with the battery disconnected and props off.
@@ -369,7 +394,10 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
 - WinUSB: libwdi-based elevated helper exe shipped as a Tauri resource (phase 1),
   invoked by `system_install_dfu_driver`: binds WinUSB only to connected DFU devices that
-  lack it (one UAC prompt; the app itself never runs elevated). Details, build and
+  lack it (one UAC prompt: the app relaunches its own exe with an elevated-install
+  subcommand that `main.rs` dispatches before Tauri starts; the app UI never runs
+  elevated). Driver files are
+  extracted to a per-run SYSTEM/Administrators-only folder under `%ProgramData%`. Details, build and
   LGPL-3.0 obligations: `docs/PACKAGING.md`.
   device/flasher never install drivers; they report `DRIVER_MISSING` with the device's
   `{vid, pid}` (§2.3).

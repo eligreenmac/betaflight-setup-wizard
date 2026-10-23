@@ -1,6 +1,7 @@
 //! Windows-only parts: enumerate present USB device nodes with their bound
 //! driver service (SetupAPI + cfgmgr32, no elevation needed) and run the
-//! libwdi helper elevated via `ShellExecuteExW("runas")` (one UAC prompt).
+//! app exe elevated via `ShellExecuteExW("runas")` (one UAC prompt) for the WinUSB
+//! install (see elevated_install.rs).
 
 use super::usb_drivers::{parse_vid_pid, RawUsbDevice};
 use crate::error::{AppError, AppResult};
@@ -149,7 +150,9 @@ pub fn run_elevated(exe: &Path, args: &str, cwd: &Path, timeout_ms: u32) -> AppR
         return Err(if err == ERROR_CANCELLED {
             AppError::Driver("administrator permission was declined (UAC)".into())
         } else {
-            AppError::Driver(format!("could not start driver helper (error {err})"))
+            AppError::Driver(format!(
+                "could not start the elevated driver installer (error {err})"
+            ))
         });
     }
     if info.hProcess.is_null() {

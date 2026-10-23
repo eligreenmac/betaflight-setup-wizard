@@ -108,17 +108,41 @@ export interface DroneModel {
     port: string | null;
     digitalSystem: DigitalSystem | null;
     region: string | null;
+    /** Analog VTX table (`vtxtable`); null = keep the FC's table. */
+    table?: VtxTable | null;
+    /** 1-based band / channel / power level into `table`; null = keep. */
+    band?: number | null;
+    channel?: number | null;
+    power?: number | null;
   };
-  gps: { enabled: boolean; port: string | null; provider: GpsProvider | null };
+  gps: {
+    enabled: boolean;
+    port: string | null;
+    provider: GpsProvider | null;
+    /** UBLOX only: gps_ublox_use_galileo; null = keep. */
+    galileo?: boolean | null;
+    sbasMode?: SbasMode | null;
+  };
   esc: {
     protocol: EscProtocol;
     bidirectionalDshot: boolean;
     motorPoles: number | null;
     telemetryPort: string | null;
     propsOut: boolean;
+    /** Motor idle in 0.01 % (550 = 5.5 %), 0..2000; null = keep. */
+    idle?: number | null;
+    /** motor_output_reordering: item i = 0-based output for motor i+1 (permutation); null = keep. */
+    motorOrder?: number[] | null;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
-  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null };
+  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
+}
+
+export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
+/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
+export interface VtxTable {
+  bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
+  powerLevels: { value: number; label: string }[];
 }
 
 // ---- config engine
@@ -203,6 +227,12 @@ export interface UsbDriverInfo {
   action: DriverAction;
   /** Index into DriverStatus.guidance when action = VENDOR_DOWNLOAD. */
   guidanceIndex: number | null;
+  /**
+   * DFU only: true when action = INSTALL_DFU_DRIVER and another driver (`service`,
+   * e.g. "STTub30" from ST DfuSe, or libusb0) is bound that installing WinUSB will
+   * replace. Warn and ask for confirmation before calling installDfuDriver().
+   */
+  replacesDriver: boolean;
 }
 export interface DriverGuidance {
   /** Stable id, usable as i18n key suffix: "CP210X" | "CH34X" | "CH343". */
@@ -218,7 +248,8 @@ export interface AppInfo { version: string; os: string; cacheDir: string }
 /** Error codes (src-tauri/src/error.rs). The UI maps them to i18n keys `errors.<code>`. */
 export type AppErrorCode =
   | "NOT_IMPLEMENTED" | "NOT_CONNECTED" | "SERIAL" | "MSP" | "CLI" | "USB" | "FIRMWARE" | "CONFIG"
-  | "DRIVER" | "IO" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
+  | "UNSUPPORTED_FIRMWARE"
+  | "DRIVER" | "IO" | "INVALID_ARGUMENT" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
   | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
   | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE";
 /** `details` of PORT_BUSY. */

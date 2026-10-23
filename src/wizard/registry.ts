@@ -3,6 +3,7 @@
 
 import type { Component } from "vue";
 import ApplyStep from "./steps/ApplyStep.vue";
+import BindingStep from "./steps/BindingStep.vue";
 import ComponentsStep from "./steps/ComponentsStep.vue";
 import ConnectStep from "./steps/ConnectStep.vue";
 import DoneStep from "./steps/DoneStep.vue";
@@ -21,6 +22,7 @@ export const stepComponents: Record<string, Component> = {
   Firmware: FirmwareStep,
   Components: ComponentsStep,
   Receiver: ReceiverStep,
+  Binding: BindingStep,
   Vtx: VtxStep,
   Gps: GpsStep,
   Esc: EscStep,

@@ -17,8 +17,7 @@
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { DeviceBackend, DeviceCommand, DeviceCommandMap, DeviceFcInfo } from "../api/device";
-import type { Backup, ClearedPort, CliScript, DroneModel, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import type { Backup, ClearedPort, CliScript, DroneModel, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
@@ -38,6 +37,7 @@ export const SCENARIOS = [
   "rollback-fail",
   "flash-verify",
   "read-protected",
+  "driver-replace",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -51,8 +51,6 @@ export interface MockOptions {
 
 export interface ScenarioMock {
   backend: Backend;
-  /** The #38 device_* commands (src/api/device.ts) until they are in the shared CommandMap. */
-  deviceBackend: DeviceBackend;
   events: Emitter;
   /** Inspectable device state (tests). */
   device: MockDevice;
@@ -63,6 +61,10 @@ interface MockDevice {
   ports: FcSerialPort[];
   inDfu: boolean;
   dfuDriverOk: boolean;
+  /** ST's STTub30 (STM32CubeProgrammer / DfuSe) is bound to the DFU device: WinUSB would replace it. */
+  dfuOtherDriver: string | null;
+  /** system_install_dfu_driver calls (tests). */
+  driverInstalls: number;
   flashFailuresLeft: number;
   verifyFailuresLeft: number;
   /** MCU read protection set (flasher_flash refuses until it is removed). */
@@ -111,7 +113,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       { name: "SOFTSERIAL1", identifier: 30, functionMask: 0, isConnectionPort: false },
     ],
     inDfu: false,
-    dfuDriverOk: scenario !== "driver-missing",
+    dfuDriverOk: scenario !== "driver-missing" && scenario !== "driver-replace",
+    dfuOtherDriver: scenario === "driver-replace" ? "STTub30" : null,
+    driverInstalls: 0,
     flashFailuresLeft: scenario === "flash-fail" ? 1 : 0,
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     readProtected: scenario === "read-protected",
@@ -154,10 +158,12 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
               name: "STM32 BOOTLOADER",
               kind: "DFU",
               instanceId: "USB\\VID_0483&PID_DF11\\MOCKDFU1",
-              service: device.dfuDriverOk ? "WinUSB" : null,
+              service: device.dfuDriverOk ? "WinUSB" : device.dfuOtherDriver,
               driverOk: device.dfuDriverOk,
               action: device.dfuDriverOk ? "NONE" : "INSTALL_DFU_DRIVER",
               guidanceIndex: null,
+              // Only the driver-replace scenario has another driver (STTub30) bound.
+              replacesDriver: !device.dfuDriverOk && device.dfuOtherDriver !== null,
             },
           ]
         : [],
@@ -165,7 +171,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }),
     system_install_dfu_driver: async () => {
       await sleep(latency * 2);
+      device.driverInstalls++;
       device.dfuDriverOk = true;
+      device.dfuOtherDriver = null;
     },
     device_list_ports: () =>
       scenario === "no-board" || device.inDfu
@@ -295,7 +303,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  function fcInfo(): DeviceFcInfo {
+  function fcInfo(): FcInfo {
     const elrs = scenario === "onboard-elrs";
     return {
       fcVariant: "BTFL",
@@ -315,7 +323,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   }
 
   // ---- motor test / RC stream (device_*, #38). Same gate order as ARCHITECTURE §4.2.
-  const deviceHandlers: { [K in DeviceCommand]: (a: DeviceCommandMap[K][0]) => DeviceCommandMap[K][1] } = {
+  const deviceHandlers: H = {
     device_probe_board: () => {
       legacy("device_probe_board");
       device.probed = true;
@@ -394,18 +402,15 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  const inner = createMockBackend(handlers);
+  const inner = createMockBackend({ ...handlers, ...deviceHandlers });
+  // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
+  const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
-    await sleep(latency);
+    await sleep(fast(cmd) ? latency / 2 : latency);
     return inner(cmd, args);
   }) as Backend;
 
-  const deviceBackend: DeviceBackend = (async (cmd: DeviceCommand, args: never) => {
-    await sleep(latency / 2);
-    return (deviceHandlers[cmd] as (a: unknown) => unknown)(args);
-  }) as DeviceBackend;
-
-  return { backend, deviceBackend, events, device };
+  return { backend, events, device };
 }
 
 const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
@@ -442,6 +447,7 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]): CliScript
     commands.push(`set serialrx_inverted = ${model.receiver.inverted ? "ON" : "OFF"}`, `set serialrx_halfduplex = ${model.receiver.halfDuplex ? "ON" : "OFF"}`);
   }
   if (model.receiver.kind === "SPI" && model.receiver.protocol) commands.push("feature -RX_SERIAL", "feature RX_SPI", `set rx_spi_protocol = ${model.receiver.protocol}`);
+  if (model.receiver.kind === "SPI" && model.receiver.elrsUid?.length === 6) commands.push(`set expresslrs_uid = ${model.receiver.elrsUid.join(",")}`);
   const p = model.receiver.protocol;
   if (model.receiver.telemetry && (p === "CRSF" || p === "FPORT" || (model.receiver.kind === "SPI" && p === "EXPRESSLRS"))) commands.push("feature TELEMETRY");
   if (model.gps.enabled) commands.push("feature GPS", `set gps_provider = ${model.gps.provider ?? "UBLOX"}`);

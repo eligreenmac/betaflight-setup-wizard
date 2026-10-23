@@ -4,7 +4,6 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { api } from "../src/api/commands";
-import { flasherNext } from "../src/api/device";
 import { i18n, setLocale } from "../src/i18n";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import type { ScenarioMock } from "../src/mocks/scenarios";
@@ -48,7 +47,7 @@ describe("read protection (orchestration)", () => {
   });
 
   it("the backend refuses without confirmErase (and the mock records it)", async () => {
-    await expect(flasherNext.removeReadProtection("MOCKDFU1", false)).rejects.toMatchObject({ code: "ERASE_CONFIRMATION_REQUIRED" });
+    await expect(api.flasher.removeReadProtection("MOCKDFU1", false)).rejects.toMatchObject({ code: "ERASE_CONFIRMATION_REQUIRED" });
     expect(mock.device.readProtected).toBe(true);
   });
 });
