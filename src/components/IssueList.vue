@@ -2,14 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { useI18n } from "vue-i18n";
 import type { Issue } from "../wizard/guards";
+import { rxProtocolLabel } from "../wizard/receiver";
 
 defineProps<{ issues: Issue[] }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
 
-/** `role` params are role ids; translate them so the sentence reads naturally. */
+/** `role` / `rxProtocol` params are ids; translate them so the sentence reads naturally. */
 function text(i: Issue): string {
   const params = { ...(i.params ?? {}) };
   if (typeof params.role === "string") params.role = t(`roles.${params.role}`);
+  if (typeof params.rxProtocol === "string") params.rxProtocol = rxProtocolLabel(params.rxProtocol, t, te);
   return t(i.key, params);
 }
 </script>

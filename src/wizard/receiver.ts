@@ -28,6 +28,20 @@ export function hasOnboardElrs(fc: FcInfo | null): boolean {
   return fc.rxSpi.expresslrsPins || fc.buildOptions.some((o) => (ONBOARD_ELRS_BUILD_OPTIONS as readonly string[]).includes(o.toUpperCase()));
 }
 
+type T = (key: string) => string;
+type Te = (key: string) => boolean;
+
+/**
+ * Friendly receiver protocol name, e.g. CRSF -> "CRSF (ExpressLRS, Crossfire, Tracer)"
+ * (`receiver.protocols.<id>`). The one place the UI turns a protocol id into text; an id
+ * without a translation is shown as-is, never as a raw i18n key.
+ */
+export function rxProtocolLabel(protocol: string | null | undefined, t: T, te: Te): string {
+  if (!protocol) return "";
+  const key = `receiver.protocols.${protocol}`;
+  return te(key) ? t(key) : protocol;
+}
+
 /** device_probe_board leaves the CLI without a reboot only on 4.5+ (on 4.4 the FC reboots). */
 export const PROBE_WITHOUT_REBOOT_SINCE = "4.5.0";
 

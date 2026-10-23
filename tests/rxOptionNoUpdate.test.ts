@@ -52,12 +52,13 @@ describe("receiver option missing, update blocked by the mixed-backend guard", (
   it("generic wording, no offer, Next blocked until another protocol is picked", async () => {
     await toReceiver();
     expect(reflashBlock(wizard)).toBe("mixed");
-    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(en.receiver.optionMissingNoUpdate.replaceAll("{protocol}", "CRSF"));
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(en.receiver.optionMissingNoUpdate.replaceAll("{protocol}", en.receiver.protocols.CRSF));
     expect(w!.get('[data-test="rx-option-missing"]').text()).not.toContain(en.receiver.optionMissingChoices);
     expect(w!.find('[data-test="reflash-offer"]').exists()).toBe(false);
     await click(w!, "next");
     expect(nav.currentId).toBe("receiver");
-    expect(w!.text()).toContain(en.validation.rxOptionMissingNoUpdate.replace("{protocol}", "CRSF"));
+    expect(w!.text()).toContain(en.validation.rxOptionMissingNoUpdate.replace("{rxProtocol}", en.receiver.protocols.CRSF));
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toContain("To use CRSF (ExpressLRS, Crossfire, Tracer), update the firmware first");
     await w!.get('[data-protocol="SBUS"]').setValue(true);
     await settle();
     expect(guards.receiver.validate(wizard).map((i) => i.key).filter((k) => k.startsWith("validation.rxOption"))).toEqual([]);
@@ -66,6 +67,9 @@ describe("receiver option missing, update blocked by the mixed-backend guard", (
   it("in Hebrew", async () => {
     setLocale("he");
     await toReceiver();
-    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(he.receiver.optionMissingNoUpdate.replaceAll("{protocol}", "CRSF"));
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(he.receiver.optionMissingNoUpdate.replaceAll("{protocol}", he.receiver.protocols.CRSF));
+    await click(w!, "next");
+    expect(w!.text()).toContain(he.validation.rxOptionMissingNoUpdate.replace("{rxProtocol}", he.receiver.protocols.CRSF));
+    expect(w!.text()).not.toContain("{rxProtocol}");
   });
 });
