@@ -183,6 +183,9 @@ impl FcConnection {
         match m.api_version() {
             Ok(api) => {
                 c.api = Some(api);
+                // Cache the board identity so a later reboot (CLI exit, save, MSP reboot)
+                // can be checked against it, and `Connection::uid` needs no round-trip.
+                c.uid = m.uid().ok();
                 c.link = Link::Msp(m);
             }
             // No MSP answer at all: most likely a CLI session left open (crashed app,
@@ -273,21 +276,11 @@ impl FcConnection {
         }
     }
 
-    /// The FC did not answer MSP: assume a stale CLI session and leave it so that nothing
-    /// the previous session typed stays live.
-    ///
-    /// 1. Send `exit` (never `save`). In Betaflight 4.4, 4.5, 2025.12 and master plain `exit`
-    ///    reboots the FC (`cliRebootEx`, which prints `Rebooting`), dropping unsaved RAM
-    ///    changes and any open batch. Only `exit noreboot` (4.5+) keeps them.
-    /// 2. Follow the reboot like `reconnect`: a USB VCP disappears and re-enumerates, a UART
-    ///    bridge stays. Settle, drain, retry MSP exactly once; still silent → error.
-    /// 3. If neither `Rebooting` nor a port drop was seen, the exit may not have rebooted
-    ///    (unknown firmware, lost output), so RAM may still hold the stale changes: reboot
-    ///    over MSP (MSP_REBOOT 68, `[0]` = firmware, like `config::session::discard` on 4.5+)
-    ///    once and wait for the FC again.
+    /// The FC did not answer MSP: assume a stale CLI session (left by another app or a
+    /// crash) and leave it with [`exit_cli_and_reconnect`](Self::exit_cli_and_reconnect).
     fn recover_stale_cli(
         &mut self,
-        mut link: BoxLink,
+        link: BoxLink,
         deadline: Instant,
         timeout: Duration,
     ) -> DResult<()> {
@@ -295,6 +288,44 @@ impl FcConnection {
             "{}: no MSP answer; assuming a stale CLI session, sending `exit`",
             self.port.path
         );
+        self.exit_cli_and_reconnect(link, deadline, timeout, "a stale CLI")
+    }
+
+    /// Our own CLI session is open (config's read-only commands leave it open: on 4.4 the
+    /// only way out reboots) and an MSP call needs the link: leave it the same way.
+    fn leave_cli_for_msp(&mut self) -> DResult<()> {
+        let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
+            return Ok(());
+        };
+        log::info!(
+            "{}: CLI still open before an MSP call; `exit` (FC reboots) and reconnecting",
+            self.port.path
+        );
+        let budget = DEFAULT_RECONNECT_TIMEOUT;
+        self.exit_cli_and_reconnect(s.into_link(), Instant::now() + budget, budget, "the CLI")
+    }
+
+    /// Leave the CLI so that nothing typed in it stays live, then reconnect in MSP mode.
+    /// The link is `Detached` from the first byte on, so a failure leaves no CLI state
+    /// behind (later calls get "not open; reconnect first", never a second `exit`).
+    ///
+    /// 1. Send `exit` (never `save`). In Betaflight 4.4, 4.5, 2025.12 and master plain `exit`
+    ///    reboots the FC (`cliRebootEx`, which prints `Rebooting`), dropping unsaved RAM
+    ///    changes and any open batch. Only `exit noreboot` (4.5+) keeps them.
+    /// 2. Follow the reboot like `reconnect`: a USB VCP disappears and re-enumerates, a UART
+    ///    bridge stays. Settle, drain, retry MSP exactly once; still silent → error.
+    /// 3. If neither `Rebooting` nor a port drop was seen, the exit may not have rebooted
+    ///    (unknown firmware, lost output), so RAM may still hold the changes: reboot over
+    ///    MSP (MSP_REBOOT 68, `[0]` = firmware, like `config::session::discard` on 4.5+)
+    ///    once and wait for the FC again.
+    /// 4. [`adopt`](Self::adopt) re-verifies MSP_UID: a different board is an error.
+    fn exit_cli_and_reconnect(
+        &mut self,
+        mut link: BoxLink,
+        deadline: Instant,
+        timeout: Duration,
+        from: &str,
+    ) -> DResult<()> {
         self.link = Link::Detached;
         let mut rebooted = match link.write_all(STALE_CLI_EXIT) {
             Ok(()) => saw_reboot(&mut link, self.settle()),
@@ -303,7 +334,8 @@ impl FcConnection {
         };
         drop(link); // close the port so a re-enumerated VCP can be reopened
         rebooted |= self.wait_gone(timeout);
-        let (found, m, api) = self.wait_back(deadline, timeout, "after leaving a stale CLI")?;
+        let after_exit = format!("after leaving {from}");
+        let (found, m, api) = self.wait_back(deadline, timeout, &after_exit)?;
         if rebooted {
             return self.adopt(found, m, api);
         }
@@ -364,25 +396,23 @@ impl FcConnection {
         ))
     }
 
-    /// Make sure the link is in MSP mode (leaves the CLI with `exit noreboot` on 4.5+).
+    /// Make sure the link is in MSP mode. If our CLI session is still open, leave it with
+    /// plain `exit` + reconnect ([`leave_cli_for_msp`](Self::leave_cli_for_msp)) on every
+    /// firmware: `exit noreboot` would keep whatever the session changed live in RAM.
     fn msp(&mut self) -> DResult<&mut MspClient<BoxLink>> {
         if matches!(self.link, Link::Cli(_)) {
-            if !self.supports_noreboot() {
-                return Err(DeviceError::Cli(
-                    "CLI is active and this firmware reboots when leaving it; call exit_cli first"
-                        .into(),
-                ));
-            }
-            let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
-                unreachable!()
-            };
-            self.link = Link::Msp(self.client(s.exit_no_reboot()?));
+            self.leave_cli_for_msp()?;
         }
         let lost = self.lost();
         match &mut self.link {
             Link::Msp(m) => Ok(m),
             _ => Err(lost),
         }
+    }
+
+    /// Is our CLI session open (entered via the CLI path, not yet left)?
+    pub fn in_cli(&self) -> bool {
+        matches!(self.link, Link::Cli(_))
     }
 
     fn cli(&mut self) -> DResult<&mut CliSession<BoxLink>> {
@@ -438,13 +468,13 @@ impl FcConnection {
         let probe = self.cli()?.probe_board()?;
         id.apply_cli_probe(&probe);
         if self.supports_noreboot() {
-            self.msp()?;
-        } else {
+            // Fresh session, read-only commands only: nothing to discard, skip the reboot.
             let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
                 return Err(self.lost());
             };
-            drop(s.exit()?);
-            self.reconnect_inner(DEFAULT_RECONNECT_TIMEOUT)?;
+            self.link = Link::Msp(self.client(s.exit_no_reboot()?));
+        } else {
+            self.leave_cli_for_msp()?;
         }
         Ok(id)
     }
@@ -452,6 +482,13 @@ impl FcConnection {
     /// Reboot into the ROM DFU bootloader: MSP_REBOOT, falling back to CLI `bl rom`.
     /// The port is gone afterwards.
     pub fn reboot_to_bootloader(&mut self) -> DResult<()> {
+        if let Link::Cli(_) = self.link {
+            // Already in the CLI: `bl rom` directly instead of exit + reboot + MSP_REBOOT.
+            let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
+                unreachable!()
+            };
+            return s.reboot_to_bootloader(BootloaderTarget::Rom);
+        }
         let r = self.msp()?.reboot(RebootType::Bootloader);
         match r {
             Ok(_) => {}
@@ -556,7 +593,9 @@ impl Connection for FcConnection {
     }
 
     /// `save=true`: sends `save` (FC reboots) → call `reconnect`. `save=false`:
-    /// `exit noreboot` on 4.5+; on 4.4 `exit` reboots the FC → call `reconnect`.
+    /// `exit noreboot` on 4.5+ (link back in MSP mode, RAM changes stay live: config's
+    /// `discard` follows it with MSP_REBOOT); on 4.4 `exit` reboots the FC → call
+    /// `reconnect`. Either way the CLI state is cleared before anything is written.
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
         if !matches!(self.link, Link::Cli(_)) {
             return Ok(());
@@ -572,6 +611,10 @@ impl Connection for FcConnection {
             drop(s.exit()?);
         }
         Ok(())
+    }
+
+    fn uid(&self) -> Option<String> {
+        self.uid.map(|u| u.mcu_id())
     }
 }
 

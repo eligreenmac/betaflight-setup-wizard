@@ -28,7 +28,7 @@ pub mod session;
 pub mod snapshot;
 
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

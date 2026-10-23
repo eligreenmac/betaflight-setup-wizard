@@ -805,6 +805,18 @@ pub(crate) mod fake {
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
+    /// What a CLI command does on the fake FC (e.g. config's `MockFc`, which answers
+    /// `version` / `dump all` / `diff all` from real dumps). Without one, every command just
+    /// marks RAM dirty and prints a prompt.
+    pub trait CliBackend: Send {
+        /// `#` received: the CLI was entered.
+        fn enter(&mut self) {}
+        /// Output of one command (without echo and prompt).
+        fn exec(&mut self, line: &str) -> String;
+        /// The FC reset: unsaved changes are gone.
+        fn reboot(&mut self) {}
+    }
+
     #[derive(Clone)]
     pub struct FakeFc {
         pub armed: Arc<AtomicBool>,
@@ -836,6 +848,15 @@ pub(crate) mod fake {
         /// On every reboot: unplug this "present" flag for ~30 ms (USB VCP re-enumerating).
         /// `None` = UART bridge, the port never goes away.
         pub unplug_on_reboot: Arc<Mutex<Option<Arc<AtomicBool>>>>,
+        /// How long a reboot keeps the USB port unplugged.
+        pub reboot_ms: u64,
+        /// MSP_API_VERSION minor: 45 = Betaflight 4.4 (no `exit noreboot`), 46 = 4.5,
+        /// 47 = 2025.12.
+        pub api_minor: u8,
+        /// `#` enters the CLI and commands go here (see [`CliBackend`]).
+        pub cli_backend: Arc<Mutex<Option<Box<dyn CliBackend>>>>,
+        /// Reboots seen (`exit`, MSP_REBOOT, `bl`).
+        pub reboots: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Default for FakeFc {
@@ -857,6 +878,10 @@ pub(crate) mod fake {
                 rx_log: Arc::default(),
                 cli_lines: Arc::default(),
                 unplug_on_reboot: Arc::default(),
+                reboot_ms: 30,
+                api_minor: 46,
+                cli_backend: Arc::default(),
+                reboots: Arc::default(),
             }
         }
     }
@@ -881,12 +906,17 @@ pub(crate) mod fake {
     impl FakeFc {
         /// FC reset: RAM changes are gone, the CLI is closed, a USB VCP re-enumerates.
         fn reboot(&self) {
+            self.reboots.fetch_add(1, Ordering::SeqCst);
             self.ram_dirty.store(false, Ordering::SeqCst);
             self.cli.store(false, Ordering::SeqCst);
+            if let Some(b) = self.cli_backend.lock().unwrap().as_mut() {
+                b.reboot();
+            }
             if let Some(p) = self.unplug_on_reboot.lock().unwrap().clone() {
                 p.store(false, Ordering::SeqCst);
+                let ms = self.reboot_ms;
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
                     p.store(true, Ordering::SeqCst);
                 });
             }
@@ -926,18 +956,70 @@ pub(crate) mod fake {
                                 me.cli.store(false, Ordering::SeqCst);
                             }
                             "exit" => out.extend_from_slice(b"\r\n# "),
+                            // 4.5+ `cliExitCmd`; 4.4 ignores the argument and reboots.
+                            "exit noreboot" if me.api_minor >= 46 => {
+                                out.extend_from_slice(b"\r\n# leaving CLI mode, no reboot\r\n");
+                                me.cli.store(false, Ordering::SeqCst);
+                            }
+                            "exit noreboot" => {
+                                out.extend_from_slice(
+                                    b"\r\n# leaving CLI mode, unsaved changes lost\r\n\r\nRebooting",
+                                );
+                                me.reboot();
+                            }
+                            "bl" | "bl rom" => {
+                                out.extend_from_slice(b"\r\nRebooting into bootloader");
+                                me.reboot();
+                            }
                             _ => {
-                                me.ram_dirty.store(true, Ordering::SeqCst);
-                                out.extend_from_slice(b"\r\n# ");
+                                let mut backend = me.cli_backend.lock().unwrap();
+                                match backend.as_mut() {
+                                    Some(b) => {
+                                        let r = b.exec(&cmd);
+                                        out.extend_from_slice(b"\r\n");
+                                        out.extend_from_slice(r.replace('\n', "\r\n").as_bytes());
+                                        out.extend_from_slice(b"\r\n\r\n# ");
+                                    }
+                                    None => {
+                                        me.ram_dirty.store(true, Ordering::SeqCst);
+                                        out.extend_from_slice(b"\r\n# ");
+                                    }
+                                }
                             }
                         }
                     }
                     return out;
                 }
+                if w == b"#" {
+                    // MSP-mode FC receiving `#` outside a frame: enter the CLI (cliEnter).
+                    me.cli.store(true, Ordering::SeqCst);
+                    if let Some(b) = me.cli_backend.lock().unwrap().as_mut() {
+                        b.enter();
+                    }
+                    out.extend_from_slice(
+                        b"\r\nEntering CLI Mode, type 'exit' to reboot, or 'help'\r\n\r\n# ",
+                    );
+                    return out;
+                }
                 for ev in parser.feed(w) {
                     let MspEvent::Frame(f) = ev else { continue };
                     let reply: Option<Vec<u8>> = match f.code {
-                        codes::MSP_API_VERSION => Some(vec![0, 1, 46]),
+                        codes::MSP_API_VERSION => Some(vec![0, 1, me.api_minor]),
+                        codes::MSP_FC_VARIANT => Some(b"BTFL".to_vec()),
+                        codes::MSP_FC_VERSION => Some(vec![4, 5, 5]),
+                        codes::MSP_BOARD_INFO => {
+                            let mut p = b"S405".to_vec();
+                            p.extend([0, 0, 0, 0]); // version, type, capabilities
+                            p.extend([0, 0, 0]); // target, board, manufacturer (empty)
+                            p.extend([0u8; 32]); // signature
+                            p.push(1); // F40X
+                            Some(p)
+                        }
+                        // identify() extras: a too-short payload reads as "unknown".
+                        codes::MSP2_COMMON_SERIAL_CONFIG | codes::MSP_RX_CONFIG => Some(vec![]),
+                        codes::MSP_RC => {
+                            Some([1500u16; 8].iter().flat_map(|v| v.to_le_bytes()).collect())
+                        }
                         codes::MSP_REBOOT => {
                             me.msp_reboots.lock().unwrap().push(f.payload.clone());
                             me.reboot();
