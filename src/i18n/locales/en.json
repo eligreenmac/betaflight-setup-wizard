@@ -143,6 +143,23 @@
       "FAILED": "Failed"
     }
   },
+  "readProtect": {
+    "title": "This board is locked (read protection)",
+    "what": "The chip on this flight controller has read protection turned on. Some boards ship like this from the factory, or after someone used other flashing tools. While it is on, new firmware cannot be written.",
+    "why": "Nothing has been changed on the board so far.",
+    "eraseWarning": "Removing the protection ERASES THE WHOLE CHIP. This cannot be undone.",
+    "lose1": "The current firmware is deleted. The board will not fly until the new firmware is flashed, which the wizard does right after.",
+    "lose2": "All settings stored on the board are deleted.",
+    "backupSaved": "A backup of your settings was saved before the update. You can restore it from Backups.",
+    "noBackup": "No backup of the board's settings could be saved, so they cannot be restored afterwards.",
+    "safe": "This is the normal way to unlock a board and does not damage it. Keep the USB cable plugged in until flashing is finished.",
+    "understand": "I understand that everything on the chip will be erased.",
+    "typeToConfirm": "To confirm, type {word}",
+    "confirmWord": "ERASE",
+    "erase": "Erase the chip and continue flashing",
+    "erasing": "Erasing the chip…",
+    "leave": "Don't want to erase it? Unplug the board. Nothing on it has been changed."
+  },
   "components": {
     "receiver": "Receiver",
     "vtx": "Video transmitter",
@@ -605,9 +622,9 @@
     },
     "READ_PROTECTED": {
       "title": "The board is read protected",
-      "body": "The chip is locked, so it cannot be flashed normally.",
-      "step1": "Flash again with full erase. This removes the lock.",
-      "step2": "If that fails, follow the firmware help."
+      "body": "The chip is locked, so new firmware cannot be written. Nothing was erased.",
+      "step1": "Removing the lock erases the whole chip, including all settings. The wizard asks before doing it.",
+      "step2": "If you are unsure, unplug the board and ask for help."
     },
     "REPLUG_REQUIRED": {
       "title": "Unplug and replug the board",

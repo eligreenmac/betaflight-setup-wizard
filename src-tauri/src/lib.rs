@@ -17,9 +17,26 @@ pub mod flasher;
 pub mod model;
 pub mod system;
 
+/// Safety net (ARCHITECTURE.md §4.2): stop a running motor test when a window closes or
+/// the app exits, independent of the UI.
+fn emergency_stop<R: tauri::Runtime, M: tauri::Manager<R>>(app: &M) {
+    if let Some(mgr) = app.try_state::<device::ConnectionManager>() {
+        mgr.emergency_stop_all();
+    }
+}
+
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(device::ConnectionManager::default())
+        .on_window_event(|window, event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+            ) {
+                emergency_stop(window);
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // device
             device::commands::device_list_ports,
@@ -28,6 +45,12 @@ pub fn run() {
             device::commands::device_identify,
             device::commands::device_cli_exec,
             device::commands::device_reboot_to_bootloader,
+            device::commands::device_probe_board,
+            device::commands::device_motor_test_start,
+            device::commands::device_motor_test_keepalive,
+            device::commands::device_motor_test_stop,
+            device::commands::device_rc_stream_start,
+            device::commands::device_rc_stream_stop,
             // flasher
             flasher::commands::flasher_list_targets,
             flasher::commands::flasher_list_releases,
@@ -35,6 +58,7 @@ pub fn run() {
             flasher::commands::flasher_fetch_firmware,
             flasher::commands::flasher_list_cache,
             flasher::commands::flasher_flash,
+            flasher::commands::flasher_remove_read_protection,
             // config
             config::commands::config_read_ports,
             config::commands::config_backup,
@@ -52,6 +76,14 @@ pub fn run() {
             system::commands::system_install_dfu_driver,
             system::commands::system_app_info,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Betaflight Setup Wizard");
+        .build(tauri::generate_context!())
+        .expect("error while building Betaflight Setup Wizard");
+    app.run(|handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            emergency_stop(handle);
+        }
+    });
 }

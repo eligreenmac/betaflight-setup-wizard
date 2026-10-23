@@ -21,6 +21,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tauri-plugin-opener = "2"
+# device: serial ports (COM enumeration with USB VID/PID, 115200 8N1 I/O)
+serialport = "4"
+# device: debug logging of MSP/CLI traffic (already in the tree via tauri)
+log = "0.4"
 
 # Workstream-specific dependencies are added by their owners, e.g.:
 #   device:  serialport
@@ -35,6 +39,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Devices_DeviceAndDriverInstallation",
   "Win32_System_Registry",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",

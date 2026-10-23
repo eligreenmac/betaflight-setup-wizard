@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.4.3", "apiVersion": "1.45" },
+  "receiver": { "kind": "SERIAL", "protocol": "SBUS", "port": "UART1", "telemetry": false, "inverted": false },
+  "vtx": { "kind": "ANALOG", "protocol": "TRAMP", "port": "UART2" },
+  "gps": { "enabled": false },
+  "esc": { "protocol": "DSHOT300", "bidirectionalDshot": false, "motorPoles": 12 },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1800, "rangeMax": 2100 },
+    { "mode": "AIR MODE", "auxChannel": 0, "rangeMin": 1800, "rangeMax": 2100 },
+    { "mode": "ANGLE", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100 }
+  ],
+  "extras": {}
+}
