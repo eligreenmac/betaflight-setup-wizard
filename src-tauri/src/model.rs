@@ -503,14 +503,89 @@ pub struct Mismatch {
 
 // ---------------------------------------------------------------- system
 
+/// Result of `system_driver_status`. On non-Windows hosts everything is `true`
+/// and `devices` is empty (no driver installation is ever needed there).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
-    /// WinUSB bound to STM32/AT32 DFU (0483:DF11, 2E3C:DF11)
+    /// False only when a DFU device (STM32 0483:DF11, AT32 2E3C:DF11, ...) is
+    /// plugged in WITHOUT WinUSB bound -> UI offers `system_install_dfu_driver`.
+    /// True when every connected DFU device is OK or none is connected.
     pub dfu_winusb: bool,
-    /// Vendor VCP / CP210x / CH340 drivers present
+    /// False only when a FC VCP or USB-UART bridge (CP210x, CH340, ...) is
+    /// plugged in without a working driver -> UI shows `guidance` for it.
     pub vcp: bool,
+    /// Human-readable diagnostics (English, for logs/support; not for i18n UI).
     pub notes: Vec<String>,
+    /// Every connected USB device we care about, with its driver binding.
+    #[serde(default)]
+    pub devices: Vec<UsbDriverInfo>,
+    /// Official vendor driver downloads for USB-UART bridges, always filled
+    /// (for the "nothing detected -> driver help" screen). Never bundled.
+    #[serde(default)]
+    pub guidance: Vec<DriverGuidance>,
+}
+
+/// A connected USB device relevant to the wizard and its Windows driver state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbDriverInfo {
+    pub vid: u16,
+    pub pid: u16,
+    /// Friendly name from our VID/PID table, e.g. "STM32 DFU", "CP210x".
+    pub name: String,
+    pub kind: UsbDeviceKind,
+    /// Windows device instance id, e.g. `USB\VID_0483&PID_DF11\205F32...`.
+    pub instance_id: Option<String>,
+    /// Bound driver service, e.g. "WinUSB", "silabser", "CH341SER_A64",
+    /// "usbser"; `None` when Windows has no driver bound.
+    pub service: Option<String>,
+    /// True when the bound driver is the one the wizard needs.
+    pub driver_ok: bool,
+    /// What the user should do when `driver_ok` is false.
+    pub action: DriverAction,
+    /// For `action = VENDOR_DOWNLOAD`: index into `DriverStatus.guidance`.
+    pub guidance_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UsbDeviceKind {
+    /// MCU ROM USB DFU bootloader (needs WinUSB).
+    Dfu,
+    /// Native MCU USB virtual COM port (inbox usbser on Windows 10+).
+    FcVcp,
+    /// USB-UART bridge chip (CP210x, CH340, ...) - needs the vendor driver.
+    UsbUartBridge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DriverAction {
+    /// Driver is fine.
+    None,
+    /// Call `system_install_dfu_driver` (one UAC prompt).
+    InstallDfuDriver,
+    /// Send the user to the official vendor download (`guidance_index`).
+    VendorDownload,
+    /// Unplug/replug or check Device Manager (e.g. device in an error state).
+    Replug,
+}
+
+/// Official driver download for a USB-UART bridge family.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverGuidance {
+    /// Stable id usable as an i18n key suffix: "CP210X", "CH34X", "CH343".
+    pub id: String,
+    /// e.g. "Silicon Labs"
+    pub vendor: String,
+    /// e.g. "CP210x (CP2102/CP2104/CP2102N...)"
+    pub chips: String,
+    /// "VID:PID" strings (upper-case hex) this guidance applies to.
+    pub usb_ids: Vec<String>,
+    /// Official vendor download page (https).
+    pub download_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
