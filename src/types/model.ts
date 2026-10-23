@@ -110,7 +110,8 @@ export interface DroneModel {
     region: string | null;
     /** Analog VTX table (`vtxtable`); null = keep the FC's table. */
     table?: VtxTable | null;
-    /** 1-based band / channel / power level into `table`; null = keep. */
+    /** 1-based band / channel / power level into `table`; null = keep.
+     *  band, channel: 1..VTX_BAND_MAX / VTX_CHANNEL_MAX (8); power: 1..VTX_POWER_MAX (7). */
     band?: number | null;
     channel?: number | null;
     power?: number | null;
@@ -135,11 +136,23 @@ export interface DroneModel {
     motorOrder?: number[] | null;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
-  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
+  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* CRAFT_NAME_PATTERN; "" clears; null keeps */ };
 }
 
+/**
+ * extras.craftName rule (= schemas/drone-model.schema.json and model::craft_name_valid in Rust):
+ * 1-16 chars of printable ASCII except `#` and `?`, no leading/trailing space, not exactly "-";
+ * "" clears the name. Betaflight's CLI would cut, strip or misread anything else.
+ */
+export const CRAFT_NAME_PATTERN = /^(?:[\x21\x22\x24-\x2C\x2E-\x3E\x40-\x7E]|[\x21\x22\x24-\x3E\x40-\x7E][\x20-\x22\x24-\x3E\x40-\x7E]{0,14}[\x21\x22\x24-\x3E\x40-\x7E])?$/;
+export const CRAFT_NAME_MAX_LENGTH = 16;
+/** vtx_power is 1-based with CLI range 0..7: a table's 8th power level cannot be selected. */
+export const VTX_POWER_MAX = 7;
+export const VTX_BAND_MAX = 8;
+export const VTX_CHANNEL_MAX = 8;
+
 export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
-/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
+/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels (only 1..VTX_POWER_MAX selectable); name <= 8, label <= 3 chars. */
 export interface VtxTable {
   bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
   powerLevels: { value: number; label: string }[];
@@ -201,6 +214,62 @@ export type RcStopReason = "REQUESTED" | "DISCONNECTED" | "ERROR";
 /** `device://rc-stopped` */
 export interface RcStopped { reason: RcStopReason; error: AppError | null }
 
+/** One sensor in `SensorStatus` (`device_sensors`). */
+export interface SensorState {
+  /** Detected at boot and running (MSP_STATUS sensor bit). A disabled sensor is never present. */
+  present: boolean;
+  /** Not disabled in the config (`acc_hardware` / `baro_hardware` / `mag_hardware` != NONE). Always true for the gyro. */
+  enabled: boolean;
+  /** Configured hardware as the CLI spells it ("AUTO", "NONE", "BMI270", ...). null for the gyro. */
+  configuredHardware: string | null;
+  /** Chip the FC detected (Betaflight 4.5+), e.g. "BMI270". null on 4.4 / nothing detected. */
+  detectedHardware: string | null;
+}
+/** Board / gyro alignment as stored on the FC (read-only here). */
+export interface SensorAlignment {
+  /** `align_board_roll` / `_pitch` / `_yaw`, whole degrees. */
+  boardRollDeg: number;
+  boardPitchDeg: number;
+  boardYawDeg: number;
+  /** `gyro_1_sensor_align`: "DEFAULT" | "CW0" | "CW90" | "CW180" | "CW270" | "CW0FLIP" | "CW90FLIP" | "CW180FLIP" | "CW270FLIP" | "CUSTOM". */
+  gyroAlignment: string;
+}
+/** `device_sensors` */
+export interface SensorStatus {
+  gyro: SensorState;
+  acc: SensorState;
+  baro: SensorState;
+  mag: SensorState;
+  /** false while Betaflight reports "accelerometer needs calibration"; null if unknown / no acc. */
+  accCalibrated: boolean | null;
+  /** null if the FC did not answer the alignment requests. */
+  alignment: SensorAlignment | null;
+}
+/** CALIBRATING_FLAG: saw the FC's calibrating flag set then clear. FIXED_WAIT: flag not observable, waited 2 s. */
+export type AccCalibrationCompletion = "CALIBRATING_FLAG" | "FIXED_WAIT";
+/** `device_acc_calibrate`. The FC has already saved the result to EEPROM. */
+export interface AccCalibrationResult {
+  durationMs: number;
+  completion: AccCalibrationCompletion;
+  /** Largest gyro rate seen (deg/s, any axis) during the check and the calibration. */
+  maxGyroRateDps: number;
+}
+/** `device://attitude` (and `device_get_attitude` with seq = timestampMs = 0). Degrees, Betaflight MSP_ATTITUDE signs:
+ * roll + = right side down, pitch + = nose DOWN, yaw = heading (+ = nose right). */
+export interface Attitude {
+  seq: number;
+  /** ms since the stream started. */
+  timestampMs: number;
+  /** -180..180, 0.1° resolution. */
+  roll: number;
+  /** -90..90, 0.1° resolution. */
+  pitch: number;
+  /** Heading 0..359, whole degrees. */
+  yaw: number;
+}
+/** `device://attitude-stopped` (same reasons as the RC stream). */
+export interface AttitudeStopped { reason: RcStopReason; error: AppError | null }
+
 // ---- system
 /** See src-tauri/src/model.rs `DriverStatus` for semantics. */
 export interface DriverStatus {
@@ -251,17 +320,23 @@ export type AppErrorCode =
   | "UNSUPPORTED_FIRMWARE"
   | "DRIVER" | "IO" | "INVALID_ARGUMENT" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
   | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
-  | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE";
+  | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE"
+  | "ACC_NOT_AVAILABLE" | "BOARD_MOVING" | "ACC_CALIBRATION_FAILED";
 /** `details` of PORT_BUSY. */
 export interface PortBusyDetails { port: string; heldBy: "APP" | "EXTERNAL" }
 /** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
 export interface DriverMissingDetails { vid: number; pid: number; detail: string }
+/** `details` of ACC_NOT_AVAILABLE. */
+export interface AccNotAvailableDetails { present: boolean; enabled: boolean }
+/** `details` of BOARD_MOVING. `during`: the board moved while calibrating; the stored result is bad, calibrate again. */
+export interface BoardMovingDetails { maxRateDps: number; limitDps: number; during: boolean }
 
-/** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING. */
+/** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING /
+ * ACC_NOT_AVAILABLE / BOARD_MOVING. */
 export interface AppError {
   code: string;
   message: string;
-  details?: PortBusyDetails | DriverMissingDetails;
+  details?: PortBusyDetails | DriverMissingDetails | AccNotAvailableDetails | BoardMovingDetails;
 }
 
 export function emptyDroneModel(): DroneModel {

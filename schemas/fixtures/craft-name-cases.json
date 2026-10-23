@@ -1,0 +1,35 @@
+{
+  "_comment": "Shared by src-tauri/src/model.rs and tests/model-limits.test.ts: the Rust craft-name check and the schema pattern must agree on every case.",
+  "valid": [
+    "",
+    "Q",
+    "QUAD",
+    "My Quad 5\"",
+    "-QUAD",
+    "QUAD-1",
+    "a",
+    "~",
+    "!",
+    "QUAD_7IN",
+    "0123456789ABCDEF",
+    "a b",
+    "x=y",
+    "DJI O3 (5in)"
+  ],
+  "invalid": [
+    "-",
+    " ",
+    "  ",
+    "QUAD ",
+    " QUAD",
+    "QUAD#1",
+    "#",
+    "WHAT?",
+    "?",
+    "0123456789ABCDEFG",
+    "QU\tAD",
+    "ÄQUAD",
+    "QUAD\n",
+    "Q"
+  ]
+}
