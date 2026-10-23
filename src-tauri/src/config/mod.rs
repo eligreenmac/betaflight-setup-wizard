@@ -11,6 +11,7 @@
 //! - [`generate`]: the per-dialect generator (also used by plan and verify)
 //! - [`session`]: FC operations over `device::Connection` (read ports, plan, backup, apply, verify, rollback)
 //! - [`backup`]: backup files on disk
+//! - [`msp`]: MSP identification ids, encoders and decoders (checked against SITL)
 //! - [`guard`]: allowlists for what apply / rollback may send (script and backup replay)
 //! - `mock` (tests only): `MockFc` CLI simulator
 
@@ -21,6 +22,7 @@ pub mod generate;
 pub mod guard;
 pub mod md5;
 pub mod modes;
+pub mod msp;
 pub mod serial_functions;
 pub mod session;
 pub mod snapshot;
@@ -29,6 +31,10 @@ pub mod snapshot;
 mod mock;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_sitl;
+#[cfg(test)]
+mod tests_sitl_e2e;
 
 use crate::error::AppResult;
 use crate::model::{CliScript, DroneModel, FcSerialPort};
