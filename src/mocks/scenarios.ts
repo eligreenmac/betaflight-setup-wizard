@@ -362,7 +362,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       // Not the real MD5-based derivation; just 6 deterministic bytes for the demo.
       return Array.from({ length: 6 }, (_, i) => [...phrase].reduce((h, c) => (h * 31 + c.charCodeAt(0) + i) & 0xff, 7));
     },
-    // Shared #66; pure (no board I/O), so mocking it is safe even next to a real board.
+    // Shared #66 (real in config, #67): demo answers only. Pure (no board I/O), so safe next to a real board.
     config_firmware_catalog: ({ firmwareVersion }) => mockFirmwareCatalog(firmwareVersion),
     config_osd_default_layout: ({ videoSystem, firmwareVersion }) => {
       legacy("config_osd_default_layout");

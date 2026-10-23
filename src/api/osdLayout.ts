@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Config's read-only `config_osd_default_layout` (shared #66, `api.config.osdDefaultLayout`,
- * types in types/model.ts). While the Rust command is still a stub (NOT_IMPLEMENTED), the
- * demo fallback (api/fallback.ts) answers it from the mock, like any other unimplemented
- * command. Contract (#66, docs/ARCHITECTURE.md 2.1.1):
+ * types in types/model.ts). Always answered by the real backend (config::osd, #67). The
+ * mock (mocks/scenarios.ts mockOsdLayout) answers only in demo mode, or for an older
+ * backend that returns NOT_IMPLEMENTED (api/fallback.ts). Contract (#66, docs/ARCHITECTURE.md 2.1.1):
  *   config_osd_default_layout(videoSystem: "AUTO" | "PAL" | "NTSC" | "HD", firmwareVersion)
  *     -> OsdLayout { videoSystem, cols, rows, elements: [{ name, x, y, enabled }] }
  *   `name` is Betaflight's osd_items_e name without OSD_ (e.g. MAIN_BATT_VOLTAGE).
