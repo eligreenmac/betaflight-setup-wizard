@@ -86,9 +86,34 @@ Enums:
 `Backup {id, path, boardUid, boardName, firmwareVersion, createdAt}`,
 `ApplyResult {applied, errors, saved, backup, reconnected}`, `ConfigProgress {stage, fraction, message}`,
 `ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
-`DriverStatus`, `AppInfo`,
+`DriverStatus`, `UsbDriverInfo`, `UsbDeviceKind`, `DriverAction`, `DriverGuidance`, `AppInfo`,
 `MotorTestLimits {maxThrottle, watchdogMs}`, `MotorOutputConfig`, `MotorTestSession`,
 `MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`.
+
+`DriverStatus` (from `system_driver_status`, Windows; all-OK and empty on other OSes):
+
+```jsonc
+{
+  "dfuWinusb": false,          // a DFU device is plugged in without WinUSB
+  "vcp": true,                 // no VCP/bridge device is missing its driver
+  "notes": ["STM32 DFU (0483:DF11): no driver bound"],
+  "devices": [
+    { "vid": 1155, "pid": 57105, "name": "STM32 DFU", "kind": "DFU",
+      "instanceId": "USB\\VID_0483&PID_DF11\\205F32...", "service": null,
+      "driverOk": false, "action": "INSTALL_DFU_DRIVER", "guidanceIndex": null }
+  ],
+  "guidance": [
+    { "id": "CP210X", "vendor": "Silicon Labs", "chips": "CP210x ...",
+      "usbIds": ["10C4:EA60", "10C4:EA61", "10C4:EA62"],
+      "downloadUrl": "https://www.silabs.com/software-and-tools/usb-to-uart-bridge-vcp-drivers" }
+  ]
+}
+```
+
+UI rule: `action = INSTALL_DFU_DRIVER` → button calling `system_install_dfu_driver`;
+`VENDOR_DOWNLOAD` → show `guidance[guidanceIndex]` (vendor + link, opened in the
+system browser); `REPLUG` → ask to replug / check Device Manager. Third-party
+bridge drivers are never bundled.
 
 ### 2.3 Errors
 
@@ -161,6 +186,9 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `system_driver_status` | – | `DriverStatus` | packaging |
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
+
+`system_install_dfu_driver` is a no-op returning `Ok` when nothing needs installing
+(or on non-Windows); it fails with `DRIVER` if the user declines UAC or install fails.
 
 Events (named `<module>://<name>`):
 
@@ -333,10 +361,12 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 ## 8. Packaging & CI
 
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
-- WinUSB: libwdi-based elevated helper exe shipped as a Tauri sidecar/resource (phase 1),
-  invoked by `system_install_dfu_driver`. device/flasher never install drivers; they report
-  `DRIVER_MISSING` with the device's `{vid, pid}` (§2.3). If packaging wants the ids as
-  command arguments, that is a follow-up `shared` change to `system_install_dfu_driver`.
+- WinUSB: libwdi-based elevated helper exe shipped as a Tauri resource (phase 1),
+  invoked by `system_install_dfu_driver`: binds WinUSB only to connected DFU devices that
+  lack it (one UAC prompt; the app itself never runs elevated). Details, build and
+  LGPL-3.0 obligations: `docs/PACKAGING.md`.
+  device/flasher never install drivers; they report `DRIVER_MISSING` with the device's
+  `{vid, pid}` (§2.3).
 - CI (`.github/workflows/build.yml`): on push/PR → windows-latest: `npm ci`, `npm test`,
   `npm run build`, `cargo test`, `tauri build` (artifacts uploaded); ubuntu: `cargo check`.
 - Rust toolchain: stable ≥ 1.90 (Tauri 2.12 requirement). Node 22.
