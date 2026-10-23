@@ -1022,6 +1022,36 @@ impl ConnectionManager {
         }
     }
 
+    /// Like `with_conn`, for MSP-only calls that leave the link in MSP mode: while the
+    /// attitude stream runs they pause it between two polls, borrow the port, and resume
+    /// it (no burst, no queued samples). Motor test / RC stream: PORT_BUSY as usual.
+    fn with_conn_shared<T>(&self, f: impl FnOnce(&mut FcConnection) -> DResult<T>) -> AppResult<T> {
+        let mut g = self.lock()?;
+        let Slot::Attitude(a) = &mut *g else {
+            drop(g);
+            return self.with_conn(f);
+        };
+        let Some(link) = a.stream.take_link() else {
+            return Err(self.busy()); // stream ending (disconnect / error)
+        };
+        a.conn.give_back(link);
+        let r = f(&mut a.conn);
+        match a.conn.lend() {
+            Ok(link) => a.stream.return_link(link),
+            Err(e) => {
+                // Port lost during `f`: end the stream and keep the connection.
+                log::warn!("attitude stream: port not returned after a shared call: {e}");
+                if let Slot::Attitude(AttitudeSlot { conn, stream }) =
+                    std::mem::replace(&mut *g, Slot::Empty)
+                {
+                    drop(stream.stop());
+                    *g = Slot::Idle(conn);
+                }
+            }
+        }
+        Ok(r?)
+    }
+
     pub fn is_connected(&self) -> bool {
         self.slot
             .try_lock()
@@ -1074,7 +1104,8 @@ impl ConnectionManager {
     }
 
     pub fn identify(&self) -> AppResult<FcInfo> {
-        self.with_conn(|c| c.identify()).map(|id| fc_info(&id))
+        self.with_conn_shared(|c| c.identify())
+            .map(|id| fc_info(&id))
     }
 
     pub fn probe_board(&self) -> AppResult<FcInfo> {
@@ -1386,12 +1417,12 @@ impl ConnectionManager {
     /// Sensor presence / enable state, hardware names, acc calibration state and the
     /// alignment readout. Read-only.
     pub fn get_sensors(&self) -> AppResult<SensorStatus> {
-        self.with_conn(|c| sensors::read_sensors(c.msp()?))
+        self.with_conn_shared(|c| sensors::read_sensors(c.msp()?))
     }
 
     /// One MSP_ATTITUDE sample (`seq` = 0, `timestampMs` = 0).
     pub fn get_attitude(&self) -> AppResult<Attitude> {
-        self.with_conn(|c| sensors::read_attitude(c.msp()?))
+        self.with_conn_shared(|c| sensors::read_attitude(c.msp()?))
     }
 
     /// Calibrate the accelerometer and return once the FC is done (holds the port for
@@ -1412,15 +1443,18 @@ impl ConnectionManager {
     }
 
     /// The open connection's RAM state (`None` = clean). `NOT_CONNECTED` / `PORT_BUSY` like
-    /// every other call.
+    /// every other call (shares the port with the attitude stream).
     pub fn pending_unsaved_changes(&self) -> AppResult<Option<UnsavedChangesReason>> {
-        self.with_conn(|c| Ok(c.ram_dirty()))
+        self.with_conn_shared(|c| Ok(c.ram_dirty()))
     }
 
     // -------------------------------------------------------------- attitude stream
 
-    /// Poll MSP_ATTITUDE at `rate_hz` (default 10, clamped 1..=30) on a worker thread.
-    /// Already running: Ok (rate unchanged). Motor test / RC stream running: PORT_BUSY.
+    /// Poll MSP_ATTITUDE at `rate_hz` (default 30, clamped 1..=50) on a worker thread,
+    /// forwarding only the latest sample. Already running: Ok (rate unchanged). Motor test /
+    /// RC stream running: PORT_BUSY. While it runs, `identify`, `get_sensors`,
+    /// `get_attitude` and `pending_unsaved_changes` share the port (see
+    /// `with_conn_shared`); everything else gets PORT_BUSY.
     pub fn attitude_stream_start(
         &self,
         rate_hz: Option<u32>,
@@ -2226,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn attitude_stream_borrows_the_port_exclusively() {
+    fn attitude_stream_shares_the_port_with_read_only_calls() {
         let (m, fc) = sensor_manager(Default::default());
         let (tx, rx) = mpsc::channel();
         let (stx, srx) = mpsc::channel();
@@ -2256,9 +2290,19 @@ mod tests {
             m.motor_test_start(req(Some(1), 1100), None, |_| {})
                 .unwrap_err(),
         );
-        busy(m.get_sensors().unwrap_err());
         busy(m.acc_calibrate().unwrap_err());
         busy(m.with_link(|_| Ok(())).unwrap_err());
+        busy(m.probe_board().unwrap_err());
+
+        // Read-only MSP calls share the port: the stream pauses for them and goes on.
+        for _ in 0..5 {
+            assert!(m.get_sensors().unwrap().acc_calibrated.is_some());
+            assert_eq!(m.get_attitude().unwrap().yaw, 271.0);
+            assert_eq!(m.pending_unsaved_changes().unwrap(), None);
+        }
+        let _ = rx.try_iter().count();
+        let resumed = rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(resumed.seq > a.seq);
         assert!(
             fc.motors.lock().unwrap().is_empty(),
             "no motor command sent"

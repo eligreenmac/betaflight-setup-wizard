@@ -276,7 +276,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_sensors` | – | `SensorStatus` (read-only; §4.3) | device |
 | `device_acc_calibrate` | – | `AccCalibrationResult`, resolves when the FC is done (§4.3) | device |
 | `device_get_attitude` | – | `Attitude` (one sample, `seq` = `timestampMs` = 0) | device |
-| `device_attitude_stream_start` | `rateHz: number\|null` (10, clamped 1–30) | – (events) | device |
+| `device_attitude_stream_start` | `rateHz: number\|null` (30, clamped 1–50; latest sample only, §4.3) | – (events) | device |
 | `device_attitude_stream_stop` | – | – | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]`: hides withdrawn releases and any outside `config::firmware::SUPPORTED_LINES` (e.g. 2026.12.0-alpha) | flasher |
@@ -284,7 +284,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `flasher_fetch_firmware` | `request: FirmwareRequest` | `FirmwareImage` (`droppedOptions`: board options the release does not offer; §6 "Build options") | flasher |
 | `flasher_required_options` | `requirements: FirmwareRequirements, release: string\|null` | `string[]` (Build API option values for `FirmwareRequest.requiredOptions`; read-only, no FC/USB I/O; with a release: `REQUIRED_OPTION_UNSUPPORTED` / `BUILD_OPTIONS_UNAVAILABLE`) | flasher |
 | `flasher_list_cache` | – | `FirmwareImage[]` | flasher |
-| `flasher_flash` | `image, dfuSerial, options` | – (events); `READ_PROTECTED` if protected | flasher |
+| `flasher_flash` | `image, dfuSerial, options` | – (events); `READ_PROTECTED` if protected; what `options.fullErase` wipes: §6 "Erase modes" | flasher |
 | `flasher_remove_read_protection` | `dfuSerial, confirmErase` | – (erases chip, device re-enumerates) | flasher |
 | `config_read_ports` | – | `FcSerialPort[]` | config |
 | `config_backup` | – | `Backup` | config |
@@ -553,11 +553,35 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
   down, pitch + = nose DOWN, yaw = heading, + = nose right** (imu.c 311-313; osd_elements.c
   2025.12.5:801 / 4.5.5:765 `pitch > 0 //nose down`; pid.c angle mode uses stick-sign error
   `angleTarget - attitude`, so pitch stick forward = nose down = positive). `device_attitude_stream_start`
-  lends the port to a worker exactly like the RC stream: default 10 Hz, clamped 1–30;
-  idempotent while running; motor test, RC stream and attitude stream are mutually exclusive
-  (`PORT_BUSY {heldBy: "APP"}`); it ends with `device://attitude-stopped` on
+  lends the port to a worker like the RC stream: default 30 Hz, clamped 1–50; idempotent
+  while running (rate unchanged); motor test, RC stream and attitude stream are mutually
+  exclusive (`PORT_BUSY {heldBy: "APP"}`); it ends with `device://attitude-stopped` on
   `device_attitude_stream_stop` / `device_disconnect` / app close (`REQUESTED`), port loss
   (`DISCONNECTED`) or 5 unanswered polls / another error (`ERROR`).
+  - **Latest value only.** Polls run on a fixed schedule (after a slow answer the schedule
+    restarts from now, no catch-up burst); a separate thread emits, and a sample that is
+    still waiting when a newer one arrives is replaced. A slow listener sees gaps in `seq`,
+    never a backlog of old attitude.
+  - **Sharing the port.** While the stream runs, `device_identify`, `device_sensors`,
+    `device_get_attitude` and the unsaved-changes check still work: the stream pauses
+    after the poll in flight, the call runs, polling resumes (no burst). Each MSP request of
+    such a call costs the stream about one poll slot (`device_sensors` ≈ 7 requests ≈ 70 ms).
+    Everything else (`device_acc_calibrate`, `device_probe_board`, `device_cli_exec`,
+    reboots, config's `with_link`) still gets `PORT_BUSY`: stop the stream first.
+  - **Why 30/50 Hz.** Betaflight answers one MSP command per pass of its 100 Hz SERIAL task
+    (`msp_serial.c` "process one command at a time", `tasks.c` `TASK_SERIAL`
+    `TASK_PERIOD_HZ(100)`, priority LOW, same on 4.4–2026.6), and the attitude estimate itself
+    is updated at 100 Hz (`TASK_ATTITUDE`). So a port answers ~100 requests/s in total, fewer
+    when the CPU is busy; USB VCP adds ≤ 1 ms per direction (1 ms full-speed frames) and is
+    not the limit. Measured on SITL 2026.6.2 / 2025.12.5 (TCP 5761,
+    `device::sitl_smoke_tests::sitl_attitude_throughput`): MSP_ATTITUDE back to back 95–96 Hz
+    (p50 10.3 ms); with a STATUS_EX + RC + ANALOG poll after every 3rd request 47–49 Hz
+    attitude + 47–49 Hz other; the stream delivers 30.0 Hz at 30 and 49.3–50.0 Hz at 50; with
+    `get_sensors` borrowing the port at 5 Hz, 21 Hz at 30 and 35–36 Hz at 50 (sensor calls
+    p50 72–80 ms, max 131 ms). The 4.4.3 / 4.5.5 SITLs answer much slower (their simulator
+    scheduler, not representative of hardware); the stream then delivers what the FC answers
+    without queueing. 50 Hz uses half of a port's MSP budget; 30 Hz (the configurator's Setup
+    tab rate) leaves ~70 requests/s for other polling.
 - **Board alignment is not live**: `MSP_SET_BOARD_ALIGNMENT_CONFIG` (39) only writes the
   parameter group (msp.c 3640-3644 / 3689-3693 / 3728-3732). The rotation matrix is built by
   `initBoardAlignment()` (boardalignment.c 51 / 66 / 64), which is called only from
@@ -667,6 +691,48 @@ adding a `Dialect` variant and its `SUPPORTED_LINES` entry, nothing else in Devi
    re-enumerates → back to step 4.
 6. After flashing → device re-enumerates as VCP → `device_connect` →
    `device_identify` → `config_read_ports`.
+
+### Erase modes (`FlashOptions.fullErase`)
+
+What each mode wipes (the UI shows this to the user):
+
+| | Normal flash (`fullErase: false`) | Full chip erase (`fullErase: true`) |
+|---|---|---|
+| Firmware | Replaced | Replaced |
+| Settings saved on the chip (Betaflight's config sector in internal flash) | **Kept**: not erased (but see "Settings after a normal flash") | **Wiped** |
+| Anything else in internal flash outside the new image (leftovers of older/bigger firmware) | Kept, except what shares an erase sector with the image | Wiped |
+| Settings stored off-chip (boards built with config in external flash or on an SD card), blackbox flash, OSD / VTX / receiver / ESC firmware | Kept | Kept (not part of the MCU's flash) |
+| ROM bootloader, option bytes (read protection) | Kept | Kept |
+
+- **Normal flash** erases only the flash sectors the image's bytes fall in (whole sectors),
+  then writes and verifies. Betaflight's settings live in a sector of their own that the
+  release hex files never cover: 0x08004000 (16 KiB) on F405 / F7x2 / AT32F43x, 0x08004000
+  (8 KiB) on G47x, 0x08020000 (128 KiB) on H743 (linker scripts; checked against the
+  segment maps of real hex files in `flasher::dfu` tests). A raw `.bin` starting at
+  0x08000000 would cover it; the wizard flashes hex images.
+- **Settings after a normal flash**: the new firmware itself resets everything to defaults at
+  boot when the stored config version differs (`EEPROM_CONF_VERSION`: 4.4.3 = 175,
+  4.5.x / 2025.12.x = 177, 2026.6 = 178), the board identifier differs or the CRC fails
+  (`fc/init.c` → `resetEEPROM()`); a parameter group whose own version changed resets alone.
+  So flashing across lines (except 4.5 ↔ 2025.12) starts from defaults even without a full
+  erase.
+- **Full chip erase** wipes everything on the chip (firmware, settings, all of internal
+  flash). How, per MCU family:
+  - **STM32 F4 / F7 / H7 / G4**: DfuSe mass erase (ERASE 0x41 without an address) from the ST
+    ROM bootloader. Progress is reported on the existing `ERASING` stage, by elapsed time
+    against an estimate of ~10 ms per KiB (3–30 s; F405 ≈ 10 s, H743 ≈ 20 s); the erase may
+    take up to max(3 × estimate, 60 s) before it fails with `FLASH_FAILED`. Afterwards every
+    page is read back (first block) and anything not blank is erased page by page. A
+    bootloader that refuses the mass erase gets every page erased one by one.
+  - **AT32F435 / 437**: every page erased one by one (its ROM marks the first 32 KiB
+    read-only in the DFU layout but erases it page by page, as the configurator does).
+  - Before this release `fullErase` erased every page one by one on all families (same
+    result, no mass erase).
+- **`keepSettings` is independent of `fullErase`.** Full erase wipes everything on the chip;
+  with `keepSettings`, the UI then restores the settings from the off-board backup
+  (`config_backup`, step 3) after the flash.
+- After a successful flash in either mode the board's unsaved-RAM mark is cleared (§4.1
+  "RAM state").
 
 ### Build options
 

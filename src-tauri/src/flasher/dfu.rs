@@ -154,7 +154,7 @@ impl DfuStatus {
     }
 }
 
-/// Which pages to erase (ARCHITECTURE.md §5 "Erase modes").
+/// Which pages to erase (ARCHITECTURE.md §6 "Erase modes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EraseMode {
@@ -440,10 +440,12 @@ impl<T: DfuTransport> DfuSe<T> {
                 Err(e) => log::debug!("mass erase: GETSTATUS failed while busy: {e}"),
             }
             if elapsed >= deadline {
-                return Err(FlashError::Timeout(format!(
-                    "mass erase did not finish within {} s",
-                    deadline / 1000
-                )));
+                // FLASH_FAILED like any other DFU failure (`Timeout` maps to FIRMWARE).
+                return Err(FlashError::Dfu {
+                    step: format!("mass erase (not finished after {} s)", deadline / 1000),
+                    status: status::OK,
+                    state: state::DFU_DNBUSY,
+                });
             }
             progress(elapsed.min(expected.saturating_sub(1)), expected);
             self.wait_ms(MASS_ERASE_POLL_MS);
@@ -1395,7 +1397,14 @@ mod tests {
         sim.mass_erase = SimMassErase::NeverEnds;
         let (r, sim, events) = run(sim, full());
         match r {
-            Err(FlashError::Timeout(m)) => assert!(m.contains("mass erase"), "{m}"),
+            Err(e @ FlashError::Dfu { .. }) => {
+                assert!(
+                    e.to_string()
+                        .contains("mass erase (not finished after 60 s)"),
+                    "{e}"
+                );
+                assert_eq!(crate::error::AppError::from(e).code(), "FLASH_FAILED");
+            }
             other => panic!("{other:?}"),
         }
         assert!(!sim.log.iter().any(|l| l.starts_with("DNLOAD 2")));
