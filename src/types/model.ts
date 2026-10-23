@@ -166,6 +166,12 @@ export interface UsbDriverInfo {
   action: DriverAction;
   /** Index into DriverStatus.guidance when action = VENDOR_DOWNLOAD. */
   guidanceIndex: number | null;
+  /**
+   * DFU only: true when action = INSTALL_DFU_DRIVER and another driver (`service`,
+   * e.g. "STTub30" from ST DfuSe, or libusb0) is bound that installing WinUSB will
+   * replace. Warn and ask for confirmation before calling installDfuDriver().
+   */
+  replacesDriver: boolean;
 }
 export interface DriverGuidance {
   /** Stable id, usable as i18n key suffix: "CP210X" | "CH34X" | "CH343". */
