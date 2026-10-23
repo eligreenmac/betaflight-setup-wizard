@@ -109,7 +109,41 @@ export interface Mismatch { setting: string; expected: string; actual: string }
 export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
 
 // ---- system
-export interface DriverStatus { dfuWinusb: boolean; vcp: boolean; notes: string[] }
+/** See src-tauri/src/model.rs `DriverStatus` for semantics. */
+export interface DriverStatus {
+  /** false only when a DFU device is connected without WinUSB -> offer installDfuDriver(). */
+  dfuWinusb: boolean;
+  /** false only when a VCP / USB-UART bridge is connected without a working driver. */
+  vcp: boolean;
+  /** English diagnostics for logs/support (not for i18n UI). */
+  notes: string[];
+  devices: UsbDriverInfo[];
+  /** Official vendor driver downloads for USB-UART bridges (always filled). */
+  guidance: DriverGuidance[];
+}
+export type UsbDeviceKind = "DFU" | "FC_VCP" | "USB_UART_BRIDGE";
+export type DriverAction = "NONE" | "INSTALL_DFU_DRIVER" | "VENDOR_DOWNLOAD" | "REPLUG";
+export interface UsbDriverInfo {
+  vid: number;
+  pid: number;
+  name: string;
+  kind: UsbDeviceKind;
+  instanceId: string | null;
+  service: string | null;
+  driverOk: boolean;
+  action: DriverAction;
+  /** Index into DriverStatus.guidance when action = VENDOR_DOWNLOAD. */
+  guidanceIndex: number | null;
+}
+export interface DriverGuidance {
+  /** Stable id, usable as i18n key suffix: "CP210X" | "CH34X" | "CH343". */
+  id: string;
+  vendor: string;
+  chips: string;
+  /** "VID:PID" upper-case hex, e.g. "10C4:EA60". */
+  usbIds: string[];
+  downloadUrl: string;
+}
 export interface AppInfo { version: string; os: string; cacheDir: string }
 
 /** Error shape returned by every failing command. */
