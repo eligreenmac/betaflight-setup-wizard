@@ -47,6 +47,8 @@ fn progress(cb: &mut dyn FnMut(ConfigProgress), stage: ConfigStage, fraction: f3
         stage,
         fraction,
         message: (!msg.is_empty()).then(|| msg.to_string()),
+        line: None,
+        total: None,
     });
 }
 

@@ -485,6 +485,7 @@
         "roll180yaw270": "Upside down, arrow to the left"
       },
       "unavailable": "This app version cannot show the board's movement yet. You can skip this check.",
+      "paused": "The live view is paused while the board calibrates or restarts.",
       "busy": "The board is busy with another live test. Stop it and try again.",
       "failed": "The live view could not start.",
       "simulated": "This movement is from the demo, not from your board, so the mounting cannot be changed here.",

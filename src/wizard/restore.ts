@@ -1,37 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * "Keep my settings" after a firmware update: UI-local adapter for Config's
- * `config_restore_after_flash(backupId) -> RestoreReport` (shared PR #92, ARCHITECTURE §5.2).
- *
- * TODO(shared #92): the types below mirror #92's src/types/model.ts additions exactly
- * (RestoreReport, RestoreFailure, RestoreSkip, RestoreSkipReason, the four restore
- * ConfigErrorReasons with {backupId, path?, stage?}, ConfigProgress.line/total). Until #92 is
- * on main the command is not in CommandMap, so it is called by name through the same
- * backend seam (`call`), which keeps the demo fallback and the mixed-backend write guard
- * (api/fallback.ts WRITE_DEPENDENCIES). Once #92 lands: import the types from
- * types/model and call api.config.restoreAfterFlash instead; nothing else changes.
+ * "Keep my settings" after a firmware update: UI helpers around Config's
+ * `api.config.restoreAfterFlash(backupId) -> RestoreReport` (shared contract #92,
+ * ARCHITECTURE §5.2). The types come from types/model.ts; the call goes through the usual
+ * backend seam, so the demo fallback and the mixed-backend write guard apply
+ * (api/fallback.ts WRITE_DEPENDENCIES).
  *
  * Every refusal or failure means the same thing to the user: the flash itself succeeded,
  * the settings were not put back, and the backup is still saved (Backups list).
  */
-import { call, type CommandName } from "../api/commands";
-import type { ConfigProgress, ConfigStage } from "../types/model";
+import { api } from "../api/commands";
+import type { ConfigErrorDetails, ConfigErrorReason, ConfigProgress, RestoreReport, RestoreSkip, RestoreSkipReason } from "../types/model";
 import { toUiError, type UiError } from "../errors/codes";
 import { firmwareLine } from "./firmwareSupport";
 
+export type { RestoreFailure, RestoreReport, RestoreSkip, RestoreSkipReason } from "../types/model";
+
+/** The command name (the demo fallback's WRITE_DEPENDENCIES key, mocks). */
 export const RESTORE_COMMAND = "config_restore_after_flash";
 
-export type RestoreSkipReason =
-  | "COMMENT"
-  | "SESSION_CONTROL"
-  | "BOARD_IDENTITY"
-  | "HARDWARE_LINE_CHANGED"
-  | "REMOVED_ON_TARGET"
-  | "NOT_IN_BUILD"
-  | "SEMANTICS_CHANGED"
-  | "NO_EQUIVALENT_MODE"
-  | "PORT_NOT_AVAILABLE"
-  | "OTHER_BATTERY_PROFILE";
 export const RESTORE_SKIP_REASONS: RestoreSkipReason[] = [
   "COMMENT",
   "SESSION_CONTROL",
@@ -44,40 +31,14 @@ export const RESTORE_SKIP_REASONS: RestoreSkipReason[] = [
   "PORT_NOT_AVAILABLE",
   "OTHER_BATTERY_PROFILE",
 ];
-/** `line`: the backup line (secret values masked). `error`: the FC's answer, shown verbatim. */
-export interface RestoreFailure {
-  line: string;
-  error: string;
-}
-/** `detail`: the backend's own short explanation (English), e.g. "removed in 2025.12". */
-export interface RestoreSkip {
-  line: string;
-  reason: RestoreSkipReason;
-  detail: string;
-}
-export interface RestoreReport {
-  applied: number;
-  failed: RestoreFailure[];
-  skipped: RestoreSkip[];
-  warnings: string[];
-  saved: boolean;
-  lineChanged: boolean;
-  fromVersion: string;
-  toVersion: string;
-}
 
 /** CONFIG details.reason values config_restore_after_flash refuses or fails with. */
-export const RESTORE_REFUSAL_REASONS = ["BOARD_UID_MISMATCH", "BACKUP_NOT_DIFF_ALL", "BACKUP_UNREADABLE", "BOARD_NOT_RECONNECTED"] as const;
+export const RESTORE_REFUSAL_REASONS = ["BOARD_UID_MISMATCH", "BACKUP_NOT_DIFF_ALL", "BACKUP_UNREADABLE", "BOARD_NOT_RECONNECTED"] as const satisfies readonly ConfigErrorReason[];
 export type RestoreRefusalReason = (typeof RESTORE_REFUSAL_REASONS)[number];
-export interface RestoreErrorDetails {
-  reason: RestoreRefusalReason;
-  backupId: string;
-  path?: string;
-  /** BOARD_NOT_RECONNECTED only: absent = nothing sent; RESTORING = nothing saved; SAVING = unknown; REBOOTING = saved, not checked. */
-  stage?: ConfigStage | "RESTORING";
-}
-/** config://progress with #92's RESTORING stage and line counter. */
-export type RestoreProgress = Omit<ConfigProgress, "stage"> & { stage: ConfigStage | "RESTORING"; line?: number; total?: number };
+/** The CONFIG details of a restore refusal (always with backupId on this path). */
+export type RestoreErrorDetails = ConfigErrorDetails & { reason: RestoreRefusalReason };
+/** config://progress (RESTORING carries line / total). */
+export type RestoreProgress = ConfigProgress;
 
 /**
  * Skips that are always there by design and say nothing about the user's settings: comments,
@@ -86,10 +47,8 @@ export type RestoreProgress = Omit<ConfigProgress, "stage"> & { stage: ConfigSta
 export const HIDDEN_SKIPS: RestoreSkipReason[] = ["COMMENT", "SESSION_CONTROL", "BOARD_IDENTITY"];
 export const visibleSkips = (r: RestoreReport): RestoreSkip[] => r.skipped.filter((s) => !HIDDEN_SKIPS.includes(s.reason));
 
-type AnyCall = (cmd: CommandName, args: { backupId: string }) => Promise<unknown>;
-
 export async function restoreAfterFlash(backupId: string): Promise<RestoreReport> {
-  return (await (call as unknown as AnyCall)(RESTORE_COMMAND as CommandName, { backupId })) as RestoreReport;
+  return api.config.restoreAfterFlash(backupId);
 }
 
 /** Why the settings were not put back, as a key under `restore.refused.*`. */

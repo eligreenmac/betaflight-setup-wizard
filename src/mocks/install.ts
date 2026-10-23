@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Wire the scenario mock into every backend seam: commands and events. Used by main.ts in browser demo mode and by UI tests.
 import { resetBackend, setBackend } from "../api/commands";
+import { withLinkGate } from "../api/attitudeLink";
 import { resetEventSource, setEventSource } from "../api/events";
 import { createScenarioMock, type MockOptions, type ScenarioMock } from "./scenarios";
 
 export function installMock(opts: MockOptions = {}): ScenarioMock {
   const mock = createScenarioMock(opts);
-  setBackend(mock.backend);
+  setBackend(withLinkGate(mock.backend));
   setEventSource(mock.events.on);
   return mock;
 }

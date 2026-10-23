@@ -78,6 +78,7 @@ pub fn run() {
             config::commands::config_list_backups,
             config::commands::config_backups_dir,
             config::commands::config_restore,
+            config::commands::config_restore_after_flash,
             config::commands::config_osd_default_layout,
             config::commands::config_firmware_catalog,
             // system (packaging)

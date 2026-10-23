@@ -173,8 +173,10 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 / 2026.6 un
 `DfuDevice`, `FlashOptions`, `FlashProgress`, `FlashStage`, `CliScript {commands, warnings, dialect, cleared}`,
 `ClearedPort {port, functions, functionMaskBefore, functionMaskAfter}`, `SerialFunction`,
 `Backup {id, path, boardUid, boardName, firmwareVersion, createdAt}`,
-`ApplyResult {applied, errors, saved, backup, reconnected}`, `ConfigProgress {stage, fraction, message}`,
-`ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
+`ApplyResult {applied, errors, saved, backup, reconnected}`, `ConfigProgress {stage, fraction, message, line?, total?}`,
+`ConfigStage` (`BACKUP`, `SENDING`, `RESTORING`, `SAVING`, `REBOOTING`, `RECONNECTED`), `CliError`,
+`RestoreReport {applied, failed: RestoreFailure[], skipped: RestoreSkip[], warnings, saved, lineChanged, fromVersion, toVersion}`,
+`RestoreFailure {line, error}`, `RestoreSkip {line, reason: RestoreSkipReason, detail}` (§5.2), `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
 `DriverStatus`, `UsbDriverInfo`, `UsbDeviceKind`, `DriverAction`, `DriverGuidance`, `AppInfo`,
 `MotorTestLimits {maxThrottle, watchdogMs}`, `MotorOutputConfig`, `MotorTestSession`,
 `MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`,
@@ -227,6 +229,10 @@ plus the device/flasher codes:
 | `BOARD_NOT_FOUND` | Port path gone / FC unplugged | – | "Plug the FC in and pick its port" |
 | `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "APP" \| "EXTERNAL" }` | `EXTERNAL`: "Close Betaflight App / other tools"; `APP`: wait/retry |
 | `CONFIG` | The model can't be turned into a script for this FC (`config_generate`, `config_plan`, `config_verify`); nothing is sent. Usually no `details`. | `{ reason: "OSD_HD_NO_DISPLAYPORT" }` only when `osd.videoSystem = HD` but the FC's `dump all` has no MSP DisplayPort (`displayport_msp_*` missing), on every supported firmware line. This comes from `config_plan` / `config_verify`, which read the dump. `config_generate` has no dump, so it never raises it. | `OSD_HD_NO_DISPLAYPORT`: back to the OSD step (pick analog or flash firmware with HD OSD); otherwise show the message |
+| `CONFIG` (`config_restore_after_flash`, §5.2) | The backup is from another board. Nothing was sent. | `{ reason: "BOARD_UID_MISMATCH", backupId, path }` | "Firmware flashed, settings not restored": the backup belongs to a different board |
+| `CONFIG` (`config_restore_after_flash`) | The backup is not a full `diff all` (plain `diff`, `dump`, imported file: no `defaults nosave`). Nothing was sent. | `{ reason: "BACKUP_NOT_DIFF_ALL", backupId, path }` | "Firmware flashed, settings not restored" |
+| `CONFIG` (`config_restore_after_flash`) | Unknown backup id, or the file is missing, unreadable or unparseable (incl. a backup from an unsupported line). Nothing was sent. | `{ reason: "BACKUP_UNREADABLE", backupId, path? }` (`path` when the file was found) | "Firmware flashed, settings not restored" |
+| `CONFIG` (`config_restore_after_flash`) | No link at start, the link dropped mid-restore, or the board did not come back after `save`. | `{ reason: "BOARD_NOT_RECONNECTED", backupId, path, stage? }`: no `stage` = nothing sent; `RESTORING` = dropped mid-replay, nothing saved; `SAVING` = unknown whether saved; `REBOOTING` = saved, not verified | "Firmware flashed, settings not restored"; offer reconnect + retry restore |
 | `DRIVER_MISSING` | DFU device present but cannot be opened (Windows: no WinUSB bound) | `{ vid: number, pid: number, detail: string }` | Offer `system_install_dfu_driver` (owned by packaging), then retry `flasher_list_dfu_devices` |
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
@@ -297,6 +303,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `config_list_backups` | – | `Backup[]` | config |
 | `config_backups_dir` | – | `string` | config |
 | `config_restore` | `backupId` | `ApplyResult` (events) | config |
+| `config_restore_after_flash` | `backupId` | `RestoreReport` (events; §5.2) | config |
 | `config_osd_default_layout` | `videoSystem: OsdVideoSystem, firmwareVersion: string` | `OsdLayout` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
 | `config_firmware_catalog` | `firmwareVersion: string` | `FirmwareCatalog {beepers: BeeperName[], beaconEvents: DshotBeaconCondition[], osdElements: string[], modes: string[]}` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
 | `system_driver_status` | – | `DriverStatus` | packaging |
@@ -629,6 +636,8 @@ adding a `Dialect` variant and its `SUPPORTED_LINES` entry, nothing else in Devi
   the backup's `boardUid` and the FC's UID (`FcLink::uid()`) are both known and differ (`CONFIG`, nothing sent).
   The backup is always resolved by `id` inside the backups folder; the `path` field sent by the UI
   is never opened.
+- **`config_restore_after_flash(backupId)`**: see §5.2. Unlike rollback/restore it allows a line
+  change, maps the dialect, continues past rejected lines and saves anyway.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
   for the UI's "open backups folder" action. `<boardUid>` is `FcInfo.uid`, i.e. the 24-char
@@ -651,6 +660,93 @@ adding a `Dialect` variant and its `SUPPORTED_LINES` entry, nothing else in Devi
   aux slots are kept.
 - **GPS:** provider, auto-config, Galileo and SBAS only. The u-blox model and `gps_auto_baud` stay at defaults.
 - **Out of MVP:** soft serial, per-motor DShot reversal (phase 2).
+
+### 5.2 Restore after flash (`config_restore_after_flash`)
+
+The firmware step's "keep current settings" option. Before flashing, the UI takes `config_backup`
+(`diff all`). After the flash and reconnect it calls `config_restore_after_flash(backupId)`, which
+restores that backup onto the new firmware, **also across firmware lines** (either direction), and
+returns a `RestoreReport`. `fullErase` and `keepSettings` are independent: after a full mass erase
+the board is at defaults; the restore is the same (`defaults nosave` is harmless on a default board)
+and the UID check still applies (the UID is hardware, not configuration).
+
+**Refusals (nothing sent).** All are `CONFIG` with `details: { reason, backupId, path? }`
+(§2.3), except an unsupported target line:
+
+| Condition | Result |
+|---|---|
+| Board's firmware line not `is_supported` | `UNSUPPORTED_FIRMWARE` (unchanged) |
+| Unknown id; file missing, unreadable, unparseable, or from an unsupported line | `BACKUP_UNREADABLE` |
+| Body has no `defaults nosave` (plain `diff`, `dump`, imported file) | `BACKUP_NOT_DIFF_ALL` |
+| Backup `boardUid` and FC UID both known and different | `BOARD_UID_MISMATCH` |
+| Either UID `unknown`: allowed only if the backup's `board_name` equals the FC's board name (case-insensitive); the report gets a warning that the board was matched by name only | otherwise `BOARD_UID_MISMATCH` |
+| No link at start (not connected, transport error reading `version`) | `BOARD_NOT_RECONNECTED`, no `stage` |
+| Port held by another operation | `PORT_BUSY` (unchanged; retryable, not a restore failure) |
+
+**Sequence.** No safety backup (the board was just flashed; the backup being restored *is* the
+pre-flash state). Read `version` and `dump all` of the target → `RESTORING`: `batch start`,
+`defaults nosave`, then the backup line by line (dialect-mapped, see below), **continuing past
+`###ERROR###`** → `batch end` → `SAVING`: `save` → `REBOOTING` → reconnect → `RECONNECTED`: read
+back `dump all` and compare every applied `set`; differences become `warnings` (no rollback).
+
+- **Save after failed lines is intended here**, unlike `config_apply` / `config_rollback`, which
+  discard on the first error. Apply and rollback write a known-good, complete script: a rejected
+  line means the script is wrong, and the FC is unchanged. After a flash the FC already lost the
+  user's settings; discarding would leave it at defaults, which is strictly worse than keeping
+  every line the new firmware accepted. The failures are listed in `RestoreReport.failed`.
+  Firmware refuses `save` while a batch with errors is active (`cli.c` `prepareSave`, all four
+  lines), so the restore ends the batch first.
+- `profile N` / `rateprofile N` / `battery_profile N` context lines are kept, so each setting lands
+  in the same profile.
+- **If the board drops** after replay started and before `save` succeeds, the call fails with
+  `BOARD_NOT_RECONNECTED` and `details.stage` (`RESTORING` / `SAVING`) rather than returning a
+  partial report: nothing (or an unknown state) was saved, so the only correct UI action is
+  reconnect + retry, and an error carries that unambiguously. A board that does not come back
+  after `save` gives `stage: "REBOOTING"` (saved, not verified). A failed read-back after a
+  successful reconnect is only a warning.
+- **The UI treats every `CONFIG` reason above as "the flash succeeded, but the settings weren't
+  restored"** (the backup file is still there; the restore can be retried).
+- **Progress** (`config://progress`): `RESTORING` carries `line` (1-based, 0 before the first) and
+  `total` and the message `line n/total`; then `SAVING`, `REBOOTING`, `RECONNECTED`.
+- **Guard:** the replayed lines are checked against the rollback/replay allowlist
+  (`guard::REPLAY_VERBS`, i.e. the `printConfig` verbs), not the apply allowlist.
+- **Secrets:** no binding phrase is ever involved. Report lines mask the `expresslrs_uid` value,
+  progress never contains a line, and full lines are never logged.
+
+**Report.** `fromVersion` / `toVersion` are full versions (`"2025.12.5"`, `"2026.6.2"`);
+`lineChanged` = the major.minor line differs. Every non-empty line of the backup body is counted
+once: `applied` (FC accepted it; `defaults nosave` included), `failed` (`{line, error}`: FC
+rejected it), or `skipped` (`{line, reason, detail}`):
+
+| `reason` | Lines |
+|---|---|
+| `COMMENT` | `#` lines, including `# version` |
+| `SESSION_CONTROL` | `diff all` echo, `batch start`, `batch end`, `save` (the restore sends its own) |
+| `BOARD_IDENTITY` | `board_name`, `manufacturer_id`, `mcu_id`, `signature` (always) |
+| `HARDWARE_LINE_CHANGED` | `resource`, `timer`, `dma` when the line changed |
+| `REMOVED_ON_TARGET` | setting / value / feature / beeper / command that does not exist on the target line (skipped, not failed) |
+| `NOT_IN_BUILD` | setting that exists on the target line but not in this build (absent from its `dump all`) |
+| `SEMANTICS_CHANGED` | same name, different meaning (D-term across 4.5 ↔ 2025.12, below) |
+| `NO_EQUIVALENT_MODE` | `aux` mode / `adjrange` function with no equivalent on the target line |
+| `PORT_NOT_AVAILABLE` | `serial` port the target firmware / board does not have |
+| `OTHER_BATTERY_PROFILE` | 2026.6 → older: battery settings of a profile other than the selected one |
+
+**Dialect mapping when the line changed** (both directions; from the firmware sources of 4.4.3,
+4.5.5, 2025.12.5 and 2026.6.2):
+
+| Kind | Mapping |
+|---|---|
+| Setting renames | `angle_level_strength` (4.4) ↔ `angle_p_gain` (4.5+); `level_limit` (4.4) ↔ `angle_limit` (4.5+); `dshot_idle_value` (≤ 4.5) ↔ `motor_idle` (2025.12+). Same field; an out-of-range value (e.g. `angle_limit` max 90 → 85 → 80) is rejected by the FC and reported as failed |
+| D-term | 4.5: `d_*` is the max, `d_min_*` the min; 2025.12+: `d_*` is the base, `d_max_*` the max. Crossing that boundary, `d_roll/pitch/yaw`, `d_min_*`, `d_max_*`, `simplified_dmax_gain`, `simplified_d_max_gain` are skipped (`SEMANTICS_CHANGED`) with a "re-tune D" warning |
+| Value renames | `mag_hardware` `MAG_MPU925X_AK8963` (4.4) ↔ `MPU925X_AK8963`; `QMC5883` (≤ 2025.12) ↔ `QMC5883L` (2026.6); `debug_mode` `DUAL_GYRO_*` ↔ `MULTI_GYRO_*`, `D_MIN` ↔ `D_MAX` (4.5 ↔ 2025.12). Values missing on the target (e.g. removed `acc_hardware` drivers) → `REMOVED_ON_TARGET` |
+| Removed settings | per-line tables from `settings.c` (e.g. `gps_rescue_throttle_*`, `iterm_limit` in 2025.12; `abs_control_*` in 2026.6) → `REMOVED_ON_TARGET` |
+| Features | by name; `RX_MSP` has no CLI name on 2025.12; `OPTICALFLOW` 2025.12+; `RX_UDP` 2026.6 |
+| Beepers | `CRASH_FLIP` (≤ 4.5) ↔ `CRASHFLIP`; names missing on the target → `REMOVED_ON_TARGET` |
+| Serial | parsed with the source dialect, re-emitted with the target identifiers (UART1 = 0 ↔ 51); 2026.6 function bits `LIDAR_NL` / `OSD_CUSTOM_TEXT` are dropped (with a warning) on older lines |
+| Aux | by permanent box id → name → id on the target (ids are stable; `ALTHOLD` 3, `POS HOLD` 11, `CHIRP` 55 from 2025.12, `LAP TIMER RESET` 54 from 4.5, `AUTOPILOT` 56 / `WP CAPTURE` 57 from 2026.6); no equivalent → `NO_EQUIVALENT_MODE`, never applied blindly |
+| `adjrange` | function index by name: 2026.6 removed `ROLL/PITCH_RC_RATE/EXPO` and renumbered the rest (`PID_AUDIO` 29 → 25, …) |
+| Battery | older → 2026.6: battery settings land in the selected battery profile (warning). 2026.6 → older: only the selected profile's section is applied, the others are `OTHER_BATTERY_PROFILE` |
+| `resource` / `timer` / `dma` | skipped (`HARDWARE_LINE_CHANGED`); same line: replayed |
 
 ## 6. Flashing sequence (flasher + device + system)
 

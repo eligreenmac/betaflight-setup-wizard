@@ -886,10 +886,10 @@ fn osd_section(cx: &mut Ctx) -> AppResult<()> {
         },
     };
     if vs == OsdVideoSystem::Hd && !has("displayport_msp_col_adjust") {
-        return Err(AppError::ConfigRejected {
-            message: "HD OSD needs MSP DisplayPort, which this firmware build does not have".into(),
-            reason: ConfigErrorReason::OsdHdNoDisplayport,
-        });
+        return Err(AppError::config_rejected(
+            ConfigErrorReason::OsdHdNoDisplayport,
+            "HD OSD needs MSP DisplayPort, which this firmware build does not have",
+        ));
     }
     if o.video_system.is_some() && !has("vcd_video_system") {
         return Err(cfg_err(
