@@ -2,7 +2,7 @@
 //! mode names (`config_firmware_catalog`), and the beeper name mapping the generator uses.
 //!
 //! Beeper sources: `io/beeper.c` `beeperTable` and `io/beeper.h` `BEEPER_ALLOWED_MODES` /
-//! `DSHOT_BEACON_ALLOWED_MODES` at 4.4.3, 4.5.5 and 2025.12.5.
+//! `DSHOT_BEACON_ALLOWED_MODES` at 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2.
 
 use super::firmware::Dialect;
 use super::{modes, osd};
@@ -38,7 +38,8 @@ pub const BEEPERS: [BeeperName; 24] = [
 ];
 
 /// The CLI name of a beeper condition on `dialect`; None = not on that line.
-/// 2025.12 renamed CRASH_FLIP to CRASHFLIP and removed RC_SMOOTHING_INIT_FAIL.
+/// 2025.12 renamed CRASH_FLIP to CRASHFLIP and removed RC_SMOOTHING_INIT_FAIL
+/// (2026.6 keeps the 2025.12 beeperTable unchanged).
 pub fn beeper_cli_name(b: BeeperName, dialect: Dialect) -> Option<&'static str> {
     use BeeperName::*;
     let v2025 = dialect >= Dialect::V2025_12;
@@ -147,5 +148,10 @@ mod tests {
         let j = serde_json::to_value(&c).unwrap();
         assert!(j["beaconEvents"].is_array() && j["osdElements"].is_array());
         assert_eq!(j["beepers"][20], "CRASH_FLIP");
+        // 2026.6: beeperTable unchanged from 2025.12; 12 new OSD elements.
+        let c = firmware_catalog(Dialect::V2026_6);
+        assert_eq!((c.beepers.len(), c.osd_elements.len()), (23, 94));
+        assert!(c.osd_elements.iter().any(|e| e == "POS_HOLD_READY"));
+        assert!(c.modes.iter().any(|m| m == "ALTHOLD"));
     }
 }

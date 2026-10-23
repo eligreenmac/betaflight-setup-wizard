@@ -87,7 +87,8 @@ pub enum AppError {
         message: String,
         reason: ConfigErrorReason,
     },
-    /// Firmware outside the supported lines (4.4.x, 4.5.x, 2025.12.x).
+    /// Firmware outside the supported lines (see `config::firmware::SUPPORTED_LINES`:
+    /// 4.4.x, 4.5.x, 2025.12.x and 2026.6.x).
     #[error("unsupported firmware: {0}")]
     UnsupportedFirmware(String),
     #[error("driver error: {0}")]

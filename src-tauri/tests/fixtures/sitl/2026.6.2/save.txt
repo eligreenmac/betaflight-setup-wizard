@@ -1,0 +1,78 @@
+>>> batch start
+batch start
+Command batch started
+
+# 
+>>> set serialrx_provider = CRSF
+set serialrx_provider = CRSF
+serialrx_provider set to CRSF
+# 
+>>> batch end
+batch end
+Command batch ended
+
+# 
+>>> save
+save
+
+# saving
+
+Rebooting
+--- after save: process alive=False
+>>> get serialrx_provider
+get serialrx_provider
+serialrx_provider = CRSF
+Allowed values: NONE, SPEK2048, SBUS, SUMD, SUMH, XB-B, XB-B-RJ01, IBUS, JETIEXBUS, CRSF, SRXL, CUSTOM, FPORT, SRXL2, GHST, SPEK1024, MAVLINK
+
+# 
+>>> batch start
+batch start
+Command batch started
+
+# 
+>>> set serialrx_provider = SBUS
+set serialrx_provider = SBUS
+serialrx_provider set to SBUS
+# 
+>>> set foo = 1
+set foo = 1
+###ERROR IN set: INVALID NAME: foo = 1###
+
+# 
+>>> batch end
+batch end
+###ERROR IN batch: ERRORS WERE DETECTED - PLEASE REVIEW BEFORE CONTINUING###
+
+# 
+>>> save
+save
+
+# saving
+
+Rebooting
+--- after failed-batch save: process alive=False
+>>> get serialrx_provider
+get serialrx_provider
+serialrx_provider = SBUS
+Allowed values: NONE, SPEK2048, SBUS, SUMD, SUMH, XB-B, XB-B-RJ01, IBUS, JETIEXBUS, CRSF, SRXL, CUSTOM, FPORT, SRXL2, GHST, SPEK1024, MAVLINK
+Default value: CRSF
+
+# 
+>>> set serialrx_provider = SBUS
+set serialrx_provider = SBUS
+serialrx_provider set to SBUS
+# 
+>>> exit
+exit
+
+# leaving CLI mode, unsaved changes lost
+
+Rebooting
+--- after exit: process alive=False
+>>> get serialrx_provider
+get serialrx_provider
+serialrx_provider = SBUS
+Allowed values: NONE, SPEK2048, SBUS, SUMD, SUMH, XB-B, XB-B-RJ01, IBUS, JETIEXBUS, CRSF, SRXL, CUSTOM, FPORT, SRXL2, GHST, SPEK1024, MAVLINK
+Default value: CRSF
+
+# 

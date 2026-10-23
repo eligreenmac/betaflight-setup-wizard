@@ -41,7 +41,7 @@ fn tmp_store(tag: &str) -> BackupStore {
 const GOLDEN: &[(&str, &[Dialect])] = &[
     ("freestyle-5in-analog", &Dialect::ALL),
     ("cinematic-7in-hd", &Dialect::ALL),
-    ("toothpick-3in-sbus", &[Dialect::V4_4, Dialect::V4_5]),
+    ("toothpick-3in-sbus", &Dialect::ALL),
     ("whoop-65mm-spi-elrs", &Dialect::ALL),
     ("longrange-7in-analog", &Dialect::ALL),
     ("batch2-freestyle-hd", &Dialect::ALL),
@@ -95,7 +95,7 @@ fn dialect_differences() {
         let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
         // The SpeedyBee board file already puts serial RX on UART2; clear it so the
         // dialect-specific command is emitted.
-        fc.preset(&[if d == Dialect::V2025_12 {
+        fc.preset(&[if d.uses_port_names() {
             "serial UART2 0 115200 57600 0 115200"
         } else {
             "serial 1 0 115200 57600 0 115200"
@@ -103,13 +103,13 @@ fn dialect_differences() {
         let snap = fc.snapshot();
         let s = generate_for(&m, d, &snap.ports, Some(&snap)).unwrap();
         let has = |x: &str| s.commands.iter().any(|c| c == x);
-        if d == Dialect::V2025_12 {
+        if d.uses_port_names() {
             assert!(has("serial UART2 64 115200 57600 0 115200"));
-            assert!(!has("feature -RX_MSP"));
         } else {
             assert!(has("serial 1 64 115200 57600 0 115200"));
-            assert!(has("feature -RX_MSP"));
         }
+        // 2025.12 renamed RX_MSP away; 2026.6 restores it (featureNames).
+        assert_eq!(has("feature -RX_MSP"), d.has_rx_msp_feature_name(), "{d:?}");
         // GPS port gets 115200 GPS baud.
         assert!(s
             .commands
@@ -142,14 +142,34 @@ fn pure_generate_uses_model_firmware() {
 #[test]
 fn unsupported_firmware_refused() {
     let mut m = model("freestyle-5in-analog");
-    m.fc.firmware_version = "2026.6.0".into();
+    m.fc.firmware_version = "2026.12.0".into();
     let e = super::generate(&m, &[]).unwrap_err();
     assert_eq!(e.code(), "UNSUPPORTED_FIRMWARE");
 
-    let dump = super::mock::fixture("2025.12", "speedybeef405v4").replace("2025.12.5", "2026.6.0");
+    let dump = super::mock::fixture("2025.12", "speedybeef405v4").replace("2025.12.5", "2026.12.0");
     let mut fc = MockFc::from_dump(&dump);
     let e = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap_err();
     assert_eq!(e.code(), "UNSUPPORTED_FIRMWARE");
+    assert!(
+        e.to_string()
+            .contains("4.4.x, 4.5.x, 2025.12.x and 2026.6.x"),
+        "{e}"
+    );
+
+    // older than 4.4 is refused too
+    m.fc.firmware_version = "4.3.2".into();
+    assert_eq!(
+        super::generate(&m, &[]).unwrap_err().code(),
+        "UNSUPPORTED_FIRMWARE"
+    );
+
+    // every 2026.6.x patch release is accepted (issue #32: 2026.6.2 was refused)
+    for v in ["2026.6.0", "2026.6.2", "2026.6.9"] {
+        let dump = super::mock::fixture("2026.6", "speedybeef405v4").replace("2026.6.2", v);
+        let mut fc = MockFc::from_dump(&dump);
+        let s = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap();
+        assert_eq!(s.dialect, "2026.6", "{v}");
+    }
 }
 
 #[test]
@@ -242,7 +262,7 @@ fn spi_elrs_switch_and_detection() {
     for d in Dialect::ALL {
         let mut fc = MockFc::load(d.as_str(), "crazybeef4sx1280");
         // user had an external serial receiver on UART1
-        let rx = if d == Dialect::V2025_12 {
+        let rx = if d.uses_port_names() {
             "serial UART1 64 115200 57600 0 115200"
         } else {
             "serial 0 64 115200 57600 0 115200"
@@ -410,7 +430,7 @@ fn read_ports_per_dialect() {
         let vcp = ports.iter().find(|p| p.name == "VCP").unwrap();
         assert!(vcp.is_connection_port && vcp.function_mask & sf::MSP != 0);
         let u1 = ports.iter().find(|p| p.name == "UART1").unwrap();
-        assert_eq!(u1.identifier, if d == Dialect::V2025_12 { 51 } else { 0 });
+        assert_eq!(u1.identifier, if d.uses_port_names() { 51 } else { 0 });
     }
 }
 
@@ -642,11 +662,7 @@ fn model_ext_apply_and_verify_on_every_dialect() {
         assert!(v.ok, "{d:?}: {:?}", v.mismatches);
 
         let snap = fc.snapshot();
-        let idle = if d == Dialect::V2025_12 {
-            "motor_idle"
-        } else {
-            "dshot_idle_value"
-        };
+        let idle = d.idle_setting();
         assert_eq!(snap.setting(idle), Some("450"), "{d:?}");
         assert_eq!(
             snap.setting("motor_output_reordering"),
@@ -908,7 +924,7 @@ fn batch2_apply_and_verify_on_every_dialect() {
                 assert_eq!(snap.features.get("AIRMODE"), Some(&false));
                 assert!(used.contains(&28));
                 let b = snap.beepers.as_ref().unwrap();
-                let crash = if d == Dialect::V2025_12 {
+                let crash = if d >= Dialect::V2025_12 {
                     "CRASHFLIP"
                 } else {
                     "CRASH_FLIP"
@@ -926,7 +942,7 @@ fn batch2_apply_and_verify_on_every_dialect() {
                 assert_eq!(snap.setting("osd_displayport_device"), Some("MSP"));
                 assert_eq!(
                     snap.setting("osd_canvas_width"),
-                    (d != Dialect::V2025_12).then_some("53")
+                    (d < Dialect::V2025_12).then_some("53")
                 );
                 // CRAFT_NAME at (20, 18), visible in all three profiles
                 let pos: u16 = snap.setting("osd_craft_name_pos").unwrap().parse().unwrap();
@@ -1066,7 +1082,7 @@ fn beepers_per_version_and_missing_command() {
             .iter()
             .filter(|c| c.starts_with("beeper "))
             .collect();
-        let n = if d == Dialect::V2025_12 { 23 } else { 24 };
+        let n = if d >= Dialect::V2025_12 { 23 } else { 24 };
         assert_eq!(beepers.len(), n, "{d:?}");
         // every name the generator writes exists in the FC's dump, in dump order
         let dump: Vec<String> = fc
@@ -1085,7 +1101,7 @@ fn beepers_per_version_and_missing_command() {
             s.warnings
                 .iter()
                 .any(|w| w.contains("RC_SMOOTHING_INIT_FAIL")),
-            d == Dialect::V2025_12
+            d >= Dialect::V2025_12
         );
         // build without beeper / beacon commands: warnings, nothing written
         let fc = fixture_without(d, "speedybeef405v4", &|l| {
@@ -1357,6 +1373,22 @@ fn osd_default_layout_and_catalog_commands() {
         tauri::async_runtime::block_on(super::commands::config_firmware_catalog("4.4.3".into()))
             .unwrap();
     assert_eq!((c.beepers.len(), c.osd_elements.len()), (24, 77));
+    // The UI's firmware picker (#81) asks these two commands per release: 2026.6.x answers,
+    // 2026.12 (Build API alpha) is UNSUPPORTED_FIRMWARE.
+    let block = |v: &str| {
+        tauri::async_runtime::block_on(super::commands::config_firmware_catalog(v.into()))
+    };
+    let c = block("2026.6.2").unwrap();
+    assert_eq!((c.beepers.len(), c.osd_elements.len()), (23, 94));
+    let rt = tauri::async_runtime::block_on(super::commands::config_osd_default_layout(
+        OsdVideoSystem::Hd,
+        "2026.6.2".into(),
+    ))
+    .unwrap();
+    assert_eq!((rt.cols, rt.rows, rt.elements.len()), (53, 20, 94));
+    for v in ["2026.12.0-alpha", "2026.12.0", "4.3.2"] {
+        assert_eq!(block(v).unwrap_err().code(), "UNSUPPORTED_FIRMWARE", "{v}");
+    }
     // the default layout passes the generator's own validation on every line / grid
     for d in Dialect::ALL {
         for vs in [
@@ -1567,4 +1599,73 @@ fn osd_hd_without_displayport_carries_a_reason() {
     let v = gen_on(&fc, &bad, Dialect::V4_5).unwrap_err().to_json();
     assert_eq!(v["code"], "CONFIG");
     assert!(v.get("details").is_none(), "{v}");
+}
+
+/// 2026.6 renamed / inserted sensor chips (sensors/sensors.c: QMC5883 → QMC5883L, new
+/// QMC5883P, VIRTUAL no longer last). The engine only ever writes names: a chip already
+/// set is written back verbatim, AUTO / NONE are names too, never table indexes.
+#[test]
+fn sensors_by_name_on_2026_6() {
+    let mut m = model("batch2-freestyle-hd");
+    m.sensors = Some(crate::model::Sensors {
+        acc: Some(true),
+        baro: Some(true),
+        mag: Some(true),
+    });
+    let mut fc = MockFc::load("2026.6", "speedybeef405v4");
+    fc.preset(&[
+        "set mag_hardware = QMC5883L",
+        "set baro_hardware = SPA06_003",
+        "set acc_hardware = AUTO",
+    ]);
+    let s = gen_on(&fc, &m, Dialect::V2026_6).unwrap();
+    for want in [
+        "set mag_hardware = QMC5883L",
+        "set baro_hardware = SPA06_003",
+        "set acc_hardware = AUTO",
+    ] {
+        assert!(
+            s.commands.iter().any(|c| c == want),
+            "{want}: {:?}",
+            s.commands
+        );
+    }
+    m.sensors = Some(crate::model::Sensors {
+        acc: Some(true),
+        baro: Some(false),
+        mag: Some(false),
+    });
+    let s = gen_on(&fc, &m, Dialect::V2026_6).unwrap();
+    assert!(s.commands.contains(&"set mag_hardware = NONE".to_string()));
+    assert!(s.commands.contains(&"set baro_hardware = NONE".to_string()));
+}
+
+/// 2026.6 adds `motor_pwm_protocol = DRONECAN` (cli/settings.c lookupTablePwmProtocol, last
+/// entry). An FC on DRONECAN is planned like any other protocol: the model's protocol is
+/// written, DShot-only settings follow the model, nothing reads the FC's protocol index.
+#[test]
+fn dronecan_motor_protocol_on_the_fc_2026_6() {
+    let m = model("freestyle-5in-analog");
+    let mut fc = MockFc::load("2026.6", "speedybeef405v4");
+    fc.preset(&["set motor_pwm_protocol = DRONECAN", "set dshot_bidir = OFF"]);
+    let s = gen_on(&fc, &m, Dialect::V2026_6).unwrap();
+    assert!(s
+        .commands
+        .contains(&"set motor_pwm_protocol = DSHOT600".to_string()));
+    assert!(s.commands.contains(&"set dshot_bidir = ON".to_string()));
+    let r = session::verify(&mut fc, &m);
+    assert!(r.is_ok());
+}
+
+/// The real 2026.6.2 SITL `dump all` (battery_profile sections, waypoint lines) parses:
+/// section headers are not settings, features / aux / serial are read as usual.
+#[test]
+fn sitl_2026_6_dump_with_battery_profiles_parses() {
+    let text = std::fs::read_to_string(fixtures().join("sitl/2026.6.2/dump_all.txt")).unwrap();
+    let snap = super::snapshot::parse_dump(&text);
+    assert_eq!(snap.version.as_deref(), Some("2026.6.2"));
+    assert_eq!(snap.setting("vbat_min_cell_voltage"), Some("330"));
+    assert_eq!(snap.setting("battery_profile"), None);
+    assert!(!snap.ports.is_empty());
+    assert!(snap.features.contains_key("RX_MSP"));
 }

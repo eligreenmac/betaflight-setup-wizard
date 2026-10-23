@@ -4,7 +4,8 @@
 //! `generate` must be a pure function so it can be golden-tested without hardware.
 //!
 //! Layout:
-//! - [`firmware`]: version parsing and the 4.4 / 4.5 / 2025.12 support gate
+//! - [`firmware`]: version parsing and the 4.4 / 4.5 / 2025.12 / 2026.6 support gate
+//!   (`SUPPORTED_LINES`, `is_supported`, `supported_lines_label`)
 //! - [`serial_functions`]: function bits, port ids per dialect, `isSerialConfigValid` mirror
 //! - [`snapshot`]: parsers for `serial`, `dump all`, `diff all`
 //! - [`modes`]: managed flight modes -> permanent box ids
@@ -51,7 +52,7 @@ use snapshot::PortState;
 /// from `session::plan` (`config_plan`).
 ///
 /// The dialect comes from `model.fc.firmware_version` (UNSUPPORTED_FIRMWARE outside
-/// 4.4.x / 4.5.x / 2025.12.x). Without a `dump all` snapshot the generator assumes
+/// 4.4.x / 4.5.x / 2025.12.x / 2026.6.x). Without a `dump all` snapshot the generator assumes
 /// default baud rates, all aux slots free and does not check SPI receiver hardware;
 /// `config_plan` (session::plan) uses the live FC state instead.
 pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScript> {

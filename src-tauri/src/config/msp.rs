@@ -4,7 +4,7 @@
 //! `device::` owns the transport (`Connection::msp_request`) and does not define MSP ids
 //! yet; these are offered for reuse there. Layouts follow Betaflight `msp.c` and are
 //! checked against real SITL replies in `tests/fixtures/sitl/<version>/msp.txt`
-//! (4.4.3, 4.5.5, 2025.12.5).
+//! (4.4.3, 4.5.5, 2025.12.5, 2026.6.2).
 
 use crate::model::FcInfo;
 
@@ -42,6 +42,10 @@ pub fn mcu_name(id: u8) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+/// 2026.6 `MSP_BOARD_INFO` always reports this id (build/build_config.h:42,
+/// MCU_TYPE_ID_PROVIDED_BY_NAME); the MCU name moved to `MSP2_MCU_INFO` (0x300C).
+pub const MCU_TYPE_ID_PROVIDED_BY_NAME: u8 = 254;
 
 pub fn mcu_type_id(mcu: &str) -> u8 {
     (0..=7).find(|i| mcu_name(*i) == Some(mcu)).unwrap_or(0xff)
@@ -143,7 +147,13 @@ pub fn fc_info(
             b.board_name.clone()
         },
         manufacturer_id: (!b.manufacturer_id.is_empty()).then(|| b.manufacturer_id.clone()),
-        mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
+        // 2026.6 sends MCU_TYPE_ID_PROVIDED_BY_NAME; config.h / cloud builds name the
+        // target after the MCU ("STM32F405"), so use the target name when it is one.
+        mcu: match b.mcu_type_id {
+            Some(MCU_TYPE_ID_PROVIDED_BY_NAME) => mcu_name(mcu_type_id(&b.target_name)),
+            id => id.and_then(mcu_name),
+        }
+        .map(str::to_string),
         uid: uid.and_then(decode_uid),
         build_options: Vec::new(),
         hd_osd_supported: None,

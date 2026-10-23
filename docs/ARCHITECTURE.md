@@ -75,7 +75,7 @@ Enums:
   The MVP config engine rejects `SOFTSERIAL*` (no soft serial in MVP).
 - `receiver.telemetry` defaults to `true`. Per-motor DShot direction reversal is phase 2 and not in the model.
 
-Optional fields (all 4.4 / 4.5 / 2025.12; `null` or absent = **keep the FC's current value**, nothing
+Optional fields (all 4.4 / 4.5 / 2025.12 / 2026.6; `null` or absent = **keep the FC's current value**, nothing
 is written; the generator rejects out-of-range values with `CONFIG`, nothing sent):
 
 | Field | CLI | Rule |
@@ -84,7 +84,7 @@ is written; the generator rejects out-of-range values with `CONFIG`, nothing sen
 | `vtx.table` | `vtxtable …` | ≤ 8 bands, 8 channels, 8 power levels; band name ≤ 8 chars, power label ≤ 3; frequencies ≤ 5999 MHz (0 = unused); same channel count for every band (`drivers/vtx_table.h`). `null` keeps the FC's table. |
 | `vtx.band`, `vtx.channel` | `vtx_band`, `vtx_channel` | 1–8, 1-based into the table (written or the FC's). |
 | `vtx.power` | `vtx_power` | **1–7**, 1-based into `table.powerLevels` (0 = unknown, never written). The CLI range is `0..VTX_TABLE_MAX_POWER_LEVELS-1`, so the 8th level of an 8-level table can't be selected with the CLI. It must also be ≤ the table's level count. |
-| `esc.idle` | 2025.12 `motor_idle`; 4.4/4.5 `dshot_idle_value` | 0–2000 in 0.01 % (550 = 5.5 %). On 4.4/4.5 it is DShot-only (warning, not written, for analog protocols). |
+| `esc.idle` | 2025.12+ `motor_idle`; 4.4/4.5 `dshot_idle_value` | 0–2000 in 0.01 % (550 = 5.5 %). On 4.4/4.5 it is DShot-only (warning, not written, for analog protocols). |
 | `esc.motorOrder` | `motor_output_reordering` | Item *i* = 0-based output for motor *i+1*; must be a permutation of `0..n` (n ≤ the FC's list length, 8). Remaining slots keep identity. |
 | `gps.galileo` | `gps_ublox_use_galileo` | UBLOX only (warning, not written, for NMEA). |
 | `gps.sbasMode` | `gps_sbas_mode` | AUTO \| EGNOS \| WAAS \| MSAS \| GAGAN \| NONE. |
@@ -93,7 +93,7 @@ The `gps.*` fields only apply when `gps.enabled`.
 
 #### 2.1.1 Model batch 2: modes, beepers, sensors, board alignment, OSD (shape; implementation follows)
 
-All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless noted. **null or absent = keep the FC's current state**; nothing is written for them. Sources: Betaflight `src/main` at tags 4.4.3, 4.5.5 and 2025.12.5.
+All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 / 2026.6 unless noted. **null or absent = keep the FC's current state**; nothing is written for them. Sources: Betaflight `src/main` at tags 4.4.3, 4.5.5, 2025.12.5 and 2026.6.2.
 
 ```jsonc
 {
@@ -126,6 +126,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
 - **`beepers`.** The stable names are the 4.4/4.5 CLI names from `beeper list` (`io/beeper.c` `beeperTable`). When `beepers` is set, the generator writes every condition the firmware has: `beeper -X` for the listed ones and `beeper X` for the rest. This gives a full, verifiable state. Per-version differences:
   - On 2025.12, `CRASH_FLIP` is written as `CRASHFLIP`.
   - `RC_SMOOTHING_INIT_FAIL` doesn't exist on 2025.12. Listing it there gives a warning and nothing is written for it.
+  - 2026.6 has the same beeper table as 2025.12.
   - The CLI matches names by prefix (`strncasecmp`), so the generator always writes full names.
   - Firmware default: all conditions on (`beeper_off_flags` = 0). The DShot beacon is off for both RX_LOST and RX_SET (`DEFAULT_DSHOT_BEACON_OFF_FLAGS`).
   - `dshotBeaconDisabled` maps to `beacon -X` / `beacon X` for the only allowed conditions, RX_LOST and RX_SET.
@@ -150,7 +151,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
   - **Grids:** PAL 30×16, NTSC 30×13, AUTO 30×13 (fits either camera), HD 53×20 (`drivers/display.h`, `osd/osd.h`).
   - **Elements:**
     - Each element maps to `osd_<cli>_pos`. The stable name is the `osd_items_e` name without `OSD_`, e.g. `MAIN_BATT_VOLTAGE` → `osd_vbat_pos`, `ITEM_TIMER_2` → `osd_tim_2_pos`.
-    - The 4.4 list has 77 elements; 4.5 adds `GPS_LAP_TIME_*`; 2025.12 adds `DEBUG2` and `LIDAR_DIST`. An unknown name for the firmware is a `CONFIG` error.
+    - The 4.4 list has 77 elements; 4.5 adds `GPS_LAP_TIME_*`; 2025.12 adds `DEBUG2` and `LIDAR_DIST`; 2026.6 adds `POS_HOLD_READY`, `BATTERY_PROFILE_NAME`, `CUSTOM_SERIAL_TEXT`, `WP_*` (8) and `NAV_MAP` (94). An unknown name for the firmware is a `CONFIG` error.
     - Elements not listed keep the FC's state.
     - An element whose x/y doesn't fit the grid is a `CONFIG` error.
   - **Position encoding** is identical on all three lines (`osd/osd.h`):
@@ -560,18 +561,43 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
 
 ## 5. Firmware dialects (config)
 
-| Concern | 4.4 / 4.5 | 2025.12+ |
-|---|---|---|
-| `serial` port identifier | UART1=0 … (n-1); VCP=20; SOFTSERIAL1=30; LPUART1=40 | UART1=51 … (50+n); VCP=20; SOFTSERIAL1=30; LPUART1=40 |
-| `save noreboot` | 4.4: no; 4.5: from 4.5.4 (backport PR #15151) | available |
-| ESC idle setting | `dshot_idle_value` | `motor_idle` (PR #13936) |
-| `feature -RX_MSP` | accepted | no CLI name (omit) |
-| `expresslrs_rate_index` / `_switch_mode` | exist (never written) | removed (PR #12936) |
-| Function bitmask | same (see `config/serial_functions.rs`) | same |
+| Concern | 4.4 / 4.5 | 2025.12 | 2026.6 |
+|---|---|---|---|
+| `serial` port identifier | UART1=0 … (n-1); VCP=20; SOFTSERIAL1=30; LPUART1=40 | UART1=51 … (50+n); VCP=20; SOFTSERIAL1=30; LPUART1=40 | as 2025.12, plus UART11..15 = 61..65 |
+| `save noreboot` | 4.4: no; 4.5: from 4.5.4 (backport PR #15151) | available | available |
+| ESC idle setting | `dshot_idle_value` | `motor_idle` (PR #13936) | `motor_idle` |
+| `feature -RX_MSP` | accepted | no CLI name (omit) | accepted again (`featureNames` restores `RX_MSP`, adds `RX_UDP`) |
+| `expresslrs_rate_index` / `_switch_mode` | exist (never written) | removed (PR #12936) | removed |
+| Function bitmask | same (see `config/serial_functions.rs`) | same | adds `LIDAR_NL` (1<<19), `OSD_CUSTOM_TEXT` (1<<20); never managed, always kept |
+| Battery settings (`vbat_*`, `ibata_*`, …) | global | global | per battery profile (`PG_BATTERY_PROFILES`, 3 profiles); `dump`/`diff` print `battery_profile N` sections |
+| Modes | — | ALTHOLD=3, POSHOLD=11 | adds AUTOPILOT=56, WP CAPTURE=57 (unmanaged, kept) |
+| `MSP_BOARD_INFO` MCU type | MCU id | MCU id | 254 (`MCU_TYPE_ID_PROVIDED_BY_NAME`); the name is in `MSP2_MCU_INFO` (0x300C) |
+| Beepers / OSD | 24 / 77 (4.5: 80) | 23 / 82 | 23 (unchanged) / 94 (adds `pos_hold_ready`, `battery_profile_name`, `custom_serial_text`, `wp_*` ×8, `nav_map`) |
 
 Always take identifiers from `config_read_ports`; the table is only for tests.
-Supported lines: **4.4.x, 4.5.x, 2025.12.x**. Everything else (≤ 4.3, 2026.6.x and newer)
+Supported lines: **4.4.x, 4.5.x, 2025.12.x, 2026.6.x**. Everything else (≤ 4.3, 2026.7 and newer)
 fails with `UNSUPPORTED_FIRMWARE` before any write.
+
+**Single source of truth** (`config::firmware`, used by Device and the error text):
+
+```rust
+pub const SUPPORTED_LINES: &[(u16, u16)] = &[(4, 4), (4, 5), (2025, 12), (2026, 6)];
+pub fn is_supported(version: &str) -> bool;      // major.minor in SUPPORTED_LINES; false if unparseable
+pub fn supported_lines_label() -> String;        // "4.4.x, 4.5.x, 2025.12.x and 2026.6.x"
+impl Dialect { pub fn line(self) -> (u16, u16); pub fn has_battery_profiles(self) -> bool; /* … */ }
+```
+
+The `UNSUPPORTED_FIRMWARE` message is built from `supported_lines_label()`; adding a line means
+adding a `Dialect` variant and its `SUPPORTED_LINES` entry, nothing else in Device.
+
+2026.6 notes:
+
+- The generator writes no battery setting, so profiles are never switched. A backup's
+  `battery_profile N` sections and a SITL/cloud build's `waypoint` lines are replayed verbatim by
+  rollback (`guard::REPLAY_VERBS`). A `set vbat_*` written by hand only affects the profile that
+  is currently selected (`cli.c` `cliBatteryProfile`, RAM only until `save`).
+- `MSP_FC_VERSION` omits the version string on VTX (DisplayPort) ports; Config reads the
+  version from the CLI `version` line, so it is unaffected.
 
 ### 5.1 Config engine contract
 
@@ -593,7 +619,7 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
 - **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
   backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
-  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's, or if
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12 / 2026.6) differs from the FC's, or if
   the backup's `boardUid` and the FC's UID (`FcLink::uid()`) are both known and differ (`CONFIG`, nothing sent).
   The backup is always resolved by `id` inside the backups folder; the `path` field sent by the UI
   is never opened.
