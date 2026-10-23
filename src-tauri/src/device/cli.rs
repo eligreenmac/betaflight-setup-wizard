@@ -110,6 +110,11 @@ impl<S: SerialLink> CliSession<S> {
         &mut self.link
     }
 
+    /// Give the port back without sending anything (the FC stays in CLI mode).
+    pub fn into_link(self) -> S {
+        self.link
+    }
+
     /// Run one command and return its output (echo and prompt removed).
     pub fn run(&mut self, command: &str) -> Result<String> {
         if command.contains(['\n', '\r']) {

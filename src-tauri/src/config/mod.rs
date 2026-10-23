@@ -29,7 +29,7 @@ pub mod snapshot;
 pub mod vtx_table;
 
 #[cfg(test)]
-mod mock;
+pub(crate) mod mock;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
