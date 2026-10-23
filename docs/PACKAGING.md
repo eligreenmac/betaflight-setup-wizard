@@ -158,8 +158,13 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 `.github/workflows/nsis-upgrade.yml` (windows-latest) has two jobs. Both install
 silently (`/S`, per-user default mode), using helpers in
 `.github/scripts/nsis-upgrade-lib.ps1`. After every install they assert exactly one
-uninstall entry, the new `DisplayVersion`, and that the installed app exe matches the
-one inside that installer and was replaced.
+uninstall entry and the new `DisplayVersion`. They also check that the installed app exe
+and the WinUSB helper `<InstallLocation>\drivers\bfsw-wdi-simple.exe` are
+byte-identical to the copies inside that installer (extracted with 7-Zip), and that
+the app exe was replaced. Both jobs build the helper first with
+`./.github/actions/build-wdi-simple` (cached, same key as `build.yml`/`release.yml`), so
+the test installers bundle it exactly like a release (about 8.6 MB, not about 3.7 MB
+without it).
 
 - **`upgrade`** (rebuilt test versions): builds NSIS installers for 0.1.0-1, 0.1.0-2,
   0.1.0-3 and 0.1.0 from the same commit (version via `tauri build --config`) and
@@ -168,13 +173,14 @@ one inside that installer and was replaced.
 - **`upgrade-from-release`** (real previous release): picks the newest **published**
   (non-draft) GitHub release whose version is older than this commit's app version,
   downloads its `*-setup.exe` and checks it against that release's `SHA256SUMS.txt`.
-  It installs it, then upgrades with this commit's freshly built installer. If there
+  It installs it, checking the published installer's own helper, then upgrades with
+  this commit's freshly built installer and logs both installer sizes. If there
   is no such release, it emits a notice and skips (success). On a `vX.Y.Z-N` tag push
   this is the previous preview: the new release is still a draft, so it's excluded.
 
 The workflow runs on demand, on `v*` tags, and on PRs that change packaging config
-(`tauri.conf.json`, `Cargo.toml`, `package.json`, NSIS/Windows resources, the workflow
-and its helper script). Neither job covers the MSI, interactive installs, per-machine
+(`tauri.conf.json`, `Cargo.toml`, `package.json`, NSIS/Windows resources, the workflow,
+its helper script and the `build-wdi-simple` action). Neither job covers the MSI, interactive installs, per-machine
 mode or launching the app.
 
 ## 4. Release pipeline (issue #28)

@@ -2,8 +2,10 @@ name: nsis-upgrade
 
 # Two independent jobs, both silent (/S, per-user default install mode). After each
 # install they assert: exactly one install entry, the new DisplayVersion, and that the
-# installed app exe is byte-identical to the one inside that installer (and differs
-# from the previous one). Helpers: .github/scripts/nsis-upgrade-lib.ps1.
+# installed app exe and WinUSB helper (drivers\bfsw-wdi-simple.exe) are byte-identical
+# to the copies inside that installer (and the exe differs from the previous one).
+# Both jobs build the helper (cached) like build.yml/release.yml, so the test installers
+# bundle it exactly like a release. Helpers: .github/scripts/nsis-upgrade-lib.ps1.
 #
 # upgrade: chain of rebuilt test versions 0.1.0-1 -> 0.1.0-2 -> 0.1.0-3 -> 0.1.0.
 #   Versions come from `tauri build --config` overrides on this commit; no files are
@@ -28,6 +30,7 @@ on:
       - package.json
       - .github/workflows/nsis-upgrade.yml
       - .github/scripts/nsis-upgrade-lib.ps1
+      - .github/actions/build-wdi-simple/**
 
 permissions:
   contents: read
@@ -49,6 +52,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Build WinUSB helper (libwdi, cached)
+        uses: ./.github/actions/build-wdi-simple
       - run: npm ci
       - name: Build NSIS installers 0.1.0-1, 0.1.0-2, 0.1.0-3, 0.1.0
         shell: pwsh
@@ -141,6 +146,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Build WinUSB helper (libwdi, cached)
+        if: steps.prev.outputs.skip == 'false'
+        uses: ./.github/actions/build-wdi-simple
       - if: steps.prev.outputs.skip == 'false'
         run: npm ci
       - name: Build this commit's NSIS installer
@@ -154,6 +162,8 @@ jobs:
           $setup = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*_${v}_x64-setup.exe")
           if ($setup.Count -ne 1) { throw "expected one NSIS installer for $v, found $($setup.Count)" }
           Copy-Item $setup[0].FullName "$env:RUNNER_TEMP/setup-new.exe"
+          $prevLen = (Get-Item '${{ steps.prev.outputs.setup }}').Length
+          Write-Host "installer sizes: this commit $($setup[0].Length) bytes, published ${{ steps.prev.outputs.tag }} $prevLen bytes"
       - name: Install published ${{ steps.prev.outputs.tag }}, upgrade with this commit's installer
         if: steps.prev.outputs.skip == 'false'
         shell: pwsh

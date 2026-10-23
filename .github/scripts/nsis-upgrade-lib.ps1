@@ -22,30 +22,49 @@ function Install-Silent([string]$setup) {
   $p.ExitCode
 }
 
-# SHA-256 of the file called $name inside the NSIS installer $setup (7-Zip reads NSIS).
-function Get-ExpectedExeHash([string]$setup, [string]$name) {
+# The WinUSB helper the app runs elevated (built by .github/actions/build-wdi-simple,
+# bundled via tauri.conf.json resources "drivers/*"), relative to the install dir.
+$script:HelperRelPath = 'drivers\bfsw-wdi-simple.exe'
+
+# SHA-256 of $relPath inside the NSIS installer $setup (7-Zip reads NSIS; extracted once
+# per installer).
+function Get-InstallerFileHash([string]$setup, [string]$relPath) {
   $x = Join-Path $env:RUNNER_TEMP ("extract-" + [IO.Path]::GetFileNameWithoutExtension($setup))
-  7z x $setup "-o$x" -y | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw "7z could not extract $setup" }
-  $f = @(Get-ChildItem -Recurse -File $x | Where-Object { $_.Name -eq $name })
-  if ($f.Count -ne 1) { throw "found $($f.Count) '$name' in $setup" }
-  (Get-FileHash $f[0].FullName).Hash
+  if (-not (Test-Path $x)) {
+    7z x $setup "-o$x" -y | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "7z could not extract $setup" }
+  }
+  $f = Join-Path $x $relPath
+  if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { throw "'$relPath' is not in $(Split-Path -Leaf $setup)" }
+  (Get-FileHash -LiteralPath $f).Hash
 }
 
-# Asserts exactly one install entry with DisplayVersion $v whose app exe is byte-identical
-# to the one inside $setup. Returns the installed exe's SHA-256.
+# Asserts that $relPath exists under $installDir and is byte-identical to the copy
+# inside $setup. Returns its SHA-256.
+function Assert-InstalledFile([string]$v, [string]$setup, [string]$installDir, [string]$relPath) {
+  $path = Join-Path $installDir $relPath
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "after $v`: $path missing" }
+  $hash = (Get-FileHash -LiteralPath $path).Hash
+  $want = Get-InstallerFileHash $setup $relPath
+  if ($hash -ne $want) { throw "after $v`: installed $relPath ($hash) is not the one in $(Split-Path -Leaf $setup) ($want)" }
+  $hash
+}
+
+# Asserts exactly one install entry with DisplayVersion $v, and that the app exe and the
+# WinUSB helper are installed and byte-identical to the copies inside $setup. Returns the
+# installed app exe's SHA-256.
 function Assert-Installed([string]$v, [string]$setup) {
   $e = Get-Entries
   if ($e.Count -ne 1) { throw "after $v`: expected 1 install entry, found $($e.Count): $($e.PSPath -join '; ')" }
   $e = $e[0]
   if ($e.DisplayVersion -ne $v) { throw "after $v`: DisplayVersion is '$($e.DisplayVersion)'" }
-  $exe = Join-Path $e.InstallLocation.Trim('"') $e.MainBinaryName
-  if (-not (Test-Path $exe)) { throw "after $v`: $exe missing" }
-  $hash = (Get-FileHash $exe).Hash
-  $want = Get-ExpectedExeHash $setup $e.MainBinaryName
-  if ($hash -ne $want) { throw "after $v`: installed exe ($hash) is not the one in $(Split-Path -Leaf $setup) ($want)" }
+  $dir = $e.InstallLocation.Trim('"')
+  $hash = Assert-InstalledFile $v $setup $dir $e.MainBinaryName
+  $exe = Join-Path $dir $e.MainBinaryName
   $vi = (Get-Item $exe).VersionInfo
   Write-Host "OK $v`: $($e.PSChildName) DisplayVersion=$($e.DisplayVersion) exe=$exe sha256=$hash ProductVersion=$($vi.ProductVersion) numeric=$($vi.FileMajorPart).$($vi.FileMinorPart).$($vi.FileBuildPart).$($vi.FilePrivatePart)"
+  $hh = Assert-InstalledFile $v $setup $dir $script:HelperRelPath
+  Write-Host "OK $v helper: $(Join-Path $dir $script:HelperRelPath) sha256=$hh matches $(Split-Path -Leaf $setup)"
   $hash
 }
 
