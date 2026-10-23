@@ -395,6 +395,11 @@ pub struct Esc {
     /// 4.4 / 4.5 (exists only with DShot) and `motor_idle` on 2025.12; null = keep.
     #[serde(default)]
     pub idle: Option<u16>,
+    /// Motor remap (`motor_output_reordering`, 4.4 / 4.5 / 2025.12): entry i is the
+    /// 0-based output that drives motor i+1. Must be a permutation of 0..n where n is
+    /// the motor count (4 for a quad); null = keep.
+    #[serde(default)]
+    pub motor_order: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -111,6 +111,8 @@ export interface DroneModel {
     propsOut: boolean;
     /** Motor idle in 0.01 % (550 = 5.5 %), 0..2000; null = keep. */
     idle?: number | null;
+    /** motor_output_reordering: item i = 0-based output for motor i+1 (permutation); null = keep. */
+    motorOrder?: number[] | null;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
   extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };

@@ -131,7 +131,10 @@
         "propsOut": { "type": "boolean", "default": false,
                       "description": "yaw_motors_reversed. Per-motor DShot spin-direction reversal is phase 2 (not in the schema)." },
         "idle": { "type": ["integer", "null"], "minimum": 0, "maximum": 2000,
-                  "description": "0.01 % units (550 = 5.5 %): dshot_idle_value (4.4/4.5) / motor_idle (2025.12); null = keep" }
+                  "description": "0.01 % units (550 = 5.5 %): dshot_idle_value (4.4/4.5) / motor_idle (2025.12); null = keep" },
+        "motorOrder": { "type": ["array", "null"], "minItems": 4, "maxItems": 8, "uniqueItems": true,
+                        "items": { "type": "integer", "minimum": 0, "maximum": 7 },
+                        "description": "motor_output_reordering: item i = 0-based output for motor i+1, a permutation of 0..n; null = keep" }
       }
     },
     "switches": {
