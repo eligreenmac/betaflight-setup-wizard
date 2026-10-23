@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      apt_fallback_test:
+        description: "Linux only: make apt attempt 1 use an unreachable mirror to exercise the fallback"
+        type: boolean
+        default: false
 
 # Least privilege: CI only needs to read the repo and upload artifacts.
 permissions:
@@ -22,6 +27,7 @@ concurrency:
 # Note: `node-version: 22` below is the app's build toolchain, not the action runtime.
 jobs:
   windows:
+    if: ${{ !inputs.apt_fallback_test }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -80,31 +86,50 @@ jobs:
           if-no-files-found: error
 
   linux-check:
-    runs-on: ubuntu-latest
+    # The ubuntu-latest leg keeps the check name `linux-check`. ubuntu-26.04 is an
+    # optional, non-blocking preview of the image ubuntu-latest is moving to
+    # (rollout Oct 19 - Nov 19, 2026).
+    name: ${{ matrix.optional && format('linux-check ({0}, optional)', matrix.os) || 'linux-check' }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            optional: false
+          - os: ubuntu-26.04
+            optional: true
     # Normally 2-6 min. Bounds a stuck job instead of the 6 h default.
     timeout-minutes: 25
+    env:
+      APT_TEST_BREAK_FIRST_MIRROR: ${{ inputs.apt_fallback_test && '1' || '' }}
     steps:
       - uses: actions/checkout@v7
-      # The .debs are cached per runner image + package list. A slow Azure apt mirror
-      # (~70 kB/s for 72.8 MB) stalled this job for 17-25 min several times.
+      # The .debs are cached per OS release + runner image + package list. A slow Azure
+      # apt mirror (~70 kB/s for 72.8 MB) stalled this job for 17-25 min several times.
       - name: apt cache key
         id: apt-key
         run: |
-          echo "key=apt-${ImageOS}-${ImageVersion}-${{ hashFiles('.github/linux-deps.txt') }}" >> "$GITHUB_OUTPUT"
-          echo "prefix=apt-${ImageOS}-" >> "$GITHUB_OUTPUT"
+          . /etc/os-release
+          echo "key=apt-${ID}${VERSION_ID}-${ImageOS}-${ImageVersion}-${{ hashFiles('.github/linux-deps.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=apt-${ID}${VERSION_ID}-${ImageOS}-" >> "$GITHUB_OUTPUT"
           echo "dir=${RUNNER_TEMP}/apt-archives" >> "$GITHUB_OUTPUT"
       - name: Restore apt package cache
         id: apt-cache
+        if: ${{ !inputs.apt_fallback_test }}
         uses: actions/cache/restore@v6
         with:
           path: ${{ steps.apt-key.outputs.dir }}
           key: ${{ steps.apt-key.outputs.key }}
           restore-keys: ${{ steps.apt-key.outputs.prefix }}
+      # Script budget is 450 s (update <= 45 s and download <= 240 s per attempt,
+      # 75 s kept for dpkg), inside this 8 min limit.
       - name: Install Tauri system deps
         timeout-minutes: 8
         run: .github/scripts/apt-install.sh .github/linux-deps.txt "${{ steps.apt-key.outputs.dir }}"
       - name: Save apt package cache
-        if: steps.apt-cache.outputs.cache-hit != 'true'
+        if: ${{ steps.apt-cache.outputs.cache-hit != 'true' && !inputs.apt_fallback_test }}
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.apt-key.outputs.dir }}
@@ -115,6 +140,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Separate caches per image: 26.04 builds link against a newer glibc/webkit.
+          key: ${{ matrix.os }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
