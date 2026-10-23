@@ -40,3 +40,11 @@ pub async fn device_cli_exec(line: String) -> AppResult<String> {
 pub async fn device_reboot_to_bootloader() -> AppResult<()> {
     Err(AppError::NotImplemented("device_reboot_to_bootloader"))
 }
+
+/// `device_identify` plus a read-only CLI probe (`serial`, `resource`,
+/// `get rx_spi_protocol`) that fills `rxSpi.present`. Leaves the CLI with
+/// `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC (reconnect needed).
+#[tauri::command]
+pub async fn device_probe_board() -> AppResult<FcInfo> {
+    Err(AppError::NotImplemented("device_probe_board"))
+}

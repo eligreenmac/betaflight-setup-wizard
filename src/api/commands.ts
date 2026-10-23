@@ -19,6 +19,7 @@ export interface CommandMap {
   device_identify: [Record<string, never>, FcInfo];
   device_cli_exec: [{ line: string }, string];
   device_reboot_to_bootloader: [Record<string, never>, void];
+  device_probe_board: [Record<string, never>, FcInfo];
   // flasher
   flasher_list_targets: [Record<string, never>, BoardTarget[]];
   flasher_list_releases: [{ target: string }, FirmwareRelease[]];
@@ -26,6 +27,7 @@ export interface CommandMap {
   flasher_fetch_firmware: [{ request: FirmwareRequest }, FirmwareImage];
   flasher_list_cache: [Record<string, never>, FirmwareImage[]];
   flasher_flash: [{ image: FirmwareImage; dfuSerial: string | null; options: FlashOptions }, void];
+  flasher_remove_read_protection: [{ dfuSerial: string | null; confirmErase: boolean }, void];
   // config
   config_read_ports: [Record<string, never>, FcSerialPort[]];
   config_backup: [Record<string, never>, Backup];
@@ -76,6 +78,7 @@ export const api = {
     identify: () => call("device_identify", none),
     cliExec: (line: string) => call("device_cli_exec", { line }),
     rebootToBootloader: () => call("device_reboot_to_bootloader", none),
+    probeBoard: () => call("device_probe_board", none),
   },
   flasher: {
     listTargets: () => call("flasher_list_targets", none),
@@ -85,6 +88,9 @@ export const api = {
     listCache: () => call("flasher_list_cache", none),
     flash: (image: FirmwareImage, dfuSerial: string | null, options: FlashOptions) =>
       call("flasher_flash", { image, dfuSerial, options }),
+    /** Erases the whole chip. Only after the user explicitly confirmed. */
+    removeReadProtection: (dfuSerial: string | null, confirmErase: boolean) =>
+      call("flasher_remove_read_protection", { dfuSerial, confirmErase }),
   },
   config: {
     readPorts: () => call("config_read_ports", none),

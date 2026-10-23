@@ -29,7 +29,7 @@ all mirrors at once (`src-tauri/src/model.rs`, `src/types/model.ts`,
 
 | Module | Path | Workstream | Responsibilities | Must NOT |
 |---|---|---|---|---|
-| device | `src-tauri/src/device` | `device` | Enumerate COM ports + VID/PID classification (`usb_ids.rs`); open/close serial (115200 8N1); MSP v1/v2 framing, request/response, timeouts; identify FC (API_VERSION, FC_VARIANT, FC_VERSION, BOARD_INFO, UID, BUILD_INFO); CLI mode (enter `#`, exec line until prompt, exit/save); reboot to bootloader; reconnect after reboot. Owns the single active connection (`tauri::State`). Implements the `Connection` trait. | Know anything about DroneModel or firmware files. |
+| device | `src-tauri/src/device` | `device` | Enumerate COM ports + VID/PID classification (`usb_ids.rs`); open/close serial (115200 8N1); MSP v1/v2 framing, request/response, timeouts; identify FC (API_VERSION, FC_VARIANT, FC_VERSION, BOARD_INFO, UID, BUILD_INFO, serial port list, onboard SPI RX detection — §4.1); CLI mode (enter `#`, exec line until prompt, exit/save); reboot to bootloader; reconnect after reboot. Owns the single active connection (`tauri::State`). Implements the `Connection` trait. | Know anything about DroneModel or firmware files. |
 | flasher | `src-tauri/src/flasher` | `flasher` | Build API client (targets, releases, options, build request + poll + download); content-addressed cache with SHA-256; DFU enumeration (incl. MCU family from descriptor) and flashing (erase, write, verify, manifest/leave) for STM32 F4/F7/H7/G4 and AT32F435; orchestration: identify → backup request → `device_reboot_to_bootloader` → wait for DFU → flash → wait for VCP; progress events. | Generate CLI; install drivers (asks `system`). |
 | config | `src-tauri/src/config` | `config` | `generate(DroneModel, ports) -> CliScript` (**pure**, version dialects, conflict warnings); read ports (`serial` / MSP_CF_SERIAL_CONFIG); backup (`diff all` → file); apply (`batch start` … `batch end` + `save`, collect `###ERROR###` lines); verify (read back via `get`/`serial`/`feature`/`aux`); rollback (`defaults nosave` + backup + `save`). Uses `device::Connection` only. | Open ports or talk USB directly. |
 | system | `src-tauri/src/system` | `packaging` | Driver status (WinUSB on DFU IDs, VCP), install WinUSB via elevated libwdi helper, app info/paths. Also owns `tauri.conf.json` bundle section, installer, CI workflows, code signing. | Business logic. |
@@ -77,7 +77,9 @@ Enums:
 
 ### 2.2 Other types (see model.rs for fields)
 
-`HostPort`, `HostPortKind`, `FcInfo`, `FcSerialPort {name, identifier, functionMask, isConnectionPort}`,
+`HostPort`, `HostPortKind`, `FcInfo {…, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
+`FcSerialPort {name, identifier, functionMask, isConnectionPort}`,
+`RxSpiInfo {present, expresslrsPins, protocol, featureEnabled, resources}`,
 `BoardTarget`, `FirmwareRelease`, `FirmwareRequest`, `FirmwareImage`, `FirmwareFormat`,
 `DfuDevice`, `FlashOptions`, `FlashProgress`, `FlashStage`, `CliScript {commands, warnings, dialect, cleared}`,
 `ClearedPort {port, functions, functionMaskBefore, functionMaskAfter}`, `SerialFunction`,
@@ -88,9 +90,31 @@ Enums:
 
 ### 2.3 Errors
 
-Every command returns `Result<T, AppError>`; the UI receives `{ "code": "...", "message": "..." }`.
+Every command returns `Result<T, AppError>`; the UI receives
+`{ "code": "...", "message": "...", "details"?: {...} }` (`details` only where listed below).
 Codes: NOT_IMPLEMENTED, NOT_CONNECTED, SERIAL, MSP, CLI, USB, FIRMWARE, CONFIG,
-UNSUPPORTED_FIRMWARE, DRIVER, IO.
+UNSUPPORTED_FIRMWARE, DRIVER, IO,
+plus the device/flasher codes:
+
+| Code | When | `details` | Suggested UI |
+|---|---|---|---|
+| `BOARD_NOT_FOUND` | Port path gone / FC unplugged | – | "Plug the FC in and pick its port" |
+| `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "app" \| "external" }` | `external`: "Close Betaflight App / other tools"; `app`: wait/retry |
+| `DRIVER_MISSING` | DFU device present but cannot be opened (Windows: no WinUSB bound) | `{ vid: number, pid: number, detail: string }` | Offer `system_install_dfu_driver` (owned by packaging), then retry `flasher_list_dfu_devices` |
+| `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
+| `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |
+| `ERASE_CONFIRMATION_REQUIRED` | `flasher_remove_read_protection` called without `confirmErase: true`; nothing was sent | – | (programming error in the UI) |
+| `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
+| `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
+
+Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
+`DRIVER` stays for driver-installation failures (packaging).
+
+**Read protection is never removed automatically.** The UI must state that unprotecting
+**erases the whole chip** (firmware and settings) and require an explicit/typed confirmation
+before calling `flasher_remove_read_protection { confirmErase: true }`; afterwards the device
+re-enumerates and the user flashes again.
+
 The UI maps `code` → i18n key `errors.<code>`.
 
 ## 3. Tauri commands
@@ -105,12 +129,14 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_identify` | – | `FcInfo` | device |
 | `device_cli_exec` | `line` | `string` | device |
 | `device_reboot_to_bootloader` | – | – | device |
+| `device_probe_board` | – | `FcInfo` (identify + read-only CLI probe, §4.1) | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
 | `flasher_fetch_firmware` | `request: FirmwareRequest` | `FirmwareImage` | flasher |
 | `flasher_list_cache` | – | `FirmwareImage[]` | flasher |
-| `flasher_flash` | `image, dfuSerial, options` | – (events) | flasher |
+| `flasher_flash` | `image, dfuSerial, options` | – (events); `READ_PROTECTED` if protected | flasher |
+| `flasher_remove_read_protection` | `dfuSerial, confirmErase` | – (erases chip, device re-enumerates) | flasher |
 | `config_read_ports` | – | `FcSerialPort[]` | config |
 | `config_backup` | – | `Backup` | config |
 | `config_generate` | `model, ports` | `CliScript` (**preview only**, never applied) | config |
@@ -143,6 +169,28 @@ pub trait Connection: Send {
 // config/mod.rs — pure, golden-tested
 pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScript>;
 ```
+
+### 4.1 Device contracts
+
+- **One connection manager** (device) owns the single open serial port app-wide. Commands
+  that need the FC borrow it for the duration of the call; a concurrent caller gets
+  `PORT_BUSY {heldBy: "app"}`. Another program holding the port → `PORT_BUSY {heldBy: "external"}`.
+  config/flasher get the link only as `&mut dyn Connection` through the manager.
+- **Serial port list** (`FcInfo.serialPorts`): read by `device_identify` with
+  `MSP2_COMMON_SERIAL_CONFIG` (0x1009), falling back to `MSP_CF_SERIAL_CONFIG` (54).
+  `identifier` is exactly what the board sent (never remapped); `name` is derived from the
+  firmware enum (§5 table; 2025.12 also has UART0=50 and PIOUART0..9=70..79; unknown ids →
+  `PORT<id>`). Writes must use `identifier`. An invalid serial layout makes the firmware reset
+  all ports at boot, so any writer must validate first (config's job).
+  `device::serial_ports` exposes the MSP/CLI parsers for config (C2) to reuse.
+- **Onboard SPI RX** (`FcInfo.rxSpi`): MSP cannot say whether the board *has* an SPI receiver
+  (a build without RX_SPI still reports protocol 0), so `device_identify` fills only hints
+  (`featureEnabled`, `protocol` from MSP_RX_CONFIG) and leaves `present: null`.
+  `device_probe_board` runs the read-only CLI commands `serial`, `resource`,
+  `get rx_spi_protocol` and sets `present` = `RX_SPI_CS` assigned, `expresslrsPins` =
+  `RX_SPI_EXPRESSLRS_RESET` + `_BUSY` assigned, `protocol` = value printed by `get`.
+  It leaves the CLI with `exit noreboot` on 4.5+; on 4.4 leaving the CLI reboots the FC
+  (the manager reconnects) — prefer running it where a reboot is expected anyway.
 
 Until `device` lands, `config` tests use a `MockConnection` that replays recorded CLI
 transcripts (put fixtures in `src-tauri/tests/fixtures/<firmware>/`).
@@ -209,9 +257,13 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
    `flasher_list_targets` filtered by `DfuDevice.mcuFamily`.
 2. `flasher_fetch_firmware` (cache hit or Build API).
 3. `config_backup` (if FC runs Betaflight).
-4. `device_reboot_to_bootloader` → poll `flasher_list_dfu_devices`; if `driverOk=false` →
-   `system_install_dfu_driver` (UAC prompt) → retry.
-5. `flasher_flash` (events) → device re-enumerates as VCP → `device_connect` →
+4. `device_reboot_to_bootloader` → poll `flasher_list_dfu_devices`; if `driverOk=false` or a
+   flasher call fails with `DRIVER_MISSING {vid, pid}` → `system_install_dfu_driver` (UAC
+   prompt, packaging) → retry.
+5. `flasher_flash` (events). If it fails with `READ_PROTECTED` → confirmation screen ("this
+   erases the chip") → `flasher_remove_read_protection {confirmErase: true}` → device
+   re-enumerates → back to step 4.
+6. After flashing → device re-enumerates as VCP → `device_connect` →
    `device_identify` → `config_read_ports`.
 
 ## 7. UI structure
@@ -228,7 +280,9 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
 - WinUSB: libwdi-based elevated helper exe shipped as a Tauri sidecar/resource (phase 1),
-  invoked by `system_install_dfu_driver`.
+  invoked by `system_install_dfu_driver`. device/flasher never install drivers; they report
+  `DRIVER_MISSING` with the device's `{vid, pid}` (§2.3). If packaging wants the ids as
+  command arguments, that is a follow-up `shared` change to `system_install_dfu_driver`.
 - CI (`.github/workflows/build.yml`): on push/PR → windows-latest: `npm ci`, `npm test`,
   `npm run build`, `cargo test`, `tauri build` (artifacts uploaded); ubuntu: `cargo check`.
 - Rust toolchain: stable ≥ 1.90 (Tauri 2.12 requirement). Node 22.

@@ -57,6 +57,35 @@ pub struct FcInfo {
     pub uid: Option<String>,
     /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
     pub build_options: Vec<String>,
+    /// Serial ports exactly as the board reports them (MSP2_COMMON_SERIAL_CONFIG, falling
+    /// back to MSP_CF_SERIAL_CONFIG). `identifier` is the raw firmware value (4.4/4.5:
+    /// UART1=0; 2025.12+: UART1=51). Empty if the firmware answered neither command.
+    /// Snapshot taken by `device_identify`; `config_read_ports` stays the source for config.
+    #[serde(default)]
+    pub serial_ports: Vec<FcSerialPort>,
+    /// Onboard SPI receiver (e.g. ExpressLRS) detection. MSP alone cannot tell, so
+    /// `rxSpi.present` is null after `device_identify` and filled by `device_probe_board`.
+    #[serde(default)]
+    pub rx_spi: RxSpiInfo,
+}
+
+/// Onboard SPI receiver information (`FcInfo.rxSpi`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RxSpiInfo {
+    /// True when CLI `resource` shows `RX_SPI_CS` assigned to a pin (the board has an
+    /// onboard SPI receiver); false when it is unassigned or the firmware has no RX_SPI.
+    /// Null = not determined (no CLI probe yet).
+    pub present: Option<bool>,
+    /// `RX_SPI_EXPRESSLRS_RESET` and `RX_SPI_EXPRESSLRS_BUSY` are both assigned.
+    pub expresslrs_pins: bool,
+    /// `rx_spi_protocol` as printed by the firmware, e.g. "EXPRESSLRS" (CLI), or the name
+    /// of the MSP_RX_CONFIG index as a hint when only MSP was read.
+    pub protocol: Option<String>,
+    /// `feature RX_SPI` state from MSP_FEATURE_CONFIG (null if not read).
+    pub feature_enabled: Option<bool>,
+    /// Raw assigned `RX_SPI*` resources, e.g. "RX_SPI_CS 1 A04".
+    pub resources: Vec<String>,
 }
 
 /// A flight-controller-side serial port (UART pad), read from the FC.

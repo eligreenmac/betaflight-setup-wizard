@@ -22,6 +22,17 @@ export interface FcInfo {
   mcu: string | null;
   uid: string | null;
   buildOptions: string[];
+  /** Serial ports exactly as the board reports them (raw identifiers). Empty if unknown. */
+  serialPorts: FcSerialPort[];
+  rxSpi: RxSpiInfo;
+}
+/** Onboard SPI receiver detection. `present` is null until device_probe_board ran. */
+export interface RxSpiInfo {
+  present: boolean | null;
+  expresslrsPins: boolean;
+  protocol: string | null;
+  featureEnabled: boolean | null;
+  resources: string[];
 }
 export interface FcSerialPort {
   /** "UART1".."UART15", "LPUART1", "SOFTSERIAL1", "SOFTSERIAL2", "VCP" */
@@ -144,8 +155,22 @@ export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
 export interface DriverStatus { dfuWinusb: boolean; vcp: boolean; notes: string[] }
 export interface AppInfo { version: string; os: string; cacheDir: string }
 
-/** Error shape returned by every failing command. */
-export interface AppError { code: string; message: string }
+/** Error codes (src-tauri/src/error.rs). The UI maps them to i18n keys `errors.<code>`. */
+export type AppErrorCode =
+  | "NOT_IMPLEMENTED" | "NOT_CONNECTED" | "SERIAL" | "MSP" | "CLI" | "USB" | "FIRMWARE" | "CONFIG"
+  | "DRIVER" | "IO" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
+  | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH";
+/** `details` of PORT_BUSY. */
+export interface PortBusyDetails { port: string; heldBy: "app" | "external" }
+/** `details` of DRIVER_MISSING: pass vid/pid to the driver-install flow. */
+export interface DriverMissingDetails { vid: number; pid: number; detail: string }
+
+/** Error shape returned by every failing command. `details` only for PORT_BUSY / DRIVER_MISSING. */
+export interface AppError {
+  code: string;
+  message: string;
+  details?: PortBusyDetails | DriverMissingDetails;
+}
 
 export function emptyDroneModel(): DroneModel {
   return {

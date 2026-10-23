@@ -27,6 +27,7 @@ pub fn run() {
             device::commands::device_identify,
             device::commands::device_cli_exec,
             device::commands::device_reboot_to_bootloader,
+            device::commands::device_probe_board,
             // flasher
             flasher::commands::flasher_list_targets,
             flasher::commands::flasher_list_releases,
@@ -34,6 +35,7 @@ pub fn run() {
             flasher::commands::flasher_fetch_firmware,
             flasher::commands::flasher_list_cache,
             flasher::commands::flasher_flash,
+            flasher::commands::flasher_remove_read_protection,
             // config
             config::commands::config_read_ports,
             config::commands::config_backup,
