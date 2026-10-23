@@ -37,6 +37,7 @@ export const SCENARIOS = [
   "fw-2025",
   "rollback-fail",
   "flash-verify",
+  "read-protected",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -64,6 +65,10 @@ interface MockDevice {
   dfuDriverOk: boolean;
   flashFailuresLeft: number;
   verifyFailuresLeft: number;
+  /** MCU read protection set (flasher_flash refuses until it is removed). */
+  readProtected: boolean;
+  /** flasher_remove_read_protection calls, with their confirmErase flag (tests). */
+  unprotectLog: boolean[];
   motorsSpinning: Set<number>;
   /** Calls seen by the mock, in order (tests assert on stop / keepalive traffic). */
   motorLog: string[];
@@ -109,6 +114,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     dfuDriverOk: scenario !== "driver-missing",
     flashFailuresLeft: scenario === "flash-fail" ? 1 : 0,
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
+    readProtected: scenario === "read-protected",
+    unprotectLog: [],
     motorsSpinning: new Set(),
     motorLog: [],
     motorFailNext: null,
@@ -151,6 +158,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
               driverOk: device.dfuDriverOk,
               action: device.dfuDriverOk ? "NONE" : "INSTALL_DFU_DRIVER",
               guidanceIndex: null,
+              // Mock DFU device has no driver bound, so nothing is replaced.
+              replacesDriver: false,
             },
           ]
         : [],
@@ -196,6 +205,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     flasher_flash: async ({ image, options }) => {
       if (!device.inDfu) throw err("DFU_NOT_FOUND", "no DFU device");
       if (!device.dfuDriverOk) throw err("DRIVER_MISSING", "WinUSB driver not installed for 0483:df11");
+      // Checked before anything is erased (ARCHITECTURE §2.3).
+      if (device.readProtected) throw err("READ_PROTECTED", "option bytes: RDP level 1");
       if (device.flashFailuresLeft > 0) {
         device.flashFailuresLeft--;
         await stages(["ERASING", "WRITING"]);
@@ -359,6 +370,16 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         const aux2 = [1000, 1500, 2000][Math.floor(t / 2000) % 3]!;
         events.emit("device://rc-channels", { seq, timestampMs: Math.round(t), channels: [1500, 1500, 1000, 1500, aux1, aux2, 1000, 1000] });
       }, 1000 / hz);
+    },
+    flasher_remove_read_protection: async ({ confirmErase }) => {
+      legacy("flasher_remove_read_protection");
+      device.unprotectLog.push(confirmErase);
+      if (!confirmErase) throw { code: "ERASE_CONFIRMATION_REQUIRED", message: "confirmErase must be true" };
+      if (!device.inDfu) throw err("DFU_NOT_FOUND", "no DFU device");
+      await stages(["ERASING"]);
+      // Mass erase: no firmware left, the chip comes back in the bootloader.
+      device.readProtected = false;
+      device.inDfu = true;
     },
     device_rc_stream_stop: () => {
       legacy("device_rc_stream_stop");

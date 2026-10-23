@@ -1,0 +1,94 @@
+# Betaflight / STM32F411 (ST411) 4.4.3 Jan  1 2026 / 00:00:00 (synthetic) MSP API: 1.46
+# board_name: CRAZYBEEF4SX1280
+
+# SYNTHETIC FIXTURE for MockFc: hand-written from the Betaflight CLI sources, not a hardware recording.
+
+batch start
+
+board_name CRAZYBEEF4SX1280
+
+# resources
+resource MOTOR 1 B00
+resource MOTOR 2 B01
+resource SERIAL_TX 1 A09
+resource SERIAL_RX 1 A10
+resource RX_SPI_CS 1 A15
+resource RX_SPI_EXTI 1 C14
+resource RX_SPI_BIND 1 B02
+resource RX_SPI_LED 1 B09
+resource RX_SPI_EXPRESSLRS_RESET 1 A08
+resource RX_SPI_EXPRESSLRS_BUSY 1 A13
+
+# feature
+feature -RX_PPM
+feature -INFLIGHT_ACC_CAL
+feature -RX_SERIAL
+feature -MOTOR_STOP
+feature -SERVO_TILT
+feature -SOFTSERIAL
+feature -GPS
+feature -RANGEFINDER
+feature TELEMETRY
+feature -3D
+feature -RX_PARALLEL_PWM
+feature -RX_MSP
+feature -RSSI_ADC
+feature -LED_STRIP
+feature -DISPLAY
+feature OSD
+feature -CHANNEL_FORWARDING
+feature -TRANSPONDER
+feature AIRMODE
+feature RX_SPI
+feature -ESC_SENSOR
+feature ANTI_GRAVITY
+feature DYNAMIC_FILTER
+
+# serial
+serial 20 1 115200 57600 0 115200
+serial 0 0 115200 57600 0 115200
+serial 1 0 115200 57600 0 115200
+
+# aux
+aux 0 0 0 900 900 0 0
+aux 1 0 0 900 900 0 0
+aux 2 0 0 900 900 0 0
+aux 3 0 0 900 900 0 0
+aux 4 0 0 900 900 0 0
+aux 5 0 0 900 900 0 0
+aux 6 0 0 900 900 0 0
+aux 7 0 0 900 900 0 0
+aux 8 0 0 900 900 0 0
+aux 9 0 0 900 900 0 0
+aux 10 0 0 900 900 0 0
+aux 11 0 0 900 900 0 0
+aux 12 0 0 900 900 0 0
+aux 13 0 0 900 900 0 0
+aux 14 0 0 900 900 0 0
+aux 15 0 0 900 900 0 0
+aux 16 0 0 900 900 0 0
+aux 17 0 0 900 900 0 0
+aux 18 0 0 900 900 0 0
+aux 19 0 0 900 900 0 0
+
+# master
+set dshot_bidir = OFF
+set dshot_idle_value = 550
+set expresslrs_domain = ISM2400
+set expresslrs_model_id = 255
+set expresslrs_rate_index = 0
+set expresslrs_switch_mode = HYBRID
+set expresslrs_uid = 0,0,0,0,0,0
+set gps_auto_config = ON
+set gps_provider = UBLOX
+set motor_poles = 14
+set motor_pwm_protocol = DSHOT600
+set osd_displayport_device = AUTO
+set rx_spi_protocol = EXPRESSLRS
+set serialrx_halfduplex = OFF
+set serialrx_inverted = OFF
+set serialrx_provider = SBUS
+set vcd_video_system = AUTO
+set yaw_motors_reversed = OFF
+
+batch end
