@@ -12,9 +12,8 @@ use std::collections::BTreeMap;
 
 use super::firmware::Dialect;
 use super::generate::serial_cmd;
-use super::session::Reconnect;
 use super::snapshot::{parse_dump, parse_serial_line, AuxSlot, Snapshot};
-use crate::device::Connection;
+use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
@@ -358,7 +357,7 @@ impl Connection for MockFc {
 }
 
 impl Reconnect for MockFc {
-    fn reconnect(&mut self) -> AppResult<()> {
+    fn reconnect(&mut self, _timeout: std::time::Duration) -> AppResult<()> {
         Ok(())
     }
 }

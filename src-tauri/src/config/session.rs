@@ -4,7 +4,7 @@
 //! All functions assume they may enter the CLI. Read-only operations do not leave it
 //! (in Betaflight `exit` reboots the FC); the caller decides when to leave.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use super::backup::BackupStore;
 use super::firmware::{parse_version, Dialect, VersionInfo};
@@ -12,18 +12,17 @@ use super::generate::generate_for;
 use super::guard::{replay_lines, validate_script};
 use super::modes;
 use super::snapshot::{parse_dump, parse_serial, Snapshot};
-use crate::device::Connection;
+use crate::device::{Connection, FcLink};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ApplyResult, Backup, CliError, CliScript, ConfigProgress, ConfigStage, DroneModel,
     FcSerialPort, Mismatch, VerifyReport,
 };
 
-/// Waits for the FC to come back after a reboot (`save` / `exit`) and re-opens the link.
-/// Implemented by the device workstream's connection; by the mock in tests.
-pub trait Reconnect {
-    fn reconnect(&mut self) -> AppResult<()>;
-}
+/// How long apply/rollback wait for the FC to come back after `save` / `exit`
+/// (`device::Reconnect::reconnect`). F4/F7 boards re-enumerate in 2-5 s; generous for
+/// slow USB hubs and Windows driver binding.
+pub const REBOOT_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub type Progress<'a> = &'a mut dyn FnMut(ConfigProgress);
 
@@ -172,8 +171,8 @@ fn send_batch_inner<C: Connection + ?Sized>(
 }
 
 /// Shared tail of apply/rollback: save (or discard on error), reboot, reconnect.
-fn finish<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+fn finish(
+    conn: &mut dyn FcLink,
     applied: usize,
     errors: Vec<CliError>,
     backup: Option<Backup>,
@@ -186,7 +185,7 @@ fn finish<C: Connection + Reconnect + ?Sized>(
     // Without save the unsaved batch is discarded (`exit` reboots without saving).
     conn.exit_cli(saved)?;
     progress(cb, ConfigStage::Rebooting, 1.0, "");
-    conn.reconnect()?;
+    conn.reconnect(REBOOT_TIMEOUT)?;
     progress(cb, ConfigStage::Reconnected, 1.0, "");
     Ok(ApplyResult {
         applied,
@@ -201,8 +200,8 @@ fn finish<C: Connection + Reconnect + ?Sized>(
 /// The script is validated first (`guard::validate_script`: generator verbs only, no
 /// save/defaults/reboot/batch/...); a bad line is a CONFIG error and nothing is sent.
 /// The first rejected command aborts the batch; nothing is saved.
-pub fn apply<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+pub fn apply(
+    conn: &mut dyn FcLink,
     script: &CliScript,
     store: &BackupStore,
     board_uid: &str,
@@ -311,8 +310,8 @@ fn on(b: bool) -> String {
 /// replays the stored `diff all`, saves and reconnects. The backup is validated before
 /// anything is sent (`guard::replay_lines` documents exactly which lines are replayed);
 /// a tampered or foreign file is a CONFIG error.
-pub fn rollback<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+pub fn rollback(
+    conn: &mut dyn FcLink,
     target: &Backup,
     store: &BackupStore,
     board_uid: &str,
