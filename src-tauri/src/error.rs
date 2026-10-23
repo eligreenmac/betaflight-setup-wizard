@@ -82,6 +82,9 @@ pub enum AppError {
     /// Keepalive/stop without a running motor test (e.g. the watchdog already fired).
     #[error("motor test is not running")]
     MotorTestNotActive,
+    /// A command argument is invalid (e.g. a firmware path outside the firmware cache).
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
     #[error("I/O error: {0}")]
     Io(String),
 }
@@ -110,6 +113,7 @@ impl AppError {
             AppError::MotorTestRefused(_) => "MOTOR_TEST_REFUSED",
             AppError::BoardArmed => "BOARD_ARMED",
             AppError::MotorTestNotActive => "MOTOR_TEST_NOT_ACTIVE",
+            AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Io(_) => "IO",
         }
     }
@@ -192,5 +196,56 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "PORT_BUSY");
         assert_eq!(v["details"], json!({ "port": "COM5", "heldBy": "APP" }));
+    }
+
+    /// `src/types/model.ts` (`AppErrorCode`) is the TypeScript source of truth for codes;
+    /// every Rust code must appear in it.
+    #[test]
+    fn every_code_is_in_the_typescript_union() {
+        let ts = include_str!("../../src/types/model.ts");
+        let start = ts
+            .find("export type AppErrorCode =")
+            .expect("AppErrorCode union");
+        let union = &ts[start..start + ts[start..].find(';').expect("end of union")];
+        let all = [
+            AppError::NotImplemented("x"),
+            AppError::NotConnected,
+            AppError::Serial(String::new()),
+            AppError::Msp(String::new()),
+            AppError::Cli(String::new()),
+            AppError::Usb(String::new()),
+            AppError::Firmware(String::new()),
+            AppError::Config(String::new()),
+            AppError::UnsupportedFirmware(String::new()),
+            AppError::Driver(String::new()),
+            AppError::BoardNotFound(String::new()),
+            AppError::PortBusy {
+                port: String::new(),
+                held_by: PortHolder::App,
+            },
+            AppError::DriverMissing {
+                vid: 0,
+                pid: 0,
+                detail: String::new(),
+            },
+            AppError::DfuNotFound(String::new()),
+            AppError::ReadProtected,
+            AppError::EraseConfirmationRequired,
+            AppError::FlashFailed(String::new()),
+            AppError::VerifyMismatch(String::new()),
+            AppError::MotorTestRefused(String::new()),
+            AppError::BoardArmed,
+            AppError::MotorTestNotActive,
+            AppError::InvalidArgument(String::new()),
+            AppError::Io(String::new()),
+        ];
+        for e in all {
+            let quoted = format!("\"{}\"", e.code());
+            assert!(
+                union.contains(&quoted),
+                "{} missing from AppErrorCode",
+                e.code()
+            );
+        }
     }
 }

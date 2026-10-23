@@ -25,6 +25,10 @@ tauri-plugin-opener = "2"
 serialport = "4"
 # device: debug logging of MSP/CLI traffic (already in the tree via tauri)
 log = "0.4"
+# flasher
+rusb = { version = "0.9", features = ["vendored"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+sha2 = "0.10"
 
 # Workstream-specific dependencies are added by their owners, e.g.:
 #   device:  serialport
@@ -44,3 +48,6 @@ windows-sys = { version = "0.61", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile = "3"

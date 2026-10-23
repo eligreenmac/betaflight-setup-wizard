@@ -224,7 +224,8 @@ export interface AppInfo { version: string; os: string; cacheDir: string }
 /** Error codes (src-tauri/src/error.rs). The UI maps them to i18n keys `errors.<code>`. */
 export type AppErrorCode =
   | "NOT_IMPLEMENTED" | "NOT_CONNECTED" | "SERIAL" | "MSP" | "CLI" | "USB" | "FIRMWARE" | "CONFIG"
-  | "DRIVER" | "IO" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
+  | "UNSUPPORTED_FIRMWARE"
+  | "DRIVER" | "IO" | "INVALID_ARGUMENT" | "BOARD_NOT_FOUND" | "PORT_BUSY" | "DRIVER_MISSING" | "DFU_NOT_FOUND"
   | "READ_PROTECTED" | "ERASE_CONFIRMATION_REQUIRED" | "FLASH_FAILED" | "VERIFY_MISMATCH"
   | "MOTOR_TEST_REFUSED" | "BOARD_ARMED" | "MOTOR_TEST_NOT_ACTIVE";
 /** `details` of PORT_BUSY. */
