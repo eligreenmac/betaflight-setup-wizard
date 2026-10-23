@@ -12,7 +12,7 @@
  * config_restore, config_elrs_uid, device_probe_board and the motor/RC commands
  * answer NOT_IMPLEMENTED.
  *
- * Sensors / calibration / attitude (pending Device contract, api/pending.ts): gyro, acc
+ * Sensors / calibration / attitude (Device #63, api/pending.ts adapter): gyro, acc
  * and baro present (baro disabled), no mag. `no-sensors`: no acc and no baro.
  * `calib-fail`: the first accelerometer calibration fails. `mounted-yaw90`: the board is
  * mounted turned 90° to the right, so tilting the nose down shows as a roll until the
@@ -446,7 +446,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  // ---- pending Device contract (api/pending.ts): sensors, acc calibration, attitude stream.
+  // ---- Device #63 (api/pending.ts adapter): sensors, acc calibration, attitude.
   const autoTilt = (ms: number): Euler => {
     const phase = Math.floor(ms / 2000) % 4;
     return phase === 1 ? { roll: 0, pitch: -30, yaw: 0 } : phase === 3 ? { roll: 30, pitch: 0, yaw: 0 } : { roll: 0, pitch: 0, yaw: 0 };
@@ -480,6 +480,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       device.accCalibrations++;
       device.accCalibrated = true;
       return { durationMs: stepMs * 3, completion: "CALIBRATING_FLAG", maxGyroRateDps: 0.6 };
+    },
+    device_get_attitude: () => {
+      legacy("device_get_attitude");
+      const a = reportedWithAlignment(device.tilt ?? autoTilt(Date.now()), device.mount, device.alignment);
+      return { seq: 0, timestampMs: 0, roll: a.roll, pitch: a.pitch === 0 ? 0 : -a.pitch, yaw: a.yaw };
     },
     device_attitude_stream_start: ({ rateHz }: { rateHz: number | null }) => {
       legacy("device_attitude_stream_start");
@@ -534,16 +539,31 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
 const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
 
 /**
- * Demo config_firmware_catalog(firmwareVersion) (shape assumed in api/catalog.ts).
- * 2025.12 has no RC_SMOOTHING_INIT_FAIL; ALTHOLD / POSHOLD are managed from 2025.12.
+ * OSD element names (osd_items_e without OSD_) with their `osd_<cli>_pos` stem. A subset
+ * of Betaflight's list (4.4: 77, 4.5: 80, 2025.12: 82), enough for the demo.
+ */
+export const MOCK_OSD_CLI: Record<string, string> = {
+  RSSI_VALUE: "rssi", MAIN_BATT_VOLTAGE: "vbat", CROSSHAIRS: "crosshairs", ITEM_TIMER_1: "tim_1",
+  ITEM_TIMER_2: "tim_2", FLYMODE: "flymode", CRAFT_NAME: "craft_name", THROTTLE_POS: "throttle",
+  CURRENT_DRAW: "current", MAH_DRAWN: "mah_drawn", GPS_SPEED: "gps_speed", GPS_SATS: "gps_sats",
+  ALTITUDE: "altitude", ROLL_PIDS: "pid_roll", WARNINGS: "warnings", AVG_CELL_VOLTAGE: "avg_cell_voltage",
+  DISARMED: "disarmed", HOME_DIR: "home_dir", HOME_DIST: "home_dist", ESC_TMP: "esc_tmp",
+  LINK_QUALITY: "link_quality", RSSI_DBM_VALUE: "rssi_dbm", GPS_LAP_TIME_CURRENT: "gps_lap_time_current",
+  DEBUG2: "debug2", LIDAR_DIST: "lidar_dist",
+};
+
+/**
+ * Demo config_firmware_catalog(firmwareVersion) (#66 shape, api/catalog.ts).
+ * 2025.12 has no RC_SMOOTHING_INIT_FAIL, adds DEBUG2 / LIDAR_DIST and manages ALTHOLD / POSHOLD.
  * Unknown / empty version = the 4.5 lists.
  */
 export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
   const v2025 = isV2025(firmwareVersion);
+  const v44 = !!firmwareVersion && compareVersions(firmwareVersion, "4.5.0") < 0;
   return {
     beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
     beaconEvents: ["RX_LOST", "RX_SET"],
-    osdElements: [],
+    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !(v44 && n === "GPS_LAP_TIME_CURRENT") && (v2025 || (n !== "DEBUG2" && n !== "LIDAR_DIST"))),
     modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
   };
 }

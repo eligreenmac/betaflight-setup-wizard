@@ -1,26 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Typed UI-side wrapper for device commands proposed to Device & Flasher Dev that are
- * not in the shared CommandMap (src/api/commands.ts) yet. Calls go through the same
- * backend seam as `call()`, so the per-call demo fallback, the Demo mode banner and the
- * mixed-backend write guard (api/fallback.ts) apply unchanged.
- *
- * TODO(shared): move these entries to CommandMap / EVENTS when Device's `shared` PR #63
- * lands, then delete this file. Contract as proposed in #63 (ARCHITECTURE §4.3):
- *   device_sensors() -> SensorStatus {gyro, acc, baro, mag: {present, enabled,
- *     configuredHardware, detectedHardware}, accCalibrated, alignment
- *     {boardRollDeg, boardPitchDeg, boardYawDeg, gyroAlignment} | null}; extra keys tolerated.
- *   device_acc_calibrate() -> {durationMs, completion, maxGyroRateDps}; errors BOARD_ARMED,
- *     ACC_NOT_AVAILABLE {present, enabled}, BOARD_MOVING {maxRateDps, limitDps, during},
- *     ACC_CALIBRATION_FAILED.
- *   device_attitude_stream_start(rateHz?: 10, clamped 1..30) / device_attitude_stream_stop()
- *     event device://attitude {seq, timestampMs, roll, pitch, yaw} (degrees, MSP_ATTITUDE
- *     signs: roll + = right side down, pitch + = nose DOWN, yaw = heading),
- *     event device://attitude-stopped {reason, error};
- *     PORT_BUSY {heldBy: APP} while a motor test or the RC stream runs (and vice versa).
- *   No live board-alignment command: the preview rotates the displayed attitude here.
+ * UI adapter for the Device sensors / calibration / attitude commands of shared PR #63
+ * (now in CommandMap: api.device.sensors / accCalibrate / attitudeStream*, EVENTS.attitude*).
+ * Calls go through `call()`, so the per-call demo fallback, the Demo mode banner and the
+ * mixed-backend write guard (api/fallback.ts) apply unchanged. What this file adds:
+ *   - a tolerant parse of SensorStatus (extra keys ignored, missing sensors = absent) into
+ *     the small shape the UI uses, with the alignment as {roll, pitch, yaw};
+ *   - attitudeToEuler: MSP_ATTITUDE signs (pitch + = nose DOWN) -> the orientation math.
+ * No live board-alignment command: the preview rotates the displayed attitude here.
  */
-import { call, type CommandName } from "./commands";
+import { api, EVENTS } from "./commands";
+import type { Attitude, AttitudeStopped } from "../types/model";
+
+export type { Attitude, AttitudeStopped };
 
 export interface SensorInfo {
   present: boolean;
@@ -42,47 +34,19 @@ export interface SensorsInfo {
   /** The FC's current board alignment; null = not reported. */
   alignment: CurrentAlignment | null;
 }
-/**
- * `device://attitude` as sent (MSP_ATTITUDE signs: roll + = right side down,
- * pitch + = nose DOWN, yaw = heading, + = nose right). Use `attitudeToEuler` before
- * the orientation math (which uses pitch + = nose up).
- */
-export interface Attitude {
-  seq: number;
-  timestampMs: number;
-  roll: number;
-  pitch: number;
-  yaw: number;
-}
-
-export interface PendingCommandMap {
-  device_sensors: [Record<string, never>, unknown];
-  device_acc_calibrate: [Record<string, never>, unknown];
-  device_attitude_stream_start: [{ rateHz: number | null }, void];
-  device_attitude_stream_stop: [Record<string, never>, void];
-}
-export type PendingCommandName = keyof PendingCommandMap;
+/** Command names the mock and the guards refer to. */
+export const PENDING_COMMANDS = ["device_sensors", "device_acc_calibrate", "device_get_attitude", "device_attitude_stream_start", "device_attitude_stream_stop"] as const;
+export type PendingCommandName = (typeof PENDING_COMMANDS)[number];
 
 export const SENSORS_COMMAND = "device_sensors";
 export const ACC_CALIBRATE_COMMAND = "device_acc_calibrate";
 export const ATTITUDE_START_COMMAND = "device_attitude_stream_start";
 
-export const PENDING_EVENTS = { attitude: "device://attitude", attitudeStopped: "device://attitude-stopped" } as const;
-
-/** `device://attitude-stopped` */
-export interface AttitudeStopped {
-  reason: "REQUESTED" | "DISCONNECTED" | "ERROR";
-  error: { code: string; message: string; details?: unknown } | null;
-}
+export const PENDING_EVENTS = { attitude: EVENTS.attitude, attitudeStopped: EVENTS.attitudeStopped } as const;
 
 /** MSP_ATTITUDE (pitch + = nose down) -> the orientation math's Euler (pitch + = nose up). */
 export function attitudeToEuler(a: Pick<Attitude, "roll" | "pitch" | "yaw">): { roll: number; pitch: number; yaw: number } {
   return { roll: a.roll, pitch: a.pitch === 0 ? 0 : -a.pitch, yaw: a.yaw };
-}
-
-function callPending<K extends PendingCommandName>(cmd: K, args: PendingCommandMap[K][0]): Promise<PendingCommandMap[K][1]> {
-  // The backend seam is untyped at runtime; CommandMap does not know these names yet.
-  return call(cmd as unknown as CommandName, args as never) as Promise<PendingCommandMap[K][1]>;
 }
 
 const bool = (v: unknown): boolean => v === true;
@@ -117,12 +81,10 @@ export function parseSensors(raw: unknown): SensorsInfo {
   };
 }
 
-const none = {} as Record<string, never>;
-
 export const pendingApi = {
-  sensors: async (): Promise<SensorsInfo> => parseSensors(await callPending("device_sensors", none)),
-  /** Writes the calibration to the board: a write command for the mixed-backend guard. */
-  accCalibrate: () => callPending("device_acc_calibrate", none),
-  attitudeStreamStart: (rateHz: number | null = null) => callPending("device_attitude_stream_start", { rateHz }),
-  attitudeStreamStop: () => callPending("device_attitude_stream_stop", none),
+  sensors: async (): Promise<SensorsInfo> => parseSensors(await api.device.sensors()),
+  /** Writes the calibration to the board (the FC saves it to EEPROM itself): a write command for the mixed-backend guard. */
+  accCalibrate: () => api.device.accCalibrate(),
+  attitudeStreamStart: (rateHz: number | null = null) => api.device.attitudeStreamStart(rateHz),
+  attitudeStreamStop: () => api.device.attitudeStreamStop(),
 };

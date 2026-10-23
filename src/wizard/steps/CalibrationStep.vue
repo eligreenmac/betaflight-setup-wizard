@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Sensors, accelerometer calibration and the "which way is the board mounted?" check.
-// Uses the pending Device commands (api/pending.ts, TODO(shared)). There is no live
+// Uses the Device #63 commands (via the api/pending.ts adapter). There is no live
 // board-alignment command: the preview rotates the reported attitude here, and the
 // chosen alignment is written by the config script (ext.boardAlignment, null = keep).
 // The attitude stream reports with the FC's CURRENT alignment applied (#63 §4.3); the
