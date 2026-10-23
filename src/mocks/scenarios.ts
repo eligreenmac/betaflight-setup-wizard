@@ -46,9 +46,11 @@
  *
  * Firmware lines: like the real config engine, config_firmware_catalog and
  * config_osd_default_layout answer UNSUPPORTED_FIRMWARE outside MOCK_CONFIG_LINES (the UI
- * learns the supported lines from that, wizard/firmwareSupport.ts). `fw-too-new`: the board
- * runs Betaflight 2026.6.2, a line the config engine can't set up yet (what v0.1.0-2 saw);
- * the releases include 2026.6.x, which the wizard marks and won't pick.
+ * learns the supported lines from that, wizard/firmwareSupport.ts). `fw-2026`: the board runs
+ * Betaflight 2026.6.2 (Config #83 / Device #82: MSP API 1.48, UART1 = 51, the 2026.6 OSD
+ * elements); the newest release, so "up to date". `fw-too-new`: the board runs
+ * 2026.12.0-alpha, a line the config engine can't set up yet (like 2026.6 on v0.1.0-2); the
+ * releases include 2026.12.x, which the wizard marks and won't pick.
  *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
@@ -97,6 +99,7 @@ export const SCENARIOS = [
   "fw-options-unavailable",
   "fw-option-unsupported",
   "fw-too-new",
+  "fw-2026",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -188,13 +191,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const events = createEmitter();
 
   const device: MockDevice = {
-    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : scenario === "fw-2025" ? "2025.12.0" : scenario === "fw-too-new" ? "2026.6.2" : "4.5.1",
-    // 4.x: UART1 = 0; 2025.12+: UART1 = 51. The UI must only use the names.
+    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : scenario === "fw-2025" ? "2025.12.0" : scenario === "fw-too-new" ? "2026.12.0-alpha" : scenario === "fw-2026" ? "2026.6.2" : "4.5.1",
+    // 4.x: UART1 = 0; 2025.12+ (2026.6 too): UART1 = 51. The UI must only use the names.
     ports: [
       { name: "VCP", identifier: 20, functionMask: FN.MSP, isConnectionPort: true },
       ...[0, FN.RX_SERIAL, FN.MSP | FN.VTX_MSP, 0, 0, FN.MSP].map((functionMask, i) => ({
         name: `UART${i + 1}`,
-        identifier: (scenario === "fw-2025" || scenario === "fw-too-new" ? 51 : 0) + i,
+        identifier: (scenario === "fw-2025" || scenario === "fw-too-new" || scenario === "fw-2026" ? 51 : 0) + i,
         functionMask,
         isConnectionPort: false,
       })),
@@ -323,6 +326,12 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     flasher_list_targets: () => [{ target: "SPEEDYBEEF405V4", manufacturer: "SPBE", mcu: "STM32F405" }],
     flasher_list_releases: () => [
       ...(scenario === "fw-too-new"
+        ? [
+            { release: "2026.12.0", prerelease: false },
+            { release: "2026.12.0-alpha", prerelease: true },
+          ]
+        : []),
+      ...(scenario === "fw-too-new" || scenario === "fw-2026"
         ? [
             { release: "2026.6.2", prerelease: false },
             { release: "2026.6.1", prerelease: false },
@@ -504,7 +513,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     return {
       fcVariant: "BTFL",
       firmwareVersion: device.firmwareVersion,
-      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : "1.46",
+      // 2026.6.2 SITL capture (Device #82 fixtures): MSP API 1.48.
+      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : compareVersions(device.firmwareVersion, "2026.6.0") >= 0 ? "1.48" : "1.46",
       boardName: "SPEEDYBEEF405V4",
       manufacturerId: "SPBE",
       mcu: "STM32F405",
@@ -704,20 +714,34 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
  * (config::firmware::Dialect::from_version) for the demo only. The UI never reads this; it
  * asks config_firmware_catalog. Add a line here when Config adds it.
  */
-export const MOCK_CONFIG_LINES = ["4.4", "4.5", "2025.12"];
+export const MOCK_CONFIG_LINES = ["4.4", "4.5", "2025.12", "2026.6"];
+
+/** Mock CliScript.dialect: the version's line when the mock supports it, else "4.5". */
+function mockDialect(firmwareVersion: string | null | undefined): string {
+  const m = /^\s*(\d+)\.(\d+)/.exec(firmwareVersion ?? "");
+  const line = m ? `${+m[1]}.${+m[2]}` : "";
+  return MOCK_CONFIG_LINES.includes(line) ? line : "4.5";
+}
 
 /** UNSUPPORTED_FIRMWARE for a parseable version outside MOCK_CONFIG_LINES (empty / unparseable = lenient, the 4.5 lists). */
 function mockCheckLine(firmwareVersion: string): void {
   const m = /^\s*(\d+)\.(\d+)/.exec(firmwareVersion ?? "");
   if (m && !MOCK_CONFIG_LINES.includes(`${+m[1]}.${+m[2]}`))
-    throw err("UNSUPPORTED_FIRMWARE", `Betaflight ${firmwareVersion.trim()} is not supported; supported lines are ${MOCK_CONFIG_LINES.map((l) => `${l}.x`).join(", ")}`);
+    throw err("UNSUPPORTED_FIRMWARE", `Betaflight ${firmwareVersion.trim()} is not supported; supported lines are ${mockLinesLabel()}`);
+}
+
+/** Same wording as config::firmware::supported_lines_label (Config #83): "4.4.x, 4.5.x, 2025.12.x and 2026.6.x". */
+function mockLinesLabel(): string {
+  const xs = MOCK_CONFIG_LINES.map((l) => `${l}.x`);
+  return xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 }
 
 const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
 
 /**
  * OSD element names (osd_items_e without OSD_) with their `osd_<cli>_pos` stem. A subset
- * of Betaflight's list (4.4: 77, 4.5: 80, 2025.12: 82), enough for the demo.
+ * of Betaflight's list (4.4: 77, 4.5: 80, 2025.12: 82, 2026.6: 94), enough for the demo,
+ * plus every element 2025.12 and 2026.6 added (config/osd.rs ELEMENTS, Config #83).
  */
 export const MOCK_OSD_CLI: Record<string, string> = {
   RSSI_VALUE: "rssi", MAIN_BATT_VOLTAGE: "vbat", CROSSHAIRS: "crosshairs", ITEM_TIMER_1: "tim_1",
@@ -727,20 +751,36 @@ export const MOCK_OSD_CLI: Record<string, string> = {
   DISARMED: "disarmed", HOME_DIR: "home_dir", HOME_DIST: "home_dist", ESC_TMP: "esc_tmp",
   LINK_QUALITY: "link_quality", RSSI_DBM_VALUE: "rssi_dbm", GPS_LAP_TIME_CURRENT: "gps_lap_time_current",
   DEBUG2: "debug2", LIDAR_DIST: "lidar_dist",
+  // 2026.6.2 (cli/settings.c; same names and stems as config/osd.rs, Config #83).
+  POS_HOLD_READY: "pos_hold_ready", BATTERY_PROFILE_NAME: "battery_profile_name", CUSTOM_SERIAL_TEXT: "custom_serial_text",
+  WP_NUMBER: "wp_number", WP_CURRENT_LAT: "wp_current_lat", WP_CURRENT_LON: "wp_current_lon", WP_CURRENT_ALT: "wp_current_alt",
+  WP_DISTANCE: "wp_distance", WP_DIRECTION: "wp_direction", WP_NEXT_NUMBER: "wp_next_number", WP_ETA: "wp_eta", NAV_MAP: "nav_map",
+};
+
+/** First line of the elements that are not on every line (config/osd.rs); the rest exist since 4.4. */
+export const MOCK_OSD_SINCE: Record<string, string> = {
+  GPS_LAP_TIME_CURRENT: "4.5.0",
+  DEBUG2: "2025.12.0",
+  LIDAR_DIST: "2025.12.0",
+  ...Object.fromEntries(
+    ["POS_HOLD_READY", "BATTERY_PROFILE_NAME", "CUSTOM_SERIAL_TEXT", "WP_NUMBER", "WP_CURRENT_LAT", "WP_CURRENT_LON", "WP_CURRENT_ALT", "WP_DISTANCE", "WP_DIRECTION", "WP_NEXT_NUMBER", "WP_ETA", "NAV_MAP"].map((n) => [n, "2026.6.0"]),
+  ),
 };
 
 /**
  * Demo config_firmware_catalog(firmwareVersion) (shared #66 FirmwareCatalog).
  * 2025.12 has no RC_SMOOTHING_INIT_FAIL, adds DEBUG2 / LIDAR_DIST and manages ALTHOLD / POSHOLD.
+ * 2026.6 (Config #83): the 2025.12 beepers and managed modes unchanged (its new AUTOPILOT /
+ * WP CAPTURE boxes are not wizard-managed, so not in the catalog), 12 new OSD elements.
  * Unknown / empty version = the 4.5 lists.
  */
 export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
   const v2025 = isV2025(firmwareVersion);
-  const v44 = !!firmwareVersion && compareVersions(firmwareVersion, "4.5.0") < 0;
+  const fw = firmwareVersion || "4.5.0";
   return {
     beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
     beaconEvents: ["RX_LOST", "RX_SET"],
-    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !(v44 && n === "GPS_LAP_TIME_CURRENT") && (v2025 || (n !== "DEBUG2" && n !== "LIDAR_DIST"))),
+    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !MOCK_OSD_SINCE[n] || compareVersions(fw, MOCK_OSD_SINCE[n]) >= 0),
     modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
   };
 }
@@ -873,5 +913,5 @@ export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): C
     }
   }
   commands.push("save");
-  return { commands, warnings, dialect: "4.5", cleared };
+  return { commands, warnings, dialect: mockDialect(fw), cleared };
 }

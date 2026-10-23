@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Firmware lines come from the config engine (config_firmware_catalog answers
 // UNSUPPORTED_FIRMWARE for a line it can't set up), not from a list in the UI.
-// `fw-too-new`: the board runs Betaflight 2026.6.2 (what v0.1.0-2 hit), 2026.6.x releases
-// are offered by the build server but the backend can't set them up yet.
+// `fw-too-new`: the board runs Betaflight 2026.12.0-alpha, 2026.12.x releases are offered by
+// the build server but the backend (4.4 / 4.5 / 2025.12 / 2026.6 since Config #83) can't set
+// them up yet. Same situation v0.1.0-2 hit with 2026.6.2.
 import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
@@ -98,38 +99,40 @@ describe("firmwareLine / checkFirmwareSupport", () => {
   });
 });
 
-describe("?mock=fw-too-new (board on Betaflight 2026.6.2)", () => {
+describe("?mock=fw-too-new (board on Betaflight 2026.12.0-alpha)", () => {
   it(
     "says plainly the wizard can't set it up yet, only offers versions it can, and the update walks to Done",
     async () => {
       await toFirmware();
-      expect(wizard.fc?.firmwareVersion).toBe("2026.6.2");
+      expect(wizard.fc?.firmwareVersion).toBe("2026.12.0-alpha");
       const callout = w!.get('[data-test="fw-not-supported-yet"]');
       expect(callout.text()).toContain(en.firmware.notSupportedYetTitle);
-      expect(callout.text()).toContain(en.firmware.notSupportedYetBody.replace("{version}", "2026.6.2"));
+      expect(callout.text()).toContain(en.firmware.notSupportedYetBody.replace("{version}", "2026.12.0-alpha"));
       expect(w!.text()).not.toContain(en.firmware.unsupportedTitle); // not "too old"
       expect(w!.text()).not.toContain(en.firmware.upToDate);
       expect(w!.find('[data-test="keep"]').exists()).toBe(false);
 
-      // The picker: 2026.6.x shown but disabled and marked; the default is the newest stable the wizard can set up.
+      // The picker: 2026.12.x shown but disabled and marked; the default is the newest stable the wizard can set up.
       const opts = w!.findAll("#release option").map((o) => ({ v: (o.element as HTMLOptionElement).value, d: (o.element as HTMLOptionElement).disabled, text: o.text() }));
-      expect(opts.filter((o) => o.d).map((o) => o.v)).toEqual(["2026.6.2", "2026.6.1"]);
-      expect(opts.find((o) => o.v === "2026.6.2")!.text).toContain(en.firmware.lineNotSupported);
+      expect(opts.filter((o) => o.d).map((o) => o.v)).toEqual(["2026.12.0"]);
+      expect(opts.find((o) => o.v === "2026.12.0")!.text).toContain(en.firmware.lineNotSupported);
       expect(opts.find((o) => o.v === "4.5.2")!.text).not.toContain(en.firmware.lineNotSupported);
-      expect((w!.get("#release").element as HTMLSelectElement).value).toBe("2025.12.1");
-      expect(wizard.ui.latestRelease).toBe("2025.12.1");
+      expect(opts.find((o) => o.v === "2026.6.2")!.text).not.toContain(en.firmware.lineNotSupported); // supported since Config #83
+      expect(opts.some((o) => o.v === "2026.12.0-alpha")).toBe(false); // pre-release, hidden by default
+      expect((w!.get("#release").element as HTMLSelectElement).value).toBe("2026.6.2");
+      expect(wizard.ui.latestRelease).toBe("2026.6.2");
       expect(w!.get('[data-test="fw-some-not-supported"]').text()).toBe(en.firmware.someNotSupported);
-      expect(w!.get('[data-test="update"]').text()).toBe(en.firmware.installVersion.replace("{version}", "2025.12.1"));
+      expect(w!.get('[data-test="update"]').text()).toBe(en.firmware.installVersion.replace("{version}", "2026.6.2"));
 
       // Next is blocked with the plain reason.
       await click(w!, "next");
       expect(nav.currentId).toBe("firmware");
-      expect(w!.text()).toContain(en.validation.firmwareNotSupportedYet.replace("{version}", "2026.6.2"));
+      expect(w!.text()).toContain(en.validation.firmwareNotSupportedYet.replace("{version}", "2026.12.0-alpha"));
 
       // Install the offered version and go all the way.
       const seen = await walkToDone(w!, "update");
-      expect(mock.device.firmwareVersion).toBe("2025.12.1");
-      expect(lineSupport(wizard, "2025.12.1")).toBe("supported");
+      expect(mock.device.firmwareVersion).toBe("2026.6.2");
+      expect(lineSupport(wizard, "2026.6.2")).toBe("supported");
       expect(seen).toContain("apply");
       expect(nav.currentId).toBe("done");
     },
@@ -139,19 +142,19 @@ describe("?mock=fw-too-new (board on Betaflight 2026.6.2)", () => {
   it("in Hebrew", async () => {
     setLocale("he");
     await toFirmware();
-    expect(w!.get('[data-test="fw-not-supported-yet"]').text()).toContain(he.firmware.notSupportedYetBody.replace("{version}", "2026.6.2"));
-    expect(w!.get('[data-test="update"]').text()).toBe(he.firmware.installVersion.replace("{version}", "2025.12.1"));
-    expect(w!.get("#release option[value='2026.6.2']").text()).toContain(he.firmware.lineNotSupported);
+    expect(w!.get('[data-test="fw-not-supported-yet"]').text()).toContain(he.firmware.notSupportedYetBody.replace("{version}", "2026.12.0-alpha"));
+    expect(w!.get('[data-test="update"]').text()).toBe(he.firmware.installVersion.replace("{version}", "2026.6.2"));
+    expect(w!.get("#release option[value='2026.12.0']").text()).toContain(he.firmware.lineNotSupported);
     await click(w!, "next");
-    expect(w!.text()).toContain(he.validation.firmwareNotSupportedYet.replace("{version}", "2026.6.2"));
+    expect(w!.text()).toContain(he.validation.firmwareNotSupportedYet.replace("{version}", "2026.12.0-alpha"));
   });
 
-  it("data-driven: once the (mock) config engine supports 2026.6, the same board just works", async () => {
-    MOCK_CONFIG_LINES.push("2026.6");
+  it("data-driven: once the (mock) config engine supports 2026.12, the same board just works", async () => {
+    MOCK_CONFIG_LINES.push("2026.12");
     await toFirmware();
     expect(w!.find('[data-test="fw-not-supported-yet"]').exists()).toBe(false);
     expect(w!.find('[data-test="fw-some-not-supported"]').exists()).toBe(false);
-    expect((w!.get("#release").element as HTMLSelectElement).value).toBe("2026.6.2");
+    expect((w!.get("#release").element as HTMLSelectElement).value).toBe("2026.12.0");
     expect(w!.text()).toContain(en.firmware.upToDate);
     await click(w!, "keep");
     await click(w!, "next");

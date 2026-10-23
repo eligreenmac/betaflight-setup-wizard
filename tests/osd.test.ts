@@ -399,7 +399,7 @@ describe("layout and defaults", () => {
 
   it("every UI element name is a Betaflight osd_items_e name without OSD_, and in every catalog", () => {
     for (const e of OSD_ELEMENTS) expect(e.name).toMatch(/^[A-Z0-9_]+$/);
-    for (const fw of ["4.4.3", "4.5.2", "2025.12.1"]) for (const e of OSD_ELEMENTS) expect(mockFirmwareCatalog(fw).osdElements).toContain(e.name);
+    for (const fw of ["4.4.3", "4.5.2", "2025.12.1", "2026.6.2"]) for (const e of OSD_ELEMENTS) expect(mockFirmwareCatalog(fw).osdElements).toContain(e.name);
     expect(OSD_ELEMENTS.map((e) => e.name)).toEqual(expect.arrayContaining(["AVG_CELL_VOLTAGE", "MAIN_BATT_VOLTAGE", "ITEM_TIMER_2", "RSSI_DBM_VALUE"]));
   });
 });

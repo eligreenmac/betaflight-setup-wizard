@@ -49,7 +49,7 @@ const readProtected = computed(() => error.value?.code === "READ_PROTECTED");
 const fc = computed(() => wizard.fc);
 /** Below the oldest version the wizard knows (or not Betaflight at all). */
 const tooOld = computed(() => !!fc.value && !isSupportedFirmware(fc.value.fcVariant, fc.value.firmwareVersion));
-/** The config engine has no support for this line (e.g. 2026.6 on a backend that stops at 2025.12). */
+/** The config engine has no support for this line (e.g. 2026.12 on a backend that stops at 2026.6). */
 const notYet = computed(() => !!fc.value && !tooOld.value && lineSupport(wizard, fc.value.firmwareVersion) === "unsupported");
 const supported = computed(() => !!fc.value && !tooOld.value && !notYet.value);
 /** Releases the wizard can set up afterwards (unknown counts as usable; only a definite "no" excludes). */
