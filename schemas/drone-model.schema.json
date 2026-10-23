@@ -8,9 +8,13 @@
   "additionalProperties": false,
   "$defs": {
     "portName": {
-      "description": "FC serial port name as reported by config_read_ports.",
+      "description": "FC serial port name as reported by config_read_ports. SOFTSERIAL1/2 are valid names but the MVP config engine rejects them (no soft serial in MVP).",
       "type": ["string", "null"],
       "pattern": "^(UART([1-9]|1[0-5])|LPUART1|SOFTSERIAL[12])$"
+    },
+    "elrsDomain": {
+      "description": "expresslrs_domain (betaflight cli/settings.c lookupTableFreqDomain). SX1280 builds: ISM2400, CE2400; SX127x builds: the sub-GHz values.",
+      "enum": [null, "AU433", "AU915", "EU433", "EU868", "IN866", "FCC915", "ISM2400", "CE2400"]
     }
   },
   "properties": {
@@ -21,11 +25,13 @@
       "additionalProperties": false,
       "properties": {
         "boardName": { "type": "string", "examples": ["SPEEDYBEEF405V4"] },
-        "firmwareVersion": { "type": "string", "examples": ["4.5.2", "2025.12.1"] },
+        "firmwareVersion": { "type": "string", "examples": ["4.5.2", "2025.12.1"],
+                             "description": "Config engine accepts 4.4.x, 4.5.x and 2025.12.x only; anything else (incl. 2026.6.x) fails with UNSUPPORTED_FIRMWARE." },
         "apiVersion": { "type": "string", "examples": ["1.46"] }
       }
     },
     "receiver": {
+      "description": "SERIAL (UART, feature RX_SERIAL) and SPI (onboard receiver, feature RX_SPI, no UART) are mutually exclusive; switching clears the other. MVP config engine supports NONE, SERIAL and SPI+EXPRESSLRS.",
       "type": "object",
       "required": ["kind"],
       "additionalProperties": false,
@@ -36,13 +42,19 @@
                    "EXPRESSLRS", "FRSKY_D", "FRSKY_X", "FRSKY_X_LBT"]
         },
         "port": { "$ref": "#/$defs/portName" },
-        "telemetry": { "type": "boolean", "default": false },
+        "telemetry": { "type": "boolean", "default": true,
+                       "description": "CRSF, FPORT, SPI EXPRESSLRS: true enables feature TELEMETRY. Other protocols: ignored (feature left untouched)." },
         "inverted": { "type": "boolean", "default": false },
-        "halfDuplex": { "type": "boolean", "default": false }
+        "halfDuplex": { "type": "boolean", "default": false },
+        "elrsBindingPhrase": { "type": ["string", "null"], "minLength": 1, "maxLength": 64,
+                               "description": "SPI EXPRESSLRS only. Written as expresslrs_uid = first 6 bytes of MD5('-DMY_BINDING_PHRASE=\"<phrase>\"'); null keeps the current UID." },
+        "elrsDomain": { "$ref": "#/$defs/elrsDomain" }
       },
       "allOf": [
         { "if": { "properties": { "kind": { "const": "SERIAL" } } },
-          "then": { "required": ["protocol", "port"], "properties": { "port": { "type": "string" } } } }
+          "then": { "required": ["protocol", "port"], "properties": { "port": { "type": "string" } } } },
+        { "if": { "properties": { "kind": { "const": "SPI" } } },
+          "then": { "required": ["protocol"], "properties": { "port": { "type": "null" } } } }
       ]
     },
     "vtx": {
@@ -76,7 +88,8 @@
         "bidirectionalDshot": { "type": "boolean", "default": false },
         "motorPoles": { "type": ["integer", "null"], "minimum": 4, "maximum": 64 },
         "telemetryPort": { "$ref": "#/$defs/portName" },
-        "propsOut": { "type": "boolean", "default": false }
+        "propsOut": { "type": "boolean", "default": false,
+                      "description": "yaw_motors_reversed. Per-motor DShot spin-direction reversal is phase 2 (not in the schema)." }
       }
     },
     "switches": {
@@ -113,6 +126,16 @@
       "esc": { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14, "propsOut": true },
       "switches": [{ "mode": "ARM", "auxChannel": 0, "rangeMin": 1800, "rangeMax": 2100 }],
       "extras": { "craftName": "QUAD" }
+    },
+    {
+      "schemaVersion": 1,
+      "fc": { "boardName": "CRAZYBEEF4SX1280", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
+      "receiver": { "kind": "SPI", "protocol": "EXPRESSLRS", "port": null, "telemetry": true,
+                    "elrsBindingPhrase": "example whoop phrase", "elrsDomain": "ISM2400" },
+      "vtx": { "kind": "NONE" },
+      "gps": { "enabled": false },
+      "esc": { "protocol": "DSHOT300", "bidirectionalDshot": true, "motorPoles": 12 },
+      "switches": [{ "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 }]
     }
   ]
 }
