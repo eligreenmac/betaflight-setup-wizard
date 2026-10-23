@@ -54,7 +54,7 @@ SCREAMING_SNAKE_CASE enum values.
   "fc":       { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
   "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true,
                 "inverted": false, "halfDuplex": false,
-                "elrsBindingPhrase": null, "elrsDomain": null },   // elrs* only for SPI + EXPRESSLRS
+                "elrsUid": null, "elrsDomain": null },   // elrs* only for SPI + EXPRESSLRS
   "vtx":      { "kind": "DIGITAL", "protocol": "MSP", "port": "UART1", "digitalSystem": "DJI", "region": null },
   "gps":      { "enabled": true, "port": "UART4", "provider": "UBLOX" },
   "esc":      { "protocol": "DSHOT600", "bidirectionalDshot": true, "motorPoles": 14,
@@ -113,7 +113,8 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `flasher_flash` | `image, dfuSerial, options` | – (events) | flasher |
 | `config_read_ports` | – | `FcSerialPort[]` | config |
 | `config_backup` | – | `Backup` | config |
-| `config_generate` | `model, ports` | `CliScript` | config |
+| `config_generate` | `model, ports` | `CliScript` (**preview only**, never applied) | config |
+| `config_elrs_uid` | `phrase` | `number[6]` (phrase not stored/logged) | config |
 | `config_plan` | `model` | `CliScript` (read-only, see §5.1) | config |
 | `config_apply` | `script` | `ApplyResult` (events) | config |
 | `config_verify` | `model` | `VerifyReport` | config |
@@ -168,8 +169,10 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   `cleared` lists the managed functions (RX_SERIAL, GPS, ESC_SENSOR, VTX_SMARTAUDIO, VTX_TRAMP,
   VTX_MSP) removed from ports that no longer need them. MSP is also removed from an old MSP
   DisplayPort port only when that port had exactly MSP|VTX_MSP. All other serial functions are
-  never touched. The UI shows `cleared` before applying. `config_generate` is the pure core
-  (ports supplied by the caller) used for previews and golden tests.
+  never touched. The UI shows `cleared` before applying. **The script returned by `config_plan` is the one
+  passed to `config_apply`.** `config_generate` is the pure core (ports supplied by the caller,
+  default bauds, all aux slots assumed free, no SPI hardware check): **preview only**, also used by
+  golden tests; its output is never applied.
 - **`config_apply(script)`** runs these stages: `BACKUP` (`diff all` saved to a file) → `SENDING` (`batch start` +
   commands, stop at the first `###ERROR###`) → `SAVING` (`save` while the batch is still active,
   so firmware refuses to save after any error) → `REBOOTING` → `RECONNECTED`. It **resolves only
@@ -179,17 +182,20 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
 - **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
   backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
-  Both refuse if the backup's firmware version differs from the FC's.
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
   for the UI's "open backups folder" action.
 - **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
   → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
-  `expresslrs_uid` (from the binding phrase) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.
+  `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.
   The firmware keeps only one RX feature (config.c: PPM > MSP > SERIAL > SPI > PWM), so the
   other feature is always disabled explicitly. SPI ELRS is offered only when `dump all` shows
-  `resource RX_SPI_CS` and `resource RX_SPI_EXPRESSLRS_BUSY` assigned and `rx_spi_protocol` and
+  `resource RX_SPI_CS` assigned (SX127x boards have no BUSY pin) and `rx_spi_protocol` and
   `expresslrs_uid` exist. Other SPI protocols → `CONFIG` error in MVP.
+- **ELRS binding phrase:** only an input. The UI calls `config_elrs_uid(phrase)` and stores
+  the returned 6-byte UID in `receiver.elrsUid`; the phrase is never part of the model and is
+  never written to disk (models, backups, logs) or logged. Backups contain only `expresslrs_uid`.
 - **Telemetry:** `receiver.telemetry=true` with CRSF, FPORT or SPI EXPRESSLRS → `feature TELEMETRY`.
   Otherwise the feature is left untouched.
 - **Aux:** only wizard-managed modes are replaced (freed slots are reused first, then free slots). All other

@@ -35,15 +35,27 @@ pub async fn config_backup() -> AppResult<Backup> {
     Err(AppError::NotImplemented("config_backup"))
 }
 
-/// Pure generation (no FC I/O): DroneModel + ports -> CLI script for preview.
+/// PREVIEW ONLY. Pure generation (no FC I/O): DroneModel + caller-supplied ports -> CLI
+/// script. It assumes default baud rates and free aux slots and cannot check SPI receiver
+/// hardware, so its output must never be applied: `config_apply` takes the script from
+/// `config_plan`.
 #[tauri::command]
 pub async fn config_generate(model: DroneModel, ports: Vec<FcSerialPort>) -> AppResult<CliScript> {
     super::generate(&model, &ports)
 }
 
+/// Binding phrase -> 6-byte ExpressLRS UID (first 6 bytes of
+/// MD5(`-DMY_BINDING_PHRASE="<phrase>"`)). Pure. The phrase is never stored or logged;
+/// the UI puts only the returned UID in `receiver.elrsUid`.
+#[tauri::command]
+pub async fn config_elrs_uid(phrase: String) -> AppResult<[u8; 6]> {
+    let _ = phrase;
+    Err(AppError::NotImplemented("config_elrs_uid"))
+}
+
 /// Read-only plan against the connected FC: reads `version`, `serial`, `dump all`
 /// (firmware gate, SPI ELRS detection, aux slots, available settings) and returns the
-/// script plus `cleared` ports. Writes nothing.
+/// script plus `cleared` ports. Writes nothing. This is the script the UI applies.
 #[tauri::command]
 pub async fn config_plan(model: DroneModel) -> AppResult<CliScript> {
     let _ = model;

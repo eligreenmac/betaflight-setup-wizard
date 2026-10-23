@@ -217,11 +217,12 @@ pub struct Receiver {
     pub inverted: bool,
     #[serde(default)]
     pub half_duplex: bool,
-    /// SPI EXPRESSLRS only: binding phrase; the engine writes
-    /// `expresslrs_uid` = first 6 bytes of MD5(`-DMY_BINDING_PHRASE="<phrase>"`).
+    /// SPI EXPRESSLRS only: the 6-byte UID written as `expresslrs_uid`.
     /// None = leave the current UID (bind with `bind_rx`).
+    /// The UI derives it from the binding phrase via `config_elrs_uid` and drops the
+    /// phrase; the phrase is never part of the model, never stored and never logged.
     #[serde(default)]
-    pub elrs_binding_phrase: Option<String>,
+    pub elrs_uid: Option<[u8; 6]>,
     /// SPI EXPRESSLRS only: regulatory domain. Must be one the board's chip
     /// supports (SX1280: ISM2400/CE2400; SX127x: the 433/868/915 MHz ones).
     #[serde(default)]
@@ -543,5 +544,22 @@ mod tests {
             serde_json::from_str(r#"{"kind":"SERIAL","protocol":"CRSF","port":"UART2"}"#).unwrap();
         assert!(r.telemetry);
         assert_eq!(r.elrs_domain, None);
+    }
+
+    /// The binding phrase is never part of the model: a stray `elrsBindingPhrase` from an
+    /// older client is ignored on input and never serialized back out.
+    #[test]
+    fn binding_phrase_is_never_persisted() {
+        let r: Receiver = serde_json::from_str(
+            r#"{"kind":"SPI","protocol":"EXPRESSLRS","port":null,
+                "elrsBindingPhrase":"secret phrase","elrsUid":[1,2,3,4,5,6]}"#,
+        )
+        .unwrap();
+        assert_eq!(r.elrs_uid, Some([1, 2, 3, 4, 5, 6]));
+        let out = serde_json::to_string(&r).unwrap();
+        assert!(
+            !out.contains("secret") && !out.to_lowercase().contains("phrase"),
+            "{out}"
+        );
     }
 }
