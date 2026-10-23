@@ -215,6 +215,7 @@ pub trait Connection: Send {
     fn enter_cli(&mut self) -> AppResult<()>;
     fn cli_exec(&mut self, line: &str) -> AppResult<String>;
     fn exit_cli(&mut self, save: bool) -> AppResult<()>;
+    fn uid(&self) -> Option<String> { None } // cached FcInfo.uid (device implements it)
 }
 
 // config/mod.rs — pure, golden-tested
@@ -238,6 +239,19 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   returns once sent; the caller then calls `reconnect(timeout)`, which waits for the port to drop
   and come back (same VID/PID/serial number), reopens it and re-verifies MSP_API_VERSION and
   MSP_UID. Likewise after `exit` on 4.4 (reboots). `exit_cli(false)` uses `exit noreboot` on 4.5+.
+  `uid()` returns the connected board's cached `FcInfo.uid` (no I/O; `None` if unknown).
+- **CLI state on the link**: the manager remembers that the CLI is open from `enter_cli`
+  until `exit_cli`, `reconnect`, a reboot or an error. Callers may leave it open (config's
+  read-only commands do, because on 4.4 leaving reboots the FC). The next MSP call — from
+  `msp_request`, `device_identify`, motor test or RC stream — first leaves it transparently:
+  plain `exit` (on every firmware, so unsaved RAM changes are dropped; `exit noreboot` is
+  never used here), wait for the reboot (if none is seen: MSP_REBOOT `[0]`), wait for the
+  port to come back, re-verify MSP_API_VERSION + MSP_UID. One `exit` per transition, `save`
+  is never sent. The link is detached before the `exit` is written, so a failure leaves no
+  CLI state: the call fails with `SERIAL` (timed out coming back / a different flight
+  controller came back) and later calls get `SERIAL` "reconnect first", never a second
+  `exit`. `device_reboot_to_bootloader` from an open CLI sends `bl rom` directly. The
+  emergency stop never waits for this (it does not take the port lock).
 - **`FcInfo.uid`**: exactly the CLI `mcu_id` string: 24 lowercase hex chars, the three
   MSP_UID (160) words `U_ID_0, U_ID_1, U_ID_2` (each u32 little-endian on the wire), each
   zero-padded to 8 digits, in that order (`cli.c`: `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`).
@@ -383,7 +397,9 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
 - WinUSB: libwdi-based elevated helper exe shipped as a Tauri resource (phase 1),
   invoked by `system_install_dfu_driver`: binds WinUSB only to connected DFU devices that
-  lack it (one UAC prompt; the app itself never runs elevated). Driver files are
+  lack it (one UAC prompt: the app relaunches its own exe with an elevated-install
+  subcommand that `main.rs` dispatches before Tauri starts; the app UI never runs
+  elevated). Driver files are
   extracted to a per-run SYSTEM/Administrators-only folder under `%ProgramData%`. Details, build and
   LGPL-3.0 obligations: `docs/PACKAGING.md`.
   device/flasher never install drivers; they report `DRIVER_MISSING` with the device's

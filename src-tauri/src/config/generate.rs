@@ -6,10 +6,11 @@ use super::firmware::Dialect;
 use super::modes;
 use super::serial_functions::{self as sf, check_serial_config, functions_in};
 use super::snapshot::{AuxSlot, PortState, Snapshot};
+use super::vtx_table::{self, VtxTableState};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ClearedPort, CliScript, DigitalSystem, DroneModel, ElrsDomain, EscProtocol, GpsProvider,
-    ReceiverKind, RxProtocol, VtxKind, VtxProtocol,
+    ReceiverKind, RxProtocol, SbasMode, VtxKind, VtxProtocol,
 };
 
 fn cfg_err(msg: impl Into<String>) -> AppError {
@@ -115,8 +116,9 @@ pub fn generate_for(
     let cleared = serial_section(&mut cx, ports)?;
     receiver_section(&mut cx)?;
     gps_section(&mut cx);
-    esc_section(&mut cx);
-    vtx_section(&mut cx);
+    esc_section(&mut cx)?;
+    vtx_section(&mut cx)?;
+    craft_name_section(&mut cx)?;
     aux_section(&mut cx)?;
     Ok(CliScript {
         commands: cx.cmds,
@@ -346,12 +348,33 @@ fn gps_section(cx: &mut Ctx) {
         cx.push("feature GPS");
         cx.push(format!("set gps_provider = {provider}"));
         cx.push("set gps_auto_config = ON");
+        if let Some(sbas) = g.sbas_mode {
+            cx.push(format!("set gps_sbas_mode = {}", sbas_name(sbas)));
+        }
+        match (g.galileo, provider) {
+            (Some(on), "UBLOX") => cx.push(format!("set gps_ublox_use_galileo = {}", on_off(on))),
+            (Some(_), _) => cx
+                .warnings
+                .push("Galileo can only be selected for a UBLOX GPS; not written".into()),
+            (None, _) => {}
+        }
     } else {
         cx.push("feature -GPS");
     }
 }
 
-fn esc_section(cx: &mut Ctx) {
+fn sbas_name(m: SbasMode) -> &'static str {
+    match m {
+        SbasMode::Auto => "AUTO",
+        SbasMode::Egnos => "EGNOS",
+        SbasMode::Waas => "WAAS",
+        SbasMode::Msas => "MSAS",
+        SbasMode::Gagan => "GAGAN",
+        SbasMode::None => "NONE",
+    }
+}
+
+fn esc_section(cx: &mut Ctx) -> AppResult<()> {
     let e = &cx.model.esc;
     cx.push(if e.telemetry_port.is_some() {
         "feature ESC_SENSOR"
@@ -375,9 +398,75 @@ fn esc_section(cx: &mut Ctx) {
         cx.push(format!("set motor_poles = {p}"));
     }
     cx.push(format!("set yaw_motors_reversed = {}", on_off(e.props_out)));
+    if let Some(idle) = e.idle {
+        if idle > 2000 {
+            return Err(cfg_err(format!(
+                "motor idle {idle} is out of range (0-2000, in 0.01 %)"
+            )));
+        }
+        if cx.dialect == Dialect::V2025_12 {
+            cx.push(format!("set motor_idle = {idle}"));
+        } else if dshot {
+            cx.push(format!("set dshot_idle_value = {idle}"));
+        } else {
+            // 4.4 / 4.5 derive idle from min_throttle for analog protocols.
+            cx.warnings.push(
+                "motor idle is a DShot setting on this firmware (dshot_idle_value); not written"
+                    .into(),
+            );
+        }
+    }
+    if let Some(order) = &e.motor_order {
+        // motor_output_reordering has MAX_SUPPORTED_MOTORS entries; keep the FC's length.
+        let len = cx
+            .snapshot
+            .and_then(|s| s.setting("motor_output_reordering"))
+            .map_or(8, |v| v.split(',').count());
+        let mut seen = vec![false; order.len()];
+        let perm = !order.is_empty()
+            && order.len() <= len
+            && order.iter().all(|&o| {
+                let i = o as usize;
+                i < seen.len() && !std::mem::replace(&mut seen[i], true)
+            });
+        if !perm {
+            return Err(cfg_err(format!(
+                "motor order {order:?} must be a permutation of 0..{} (at most {len} motors)",
+                order.len()
+            )));
+        }
+        let full: Vec<String> = (0..len)
+            .map(|i| order.get(i).map_or(i, |&o| o as usize).to_string())
+            .collect();
+        cx.push(format!("set motor_output_reordering = {}", full.join(",")));
+    }
+    Ok(())
 }
 
-fn vtx_section(cx: &mut Ctx) {
+/// `set craft_name`: 1-16 printable ASCII (MAX_NAME_LENGTH); "" clears it (`-`).
+fn craft_name_section(cx: &mut Ctx) -> AppResult<()> {
+    let Some(name) = cx.model.extras.craft_name.as_deref() else {
+        return Ok(());
+    };
+    if name.is_empty() {
+        cx.push("set craft_name = -");
+        return Ok(());
+    }
+    let ok = name.len() <= 16
+        && name.chars().all(|c| c == ' ' || c.is_ascii_graphic())
+        && name.trim() == name
+        && name != "-";
+    if !ok {
+        return Err(cfg_err(format!(
+            "craft name {name:?} must be 1-16 printable ASCII characters without leading/trailing spaces"
+        )));
+    }
+    cx.push(format!("set craft_name = {name}"));
+    Ok(())
+}
+
+fn vtx_section(cx: &mut Ctx) -> AppResult<()> {
+    vtx_table_section(cx)?;
     match cx.model.vtx.kind {
         VtxKind::None => {}
         VtxKind::Analog => {
@@ -395,6 +484,72 @@ fn vtx_section(cx: &mut Ctx) {
             }
         }
     }
+    Ok(())
+}
+
+/// `vtxtable ...` then `vtx_band` / `vtx_channel` / `vtx_power` (1-based into the table
+/// being written, or the FC's current table when the model keeps it).
+fn vtx_table_section(cx: &mut Ctx) -> AppResult<()> {
+    let v = &cx.model.vtx;
+    if v.table.is_none() && v.band.is_none() && v.channel.is_none() && v.power.is_none() {
+        return Ok(());
+    }
+    if matches!(v.kind, VtxKind::None) {
+        return Err(cfg_err(
+            "VTX table / band / channel / power are set but the model has no VTX",
+        ));
+    }
+    let table: Option<VtxTableState> = match &v.table {
+        Some(t) => {
+            vtx_table::validate(t).map_err(cfg_err)?;
+            Some(VtxTableState::from_model(t))
+        }
+        None => cx.snapshot.and_then(|s| s.vtxtable.clone()),
+    };
+    let check = |what: &str, val: u8, max: usize| -> AppResult<()> {
+        if val == 0 || usize::from(val) > max {
+            return Err(cfg_err(format!(
+                "VTX {what} {val} is outside the VTX table (1-{max})"
+            )));
+        }
+        Ok(())
+    };
+    if let Some(t) = &table {
+        if let Some(b) = v.band {
+            check("band", b, t.bands)?;
+        }
+        if let Some(c) = v.channel {
+            check("channel", c, t.channels)?;
+        }
+        if let Some(p) = v.power {
+            check("power level", p, t.power_levels)?;
+        }
+    } else if v.band.is_some() || v.channel.is_some() || v.power.is_some() {
+        cx.warnings.push(
+            "VTX band/channel/power written without a known VTX table; check it on the FC".into(),
+        );
+    }
+    if let Some(p) = v.power {
+        if p > vtx_table::MAX_CLI_POWER_INDEX {
+            return Err(cfg_err(format!(
+                "VTX power level {p}: the CLI accepts 1-{} (vtx_power range)",
+                vtx_table::MAX_CLI_POWER_INDEX
+            )));
+        }
+    }
+    if let Some(t) = &v.table {
+        cx.cmds.extend(VtxTableState::commands_for(t));
+    }
+    if let Some(b) = v.band {
+        cx.push(format!("set vtx_band = {b}"));
+    }
+    if let Some(c) = v.channel {
+        cx.push(format!("set vtx_channel = {c}"));
+    }
+    if let Some(p) = v.power {
+        cx.push(format!("set vtx_power = {p}"));
+    }
+    Ok(())
 }
 
 fn aux_section(cx: &mut Ctx) -> AppResult<()> {

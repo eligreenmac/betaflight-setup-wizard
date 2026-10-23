@@ -1,12 +1,13 @@
 //! Windows-only parts: enumerate present USB device nodes with their bound
 //! driver service (SetupAPI + cfgmgr32, no elevation needed) and run the
-//! libwdi helper elevated via `ShellExecuteExW("runas")` (one UAC prompt).
+//! app exe elevated via `ShellExecuteExW("runas")` (one UAC prompt) for the WinUSB
+//! install (see elevated_install.rs).
 
 use super::usb_drivers::{parse_vid_pid, RawUsbDevice};
 use crate::error::{AppError, AppResult};
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_DevNode_Status, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
     SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW,
@@ -16,7 +17,6 @@ use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_CANCELLED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
-use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
@@ -129,32 +129,6 @@ pub fn list_usb_devices() -> AppResult<Vec<RawUsbDevice>> {
     Ok(out)
 }
 
-/// `<System32>\WindowsPowerShell\v1.0\powershell.exe`, located via
-/// `GetSystemDirectoryW` (not PATH or environment variables, which the user controls).
-pub fn powershell_exe() -> AppResult<PathBuf> {
-    let mut buf = [0u16; 260];
-    // SAFETY: buffer and its length in u16 units are passed together.
-    let n = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
-    if n == 0 || n >= buf.len() {
-        return Err(AppError::Driver(format!(
-            "GetSystemDirectoryW failed (error {})",
-            unsafe { GetLastError() }
-        )));
-    }
-    let exe = PathBuf::from(String::from_utf16_lossy(&buf[..n]))
-        .join("WindowsPowerShell")
-        .join("v1.0")
-        .join("powershell.exe");
-    if exe.is_file() {
-        Ok(exe)
-    } else {
-        Err(AppError::Driver(format!(
-            "Windows PowerShell not found at {}",
-            exe.display()
-        )))
-    }
-}
-
 /// Run `exe args` elevated (UAC prompt), hidden, from `cwd`; wait up to
 /// `timeout_ms` and return the process exit code.
 pub fn run_elevated(exe: &Path, args: &str, cwd: &Path, timeout_ms: u32) -> AppResult<i32> {
@@ -176,7 +150,9 @@ pub fn run_elevated(exe: &Path, args: &str, cwd: &Path, timeout_ms: u32) -> AppR
         return Err(if err == ERROR_CANCELLED {
             AppError::Driver("administrator permission was declined (UAC)".into())
         } else {
-            AppError::Driver(format!("could not start driver helper (error {err})"))
+            AppError::Driver(format!(
+                "could not start the elevated driver installer (error {err})"
+            ))
         });
     }
     if info.hProcess.is_null() {

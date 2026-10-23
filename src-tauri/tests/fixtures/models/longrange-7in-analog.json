@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "SPEEDYBEEF405V4", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
+  "receiver": { "kind": "SERIAL", "protocol": "CRSF", "port": "UART2", "telemetry": true },
+  "vtx": {
+    "kind": "ANALOG", "protocol": "SMARTAUDIO", "port": "UART1", "region": "IL",
+    "table": {
+      "bands": [
+        { "name": "BOSCAM_A", "letter": "A", "factory": false, "frequencies": [5865, 5845, 5825, 5805, 5785, 5765, 5745, 5725] },
+        { "name": "RACEBAND", "letter": "R", "factory": false, "frequencies": [5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917] }
+      ],
+      "powerLevels": [
+        { "value": 14, "label": "25" },
+        { "value": 20, "label": "100" },
+        { "value": 26, "label": "400" },
+        { "value": 0, "label": "PIT" }
+      ]
+    },
+    "band": 2, "channel": 1, "power": 2
+  },
+  "gps": { "enabled": true, "port": "UART6", "provider": "UBLOX", "galileo": true, "sbasMode": "AUTO" },
+  "esc": { "protocol": "DSHOT300", "bidirectionalDshot": true, "motorPoles": 14, "propsOut": false, "idle": 450, "motorOrder": [1, 0, 3, 2] },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "GPS RESCUE", "auxChannel": 4, "rangeMin": 1700, "rangeMax": 2100 }
+  ],
+  "extras": { "craftName": "LR7 Chimera" }
+}

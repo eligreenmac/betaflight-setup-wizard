@@ -16,6 +16,7 @@ use super::backup::BackupStore;
 use super::firmware::Dialect;
 use super::msp;
 use super::session;
+use super::vtx_table::VtxTableState;
 use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 use crate::model::CliScript;
@@ -492,6 +493,61 @@ fn sitl_end_to_end_apply_error_and_rollback() {
         fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
         assert_eq!(get(&mut fc, "craft_name"), "-");
     }
+
+    // 8. The model-ext lines (shared/config-model-ext) are accepted by the real CLI and
+    //    read back as generated. GPS and DShot are not compiled into SITL, so only the
+    //    VTX table, vtx_*, craft_name, motor_output_reordering and (2025.12) motor_idle.
+    let m: crate::model::DroneModel = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/models/longrange-7in-analog.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // SITL quirk (4.4.3/4.5.5/2025.12.5 x86 builds): an 8-character band name reads back
+    // with its last character replaced by a space ("BOSCAM_A" -> "BOSCAM_"), although
+    // VTX_TABLE_BAND_NAME_LENGTH is 8 and 8-character names (BOSCAM_A, RACEBAND,
+    // FATSHARK) are standard in real FC dumps. Use 7-character names here so the test
+    // checks the protocol rather than the SITL quirk; the goldens keep the real names.
+    let mut table = m.vtx.table.clone().unwrap();
+    for b in &mut table.bands {
+        b.name.truncate(7);
+    }
+    let table = &table;
+    let mut lines = VtxTableState::commands_for(table);
+    lines.extend([
+        "set vtx_band = 2".to_string(),
+        "set vtx_channel = 1".into(),
+        "set vtx_power = 2".into(),
+        "set craft_name = LR7 Chimera".into(),
+        "set motor_output_reordering = 1,0,3,2,4,5,6,7".into(),
+    ]);
+    if dialect == Dialect::V2025_12 {
+        lines.push("set motor_idle = 450".into());
+    }
+    fc.enter_cli().unwrap();
+    for l in &lines {
+        let r = fc.cli_exec(l).unwrap();
+        assert!(!r.contains("###ERROR"), "{l}: {r}");
+    }
+    let dump = fc.cli_exec("dump all").unwrap();
+    let snap = super::snapshot::parse_dump(&dump);
+    assert_eq!(
+        snap.vtxtable.as_ref().map(VtxTableState::render),
+        Some(VtxTableState::from_model(table).render())
+    );
+    assert_eq!(snap.setting("craft_name"), Some("LR7 Chimera"));
+    assert_eq!(snap.setting("vtx_power"), Some("2"));
+    assert_eq!(
+        snap.setting("motor_output_reordering"),
+        Some("1,0,3,2,4,5,6,7")
+    );
+    if dialect == Dialect::V2025_12 {
+        assert_eq!(snap.setting("motor_idle"), Some("450"));
+    }
+    let r = fc.cli_exec("set craft_name = -").unwrap();
+    assert!(!r.contains("###ERROR"), "{r}");
 
     drop(fc);
     let _ = std::fs::remove_dir_all(&dir);

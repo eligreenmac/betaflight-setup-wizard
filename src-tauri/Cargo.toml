@@ -1,6 +1,6 @@
 [package]
 name = "betaflight-setup-wizard"
-version = "0.1.0"
+version = "0.1.0-1"
 description = "Offline-first Betaflight setup wizard for Windows"
 authors = ["Betaflight Setup Wizard contributors"]
 license = "GPL-3.0-or-later"
@@ -42,8 +42,11 @@ sha2 = "0.10"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Devices_DeviceAndDriverInstallation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
   "Win32_System_Registry",
-  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",

@@ -4,8 +4,8 @@
 // (mocked until the device crate lands; disabled with guidance when unavailable).
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { api, EVENTS } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
-import { DEVICE_EVENTS, device } from "../../api/device";
 import { isNotImplemented } from "../../errors/codes";
 import { markDirty, wizard } from "../state";
 import {
@@ -73,10 +73,10 @@ function active(sw: { auxChannel: number; rangeMin: number; rangeMax: number }):
 
 onMounted(async () => {
   if (!wizard.connectedPath) return void (live.value = "unavailable");
-  offs.push(await onEvent(DEVICE_EVENTS.rcChannels, (p) => ((channels.value = p.channels), (live.value = "on"))));
-  offs.push(await onEvent(DEVICE_EVENTS.rcStopped, () => (live.value = "stopped")));
+  offs.push(await onEvent(EVENTS.rcChannels, (p) => ((channels.value = p.channels), (live.value = "on"))));
+  offs.push(await onEvent(EVENTS.rcStopped, () => (live.value = "stopped")));
   try {
-    await device.rcStreamStart(15);
+    await api.device.rcStreamStart(15);
   } catch (e) {
     live.value = isNotImplemented(e) ? "unavailable" : "stopped";
   }
@@ -84,7 +84,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   offs.forEach((o) => o());
   offs = [];
-  if (live.value !== "unavailable") void device.rcStreamStop().catch(() => undefined);
+  if (live.value !== "unavailable") void api.device.rcStreamStop().catch(() => undefined);
 });
 </script>
 

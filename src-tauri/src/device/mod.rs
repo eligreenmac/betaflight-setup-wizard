@@ -7,6 +7,8 @@
 //!     (`Connection` + `Reconnect`, below) to config/flasher; see ARCHITECTURE.md §4.1.
 
 pub mod cli;
+#[cfg(test)]
+mod cli_state_tests;
 pub mod commands;
 pub mod error;
 pub mod manager;
@@ -37,12 +39,21 @@ pub const RC_STOPPED_EVENT: &str = "device://rc-stopped";
 pub trait Connection: Send {
     /// Send one MSP request and wait for its reply payload.
     fn msp_request(&mut self, code: u16, payload: &[u8]) -> AppResult<Vec<u8>>;
-    /// Enter CLI mode (send `#`) if not already in it.
+    /// Enter CLI mode (send `#`) if not already in it. The device connection remembers that
+    /// the CLI is open: the next MSP call (here or from identify / motor test / RC stream)
+    /// first leaves it with plain `exit` (the FC reboots, unsaved changes are dropped) and
+    /// reconnects, verifying MSP_UID. `save` is only ever sent by `exit_cli(true)`.
     fn enter_cli(&mut self) -> AppResult<()>;
     /// Send one CLI line and return the raw response up to the next prompt.
     fn cli_exec(&mut self, line: &str) -> AppResult<String>;
     /// Leave CLI; `save` = true sends `save` (FC reboots), else `exit`.
     fn exit_cli(&mut self, save: bool) -> AppResult<()>;
+    /// The board's MSP_UID as the CLI `mcu_id` string (`FcInfo.uid`), cached by the device
+    /// connection (read on connect, re-verified on every reconnect): no round-trip, works
+    /// in CLI mode. `None` if unknown (MSP_UID unsupported) or for test doubles.
+    fn uid(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Re-establish the link after the FC rebooted (`save`, `exit` on 4.4, MSP reboot).

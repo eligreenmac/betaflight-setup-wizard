@@ -51,6 +51,26 @@ jobs:
           $list = 7z l $setup.FullName
           if (-not ($list | Select-String -SimpleMatch 'bfsw-wdi-simple.exe')) { throw "bfsw-wdi-simple.exe not found in $($setup.Name)" }
           $list | Select-String -SimpleMatch 'drivers'
+      - name: Elevated WinUSB install mode of the built app exe
+        # Runs the real release exe the way the app relaunches itself via UAC
+        # (runners are already elevated): main() must dispatch before Tauri starts,
+        # find drivers/bfsw-wdi-simple.exe next to the exe, create/verify/clean the
+        # admin-only %ProgramData% folder (no devices -> exit 0) and reject bad args.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Resolve-Path src-tauri/target/release/betaflight-setup-wizard.exe
+          function Invoke-Mode([string[]]$a) {
+            $p = Start-Process -FilePath $exe -ArgumentList $a -Wait -PassThru -WindowStyle Hidden
+            $p.ExitCode
+          }
+          $code = Invoke-Mode @('--bfsw-elevated-winusb-install')
+          if ($code -ne 0) { throw "no-device run exited $code (expected 0)" }
+          $code = Invoke-Mode @('--bfsw-elevated-winusb-install', 'not-a-device')
+          if ($code -ne 1008) { throw "bad-args run exited $code (expected 1008)" }
+          $left = @(Get-ChildItem -Force -Directory $env:ProgramData -Filter 'BFSW-WinUSB-*')
+          if ($left.Count -ne 0) { throw "work folder left behind: $($left.Name -join ', ')" }
+          Write-Host 'elevated mode OK'
       - uses: actions/upload-artifact@v7
         with:
           name: windows-installers
@@ -61,12 +81,34 @@ jobs:
 
   linux-check:
     runs-on: ubuntu-latest
+    # Normally 2-6 min. Bounds a stuck job instead of the 6 h default.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - name: Install Tauri system deps
+      # The .debs are cached per runner image + package list. A slow Azure apt mirror
+      # (~70 kB/s for 72.8 MB) stalled this job for 17-25 min several times.
+      - name: apt cache key
+        id: apt-key
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libudev-dev libusb-1.0-0-dev
+          echo "key=apt-${ImageOS}-${ImageVersion}-${{ hashFiles('.github/linux-deps.txt') }}" >> "$GITHUB_OUTPUT"
+          echo "prefix=apt-${ImageOS}-" >> "$GITHUB_OUTPUT"
+          echo "dir=${RUNNER_TEMP}/apt-archives" >> "$GITHUB_OUTPUT"
+      - name: Restore apt package cache
+        id: apt-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ steps.apt-key.outputs.dir }}
+          key: ${{ steps.apt-key.outputs.key }}
+          restore-keys: ${{ steps.apt-key.outputs.prefix }}
+      - name: Install Tauri system deps
+        timeout-minutes: 8
+        run: .github/scripts/apt-install.sh .github/linux-deps.txt "${{ steps.apt-key.outputs.dir }}"
+      - name: Save apt package cache
+        if: steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.apt-key.outputs.dir }}
+          key: ${{ steps.apt-key.outputs.key }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

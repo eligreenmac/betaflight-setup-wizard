@@ -34,6 +34,15 @@ pub type Lister = Arc<dyn Fn() -> Vec<PortIdentity> + Send + Sync>;
 pub const DEFAULT_RECONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// API 1.46 (Betaflight 4.5) added `exit noreboot`.
 const NOREBOOT_API: (u8, u8) = (1, 46);
+/// What a stale CLI session gets to leave it. NEVER `save`: that would persist whatever
+/// half-typed changes the previous session left behind. The leading CR/LF terminates any
+/// partial line (e.g. the echoed MSP request) so `exit` is parsed on its own line.
+const STALE_CLI_EXIT: &[u8] = b"\r\nexit\r\n";
+/// Printed by Betaflight's `cliRebootEx` right before `systemReset()` (4.4, 4.5, 2025.12,
+/// master). Plain `exit` reboots on all of them, which throws away unsaved RAM changes and
+/// any open batch; `exit noreboot` (4.5+) prints "leaving CLI mode, no reboot" instead.
+const CLI_REBOOT_MARKER: &[u8] = b"Rebooting";
+
 /// Betaflight's USB VCP serial identifier.
 const VCP_IDENTIFIER: i32 = 20;
 
@@ -139,26 +148,236 @@ pub struct FcConnection {
     lister: Lister,
     cli_opts: CliOptions,
     poll: Duration,
+    msp_timeout: Duration,
+}
+
+/// "The FC did not answer MSP at all" (as opposed to a closed port or an MSP-level error).
+fn no_msp_answer(e: &DeviceError) -> bool {
+    matches!(
+        e,
+        DeviceError::Timeout { .. } | DeviceError::MspMalformed(_)
+    )
 }
 
 impl FcConnection {
-    fn open(port: PortIdentity, opener: Opener, lister: Lister, poll: Duration) -> DResult<Self> {
+    fn open(
+        port: PortIdentity,
+        opener: Opener,
+        lister: Lister,
+        poll: Duration,
+        msp_timeout: Duration,
+    ) -> DResult<Self> {
         let link = opener(&port.path)?;
         let mut c = FcConnection {
             port,
-            link: Link::Msp(MspClient::new(link)),
+            link: Link::Detached,
             api: None,
             uid: None,
             opener,
             lister,
             cli_opts: CliOptions::default(),
             poll,
+            msp_timeout,
         };
-        // Best effort: the FC may still be booting; identify() retries.
-        if let Link::Msp(m) = &mut c.link {
-            c.api = m.api_version().ok();
+        let mut m = c.client(link);
+        match m.api_version() {
+            Ok(api) => {
+                c.api = Some(api);
+                // Cache the board identity so a later reboot (CLI exit, save, MSP reboot)
+                // can be checked against it, and `Connection::uid` needs no round-trip.
+                c.uid = m.uid().ok();
+                c.link = Link::Msp(m);
+            }
+            // No MSP answer at all: most likely a CLI session left open (crashed app,
+            // Configurator closed mid-CLI). Leave it once with `exit` and retry once.
+            Err(e) if no_msp_answer(&e) => {
+                let budget = DEFAULT_RECONNECT_TIMEOUT;
+                c.recover_stale_cli(m.into_inner(), Instant::now() + budget, budget)?;
+            }
+            // Anything else (e.g. the FC is still booting and garbled the reply): keep the
+            // port; identify() reports the error if it persists.
+            Err(e) => {
+                log::debug!("{}: MSP_API_VERSION on open failed: {e}", c.port.path);
+                c.link = Link::Msp(m);
+            }
         }
         Ok(c)
+    }
+
+    fn client(&self, link: BoxLink) -> MspClient<BoxLink> {
+        let mut m = MspClient::new(link);
+        m.timeout = self.msp_timeout;
+        m
+    }
+
+    /// How long to wait for a rebooting USB VCP to disappear (UART bridges never do).
+    /// 3 s with the default 200 ms poll.
+    fn gone_wait(&self, timeout: Duration) -> Duration {
+        timeout.min(self.poll * 15)
+    }
+
+    /// Settle time after the port is back before talking to the FC (1 s by default).
+    fn settle(&self) -> Duration {
+        self.poll * 5
+    }
+
+    fn present(&self) -> Option<PortIdentity> {
+        (self.lister)()
+            .into_iter()
+            .find(|p| self.port.same_device(p))
+    }
+
+    /// Wait (capped by [`gone_wait`](Self::gone_wait)) for a rebooting USB VCP to disappear.
+    /// Returns whether it did; UART bridges never do.
+    fn wait_gone(&self, timeout: Duration) -> bool {
+        let gone_by = Instant::now() + self.gone_wait(timeout);
+        loop {
+            if self.present().is_none() {
+                return true;
+            }
+            if Instant::now() >= gone_by {
+                return false;
+            }
+            std::thread::sleep(self.poll);
+        }
+    }
+
+    /// Wait until the port is listed and opens, let the FC settle, drain boot noise and ask
+    /// for MSP_API_VERSION exactly once.
+    fn wait_back(
+        &self,
+        deadline: Instant,
+        timeout: Duration,
+        what: &str,
+    ) -> DResult<(PortIdentity, MspClient<BoxLink>, ApiVersion)> {
+        let (found, mut link) = loop {
+            if let Some(found) = self.present() {
+                if let Ok(link) = (self.opener)(&found.path) {
+                    break (found, link);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(DeviceError::timeout(
+                    format!("{} to come back {what}", self.port.path),
+                    timeout,
+                ));
+            }
+            std::thread::sleep(self.poll);
+        };
+        std::thread::sleep(self.settle());
+        drain(&mut link, self.poll);
+        let mut m = self.client(link);
+        match m.api_version() {
+            Ok(api) => Ok((found, m, api)),
+            Err(e) => {
+                log::warn!("{}: no MSP answer {what}: {e}", found.path);
+                Err(e)
+            }
+        }
+    }
+
+    /// The FC did not answer MSP: assume a stale CLI session (left by another app or a
+    /// crash) and leave it with [`exit_cli_and_reconnect`](Self::exit_cli_and_reconnect).
+    fn recover_stale_cli(
+        &mut self,
+        link: BoxLink,
+        deadline: Instant,
+        timeout: Duration,
+    ) -> DResult<()> {
+        log::warn!(
+            "{}: no MSP answer; assuming a stale CLI session, sending `exit`",
+            self.port.path
+        );
+        self.exit_cli_and_reconnect(link, deadline, timeout, "a stale CLI")
+    }
+
+    /// Our own CLI session is open (config's read-only commands leave it open: on 4.4 the
+    /// only way out reboots) and an MSP call needs the link: leave it the same way.
+    fn leave_cli_for_msp(&mut self) -> DResult<()> {
+        let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
+            return Ok(());
+        };
+        log::info!(
+            "{}: CLI still open before an MSP call; `exit` (FC reboots) and reconnecting",
+            self.port.path
+        );
+        let budget = DEFAULT_RECONNECT_TIMEOUT;
+        self.exit_cli_and_reconnect(s.into_link(), Instant::now() + budget, budget, "the CLI")
+    }
+
+    /// Leave the CLI so that nothing typed in it stays live, then reconnect in MSP mode.
+    /// The link is `Detached` from the first byte on, so a failure leaves no CLI state
+    /// behind (later calls get "not open; reconnect first", never a second `exit`).
+    ///
+    /// 1. Send `exit` (never `save`). In Betaflight 4.4, 4.5, 2025.12 and master plain `exit`
+    ///    reboots the FC (`cliRebootEx`, which prints `Rebooting`), dropping unsaved RAM
+    ///    changes and any open batch. Only `exit noreboot` (4.5+) keeps them.
+    /// 2. Follow the reboot like `reconnect`: a USB VCP disappears and re-enumerates, a UART
+    ///    bridge stays. Settle, drain, retry MSP exactly once; still silent → error.
+    /// 3. If neither `Rebooting` nor a port drop was seen, the exit may not have rebooted
+    ///    (unknown firmware, lost output), so RAM may still hold the changes: reboot over
+    ///    MSP (MSP_REBOOT 68, `[0]` = firmware, like `config::session::discard` on 4.5+)
+    ///    once and wait for the FC again.
+    /// 4. [`adopt`](Self::adopt) re-verifies MSP_UID: a different board is an error.
+    fn exit_cli_and_reconnect(
+        &mut self,
+        mut link: BoxLink,
+        deadline: Instant,
+        timeout: Duration,
+        from: &str,
+    ) -> DResult<()> {
+        self.link = Link::Detached;
+        let mut rebooted = match link.write_all(STALE_CLI_EXIT) {
+            Ok(()) => saw_reboot(&mut link, self.settle()),
+            Err(DeviceError::Disconnected) => true,
+            Err(e) => return Err(e),
+        };
+        drop(link); // close the port so a re-enumerated VCP can be reopened
+        rebooted |= self.wait_gone(timeout);
+        let after_exit = format!("after leaving {from}");
+        let (found, m, api) = self.wait_back(deadline, timeout, &after_exit)?;
+        if rebooted {
+            return self.adopt(found, m, api);
+        }
+        log::warn!(
+            "{}: `exit` did not visibly reboot the FC; rebooting over MSP to discard RAM changes",
+            found.path
+        );
+        let mut m = m;
+        m.reboot(RebootType::Firmware)?;
+        drop(m);
+        self.wait_gone(timeout);
+        let (found, m, api) = self.wait_back(deadline, timeout, "after MSP_REBOOT")?;
+        self.adopt(found, m, api)
+    }
+
+    /// Accept a reopened port after checking it is the same board (MSP_UID).
+    fn adopt(
+        &mut self,
+        found: PortIdentity,
+        mut m: MspClient<BoxLink>,
+        api: ApiVersion,
+    ) -> DResult<()> {
+        let uid = match m.uid() {
+            Ok(u) => Some(u),
+            Err(DeviceError::MspUnsupported(_)) => None,
+            Err(e) => return Err(e),
+        };
+        if let (Some(old), Some(new)) = (self.uid, uid) {
+            if old != new {
+                return Err(DeviceError::Serial(format!(
+                    "a different flight controller came back on {} (uid {}, expected {})",
+                    found.path,
+                    new.mcu_id(),
+                    old.mcu_id()
+                )));
+            }
+        }
+        self.port = found;
+        self.api = Some(api);
+        self.uid = uid.or(self.uid);
+        self.link = Link::Msp(m);
+        Ok(())
     }
 
     pub fn path(&self) -> &str {
@@ -177,25 +396,23 @@ impl FcConnection {
         ))
     }
 
-    /// Make sure the link is in MSP mode (leaves the CLI with `exit noreboot` on 4.5+).
+    /// Make sure the link is in MSP mode. If our CLI session is still open, leave it with
+    /// plain `exit` + reconnect ([`leave_cli_for_msp`](Self::leave_cli_for_msp)) on every
+    /// firmware: `exit noreboot` would keep whatever the session changed live in RAM.
     fn msp(&mut self) -> DResult<&mut MspClient<BoxLink>> {
         if matches!(self.link, Link::Cli(_)) {
-            if !self.supports_noreboot() {
-                return Err(DeviceError::Cli(
-                    "CLI is active and this firmware reboots when leaving it; call exit_cli first"
-                        .into(),
-                ));
-            }
-            let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
-                unreachable!()
-            };
-            self.link = Link::Msp(MspClient::new(s.exit_no_reboot()?));
+            self.leave_cli_for_msp()?;
         }
         let lost = self.lost();
         match &mut self.link {
             Link::Msp(m) => Ok(m),
             _ => Err(lost),
         }
+    }
+
+    /// Is our CLI session open (entered via the CLI path, not yet left)?
+    pub fn in_cli(&self) -> bool {
+        matches!(self.link, Link::Cli(_))
     }
 
     fn cli(&mut self) -> DResult<&mut CliSession<BoxLink>> {
@@ -208,7 +425,7 @@ impl FcConnection {
                 Err(e) => {
                     // `enter` consumed the port; reopen it so the connection stays usable.
                     if let Ok(l) = (self.opener)(&self.port.path) {
-                        self.link = Link::Msp(MspClient::new(l));
+                        self.link = Link::Msp(self.client(l));
                     }
                     return Err(e);
                 }
@@ -231,7 +448,7 @@ impl FcConnection {
     }
 
     fn give_back(&mut self, link: BoxLink) {
-        self.link = Link::Msp(MspClient::new(link));
+        self.link = Link::Msp(self.client(link));
     }
 
     /// MSP identity (API_VERSION, FC_VARIANT, FC_VERSION, BOARD_INFO, UID, serial config).
@@ -251,13 +468,13 @@ impl FcConnection {
         let probe = self.cli()?.probe_board()?;
         id.apply_cli_probe(&probe);
         if self.supports_noreboot() {
-            self.msp()?;
-        } else {
+            // Fresh session, read-only commands only: nothing to discard, skip the reboot.
             let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
                 return Err(self.lost());
             };
-            drop(s.exit()?);
-            self.reconnect_inner(DEFAULT_RECONNECT_TIMEOUT)?;
+            self.link = Link::Msp(self.client(s.exit_no_reboot()?));
+        } else {
+            self.leave_cli_for_msp()?;
         }
         Ok(id)
     }
@@ -265,6 +482,13 @@ impl FcConnection {
     /// Reboot into the ROM DFU bootloader: MSP_REBOOT, falling back to CLI `bl rom`.
     /// The port is gone afterwards.
     pub fn reboot_to_bootloader(&mut self) -> DResult<()> {
+        if let Link::Cli(_) = self.link {
+            // Already in the CLI: `bl rom` directly instead of exit + reboot + MSP_REBOOT.
+            let Link::Cli(s) = std::mem::replace(&mut self.link, Link::Detached) else {
+                unreachable!()
+            };
+            return s.reboot_to_bootloader(BootloaderTarget::Rom);
+        }
         let r = self.msp()?.reboot(RebootType::Bootloader);
         match r {
             Ok(_) => {}
@@ -285,40 +509,24 @@ impl FcConnection {
         self.link = Link::Detached; // closes the port
         let start = Instant::now();
         let deadline = start + timeout;
-        let present = |me: &Self| (me.lister)().into_iter().find(|p| me.port.same_device(p));
         // USB VCPs disappear while the FC reboots; UART bridges never do, so cap this wait.
-        let gone_by = start + timeout.min(Duration::from_secs(3));
-        while Instant::now() < gone_by && present(self).is_some() {
-            std::thread::sleep(self.poll);
-        }
+        self.wait_gone(timeout);
         loop {
-            if let Some(found) = present(self) {
+            if let Some(found) = self.present() {
                 if let Ok(link) = (self.opener)(&found.path) {
-                    let mut m = MspClient::new(link);
-                    if let Ok(api) = m.api_version() {
-                        let uid = match m.uid() {
-                            Ok(u) => Some(u),
-                            Err(DeviceError::MspUnsupported(_)) => None,
-                            Err(_) => {
-                                std::thread::sleep(self.poll);
-                                continue;
-                            }
-                        };
-                        if let (Some(old), Some(new)) = (self.uid, uid) {
-                            if old != new {
-                                return Err(DeviceError::Serial(format!(
-                                    "a different flight controller came back on {} (uid {}, expected {})",
-                                    found.path,
-                                    new.mcu_id(),
-                                    old.mcu_id()
-                                )));
-                            }
+                    let mut m = self.client(link);
+                    match m.api_version() {
+                        Ok(api) => match self.adopt(found, m, api) {
+                            Ok(()) => return Ok(()),
+                            Err(e @ DeviceError::Serial(_)) => return Err(e), // other board
+                            Err(_) => {}                                      // retry
+                        },
+                        // Port is back but the FC does not speak MSP: stale CLI. One
+                        // `exit` + one MSP retry, then give up.
+                        Err(e) if no_msp_answer(&e) => {
+                            return self.recover_stale_cli(m.into_inner(), deadline, timeout);
                         }
-                        self.port = found;
-                        self.api = Some(api);
-                        self.uid = uid.or(self.uid);
-                        self.link = Link::Msp(m);
-                        return Ok(());
+                        Err(_) => {}
                     }
                 }
             }
@@ -329,6 +537,43 @@ impl FcConnection {
                 ));
             }
             std::thread::sleep(self.poll);
+        }
+    }
+}
+
+/// Read the FC's answer to `exit` for up to `window`: true once `Rebooting` shows up or the
+/// port drops (the FC reset under us).
+fn saw_reboot(link: &mut BoxLink, window: Duration) -> bool {
+    let mut seen = Vec::new();
+    let mut buf = [0u8; 256];
+    let until = Instant::now() + window;
+    while Instant::now() < until {
+        match link.read(&mut buf, Duration::from_millis(50)) {
+            Ok(n) => {
+                seen.extend_from_slice(&buf[..n]);
+                if seen
+                    .windows(CLI_REBOOT_MARKER.len())
+                    .any(|w| w == CLI_REBOOT_MARKER)
+                {
+                    return true;
+                }
+            }
+            Err(DeviceError::Disconnected) => return true,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Discard whatever the FC sent (CLI banner, "Rebooting...", boot noise).
+fn drain(link: &mut BoxLink, quiet: Duration) {
+    let _ = link.clear_input();
+    let mut buf = [0u8; 256];
+    let until = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < until {
+        match link.read(&mut buf, quiet.min(Duration::from_millis(50))) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
     }
 }
@@ -348,7 +593,9 @@ impl Connection for FcConnection {
     }
 
     /// `save=true`: sends `save` (FC reboots) → call `reconnect`. `save=false`:
-    /// `exit noreboot` on 4.5+; on 4.4 `exit` reboots the FC → call `reconnect`.
+    /// `exit noreboot` on 4.5+ (link back in MSP mode, RAM changes stay live: config's
+    /// `discard` follows it with MSP_REBOOT); on 4.4 `exit` reboots the FC → call
+    /// `reconnect`. Either way the CLI state is cleared before anything is written.
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
         if !matches!(self.link, Link::Cli(_)) {
             return Ok(());
@@ -359,11 +606,15 @@ impl Connection for FcConnection {
         if save {
             s.save()?;
         } else if self.supports_noreboot() {
-            self.link = Link::Msp(MspClient::new(s.exit_no_reboot()?));
+            self.link = Link::Msp(self.client(s.exit_no_reboot()?));
         } else {
             drop(s.exit()?);
         }
         Ok(())
+    }
+
+    fn uid(&self) -> Option<String> {
+        self.uid.map(|u| u.mcu_id())
     }
 }
 
@@ -406,6 +657,7 @@ pub struct ConnectionManager {
     opener: Opener,
     lister: Lister,
     poll: Duration,
+    msp_timeout: Duration,
 }
 
 impl Default for ConnectionManager {
@@ -423,12 +675,19 @@ impl ConnectionManager {
             opener,
             lister,
             poll: Duration::from_millis(200),
+            msp_timeout: Duration::from_secs(1),
         }
     }
 
     /// Poll interval used while waiting for a rebooting FC (tests use a short one).
     pub fn with_poll_interval(mut self, poll: Duration) -> Self {
         self.poll = poll;
+        self
+    }
+
+    /// MSP response timeout for the connection's own requests (tests use a short one).
+    pub fn with_msp_timeout(mut self, t: Duration) -> Self {
+        self.msp_timeout = t;
         self
     }
 
@@ -509,7 +768,13 @@ impl ConnectionManager {
                 path: path.to_string(),
                 ..Default::default()
             });
-        let conn = FcConnection::open(ident, self.opener.clone(), self.lister.clone(), self.poll)?;
+        let conn = FcConnection::open(
+            ident,
+            self.opener.clone(),
+            self.lister.clone(),
+            self.poll,
+            self.msp_timeout,
+        )?;
         *g = Slot::Idle(conn);
         self.set_port(Some(path.to_string()));
         Ok(())
@@ -973,7 +1238,9 @@ mod tests {
                 vec![]
             }
         });
-        ConnectionManager::new(opener, lister).with_poll_interval(Duration::from_millis(5))
+        ConnectionManager::new(opener, lister)
+            .with_poll_interval(Duration::from_millis(5))
+            .with_msp_timeout(Duration::from_millis(100))
     }
 
     fn req(i: Option<u8>, t: u16) -> MotorTestRequest {
@@ -1202,6 +1469,196 @@ mod tests {
             .with_link(|l| l.reconnect(Duration::from_millis(300)))
             .unwrap_err();
         assert!(e.to_string().contains("different flight controller"), "{e}");
+    }
+
+    fn sent(fc: &FakeFc) -> String {
+        String::from_utf8_lossy(&fc.rx_log.lock().unwrap()).into_owned()
+    }
+
+    fn exits(fc: &FakeFc) -> usize {
+        sent(fc).matches("exit").count()
+    }
+
+    fn api_requests(fc: &FakeFc) -> usize {
+        let frame = [b'$', b'M', b'<', 0, codes::MSP_API_VERSION as u8];
+        fc.rx_log
+            .lock()
+            .unwrap()
+            .windows(frame.len())
+            .filter(|w| *w == frame)
+            .count()
+    }
+
+    fn msp_reboots(fc: &FakeFc) -> Vec<Vec<u8>> {
+        fc.msp_reboots.lock().unwrap().clone()
+    }
+
+    /// A previous session left the FC in the CLI with unsaved changes (e.g. a failed batch).
+    fn stale_cli(fc: &FakeFc) {
+        fc.cli.store(true, Ordering::SeqCst);
+        fc.ram_dirty.store(true, Ordering::SeqCst);
+    }
+
+    /// Recovered, RAM discarded, exactly one `exit`, never `save`, MSP works.
+    fn assert_recovered_clean(fc: &FakeFc, m: &ConnectionManager) {
+        assert!(!fc.cli.load(Ordering::SeqCst), "left the CLI");
+        assert!(
+            !fc.ram_dirty.load(Ordering::SeqCst),
+            "stale RAM changes discarded"
+        );
+        assert_eq!(exits(fc), 1, "{}", sent(fc));
+        assert!(!sent(fc).contains("save"), "never save: {}", sent(fc));
+        assert_eq!(
+            m.with_link(|l| l.msp_request(codes::MSP_API_VERSION, &[]))
+                .unwrap(),
+            vec![0, 1, 46]
+        );
+    }
+
+    #[test]
+    fn healthy_fc_never_gets_exit() {
+        let fc = FakeFc::default();
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)));
+        m.connect(PORT).unwrap();
+        m.identify_uid_for_test();
+        m.with_link(|l| l.reconnect(Duration::from_millis(300)))
+            .unwrap();
+        assert_eq!(exits(&fc), 0, "{}", sent(&fc));
+        assert!(fc.cli_lines.lock().unwrap().is_empty());
+        assert!(
+            msp_reboots(&fc).is_empty(),
+            "no MSP_REBOOT for a healthy FC"
+        );
+    }
+
+    /// 4.4 `cliExit` (and plain `exit` on 4.5+/2025.12) reboots; a USB VCP re-enumerates.
+    #[test]
+    fn stale_cli_exit_reboots_usb_vcp() {
+        let fc = FakeFc::default();
+        let present = Arc::new(AtomicBool::new(true));
+        stale_cli(&fc);
+        *fc.unplug_on_reboot.lock().unwrap() = Some(present.clone());
+        let m = manager(&fc, present);
+        m.connect(PORT).unwrap();
+        assert_recovered_clean(&fc, &m);
+        assert!(msp_reboots(&fc).is_empty(), "exit already rebooted");
+        assert_eq!(
+            api_requests(&fc),
+            2 + 1,
+            "probe + one retry (+ the check above)"
+        );
+    }
+
+    /// Same reboot behind a UART bridge: the port never drops, `Rebooting` is the evidence.
+    #[test]
+    fn stale_cli_exit_reboots_uart_bridge() {
+        let fc = FakeFc::default();
+        stale_cli(&fc);
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)));
+        m.connect(PORT).unwrap();
+        assert_recovered_clean(&fc, &m);
+        assert!(msp_reboots(&fc).is_empty(), "`Rebooting` was seen");
+    }
+
+    /// 4.5+/2025.12 `exit noreboot`-style: the CLI is left but RAM keeps the stale changes,
+    /// so recovery reboots over MSP (68, payload 0 = firmware) exactly once.
+    #[test]
+    fn stale_cli_exit_without_reboot_gets_one_msp_reboot() {
+        let fc = FakeFc {
+            exit_reboots: false,
+            ..FakeFc::default()
+        };
+        let present = Arc::new(AtomicBool::new(true));
+        stale_cli(&fc);
+        *fc.unplug_on_reboot.lock().unwrap() = Some(present.clone());
+        let m = manager(&fc, present);
+        m.connect(PORT).unwrap();
+        assert_eq!(msp_reboots(&fc), vec![vec![RebootType::Firmware as u8]]);
+        assert_eq!(codes::MSP_REBOOT, 68);
+        assert_recovered_clean(&fc, &m);
+    }
+
+    #[test]
+    fn stale_cli_exit_without_reboot_on_uart_bridge() {
+        let fc = FakeFc {
+            exit_reboots: false,
+            ..FakeFc::default()
+        };
+        stale_cli(&fc);
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)));
+        m.connect(PORT).unwrap();
+        assert_eq!(msp_reboots(&fc).len(), 1);
+        assert_recovered_clean(&fc, &m);
+    }
+
+    #[test]
+    fn connect_gives_up_after_one_exit_and_one_retry() {
+        let fc = FakeFc {
+            cli_sticky: true,
+            ..FakeFc::default()
+        };
+        stale_cli(&fc);
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)));
+        let e = m.connect(PORT).unwrap_err();
+        assert_eq!(e.code(), "SERIAL", "{e}");
+        assert!(e.to_string().contains("timed out"), "{e}");
+        assert_eq!(exits(&fc), 1, "exactly one exit: {}", sent(&fc));
+        assert_eq!(api_requests(&fc), 2, "initial probe + exactly one retry");
+        assert!(msp_reboots(&fc).is_empty());
+        assert!(!sent(&fc).contains("save"));
+        assert!(!m.is_connected());
+    }
+
+    #[test]
+    fn reconnect_recovers_a_stale_cli_session() {
+        let fc = FakeFc::default();
+        let present = Arc::new(AtomicBool::new(true));
+        let m = manager(&fc, present.clone());
+        m.connect(PORT).unwrap();
+        m.identify_uid_for_test();
+        // The FC comes back from a reboot sitting in the CLI (e.g. another tool typed `#`).
+        stale_cli(&fc);
+        *fc.unplug_on_reboot.lock().unwrap() = Some(present);
+        m.with_link(|l| l.reconnect(Duration::from_secs(2)))
+            .unwrap();
+        assert_recovered_clean(&fc, &m);
+        assert!(msp_reboots(&fc).is_empty());
+    }
+
+    #[test]
+    fn reconnect_stale_cli_exit_without_reboot_gets_one_msp_reboot() {
+        let fc = FakeFc {
+            exit_reboots: false,
+            ..FakeFc::default()
+        };
+        let present = Arc::new(AtomicBool::new(true));
+        let m = manager(&fc, present.clone());
+        m.connect(PORT).unwrap();
+        m.identify_uid_for_test();
+        stale_cli(&fc);
+        *fc.unplug_on_reboot.lock().unwrap() = Some(present);
+        m.with_link(|l| l.reconnect(Duration::from_secs(2)))
+            .unwrap();
+        assert_eq!(msp_reboots(&fc), vec![vec![0]]);
+        assert_recovered_clean(&fc, &m);
+    }
+
+    #[test]
+    fn reconnect_gives_up_after_one_exit() {
+        let fc = FakeFc {
+            cli_sticky: true,
+            ..FakeFc::default()
+        };
+        let m = manager(&fc, Arc::new(AtomicBool::new(true)));
+        m.connect(PORT).unwrap();
+        stale_cli(&fc);
+        let e = m
+            .with_link(|l| l.reconnect(Duration::from_secs(2)))
+            .unwrap_err();
+        assert_eq!(e.code(), "SERIAL", "{e}");
+        assert_eq!(exits(&fc), 1);
+        assert!(msp_reboots(&fc).is_empty());
+        assert!(!sent(&fc).contains("save"));
     }
 
     #[test]

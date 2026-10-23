@@ -5,6 +5,8 @@ import { computed, onBeforeUnmount, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { api, EVENTS } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
+import { writeBlock } from "../../api/fallback";
+import { uiError } from "../../errors/codes";
 import { APPLY_STAGES } from "../plan";
 import BackupsPanel from "../../components/BackupsPanel.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
@@ -19,9 +21,14 @@ const error = ref<unknown>(null);
 const ui = computed(() => wizard.ui);
 const busy = computed(() => ["applying", "verifying"].includes(ui.value.applyStatus));
 let off: Unlisten | null = null;
+// Safety: never apply a simulated plan to a real board (or "apply" a real plan on the mock).
+const mixed = computed(() => writeBlock("config_apply"));
+const mixedError = computed(() =>
+  mixed.value ? uiError("MIXED_BACKEND", `simulated: ${mixed.value.simulated.join(", ")}; real: ${mixed.value.real.join(", ")}`) : null,
+);
 
 async function apply(): Promise<void> {
-  if (!wizard.ui.script || busy.value) return;
+  if (!wizard.ui.script || busy.value || mixed.value) return;
   error.value = null;
   stage.value = -1;
   wizard.ui.applyResult = null;
@@ -63,6 +70,9 @@ onBeforeUnmount(() => off?.());
     <p class="lead">{{ t("steps.apply.description") }}</p>
 
     <div v-if="!ui.script" class="callout callout--warn">{{ t("apply.noScript") }}</div>
+    <div v-else-if="mixedError && ui.applyStatus === 'idle'" data-test="mixed-blocked">
+      <ErrorPanel :error="mixedError" />
+    </div>
     <template v-else>
       <p v-if="ui.applyStatus === 'idle'" class="hint">{{ t("apply.ready", { n: ui.script.commands.length }) }}</p>
       <p v-if="busy" class="callout callout--warn">{{ t("apply.doNotUnplug") }}</p>

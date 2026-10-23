@@ -21,6 +21,7 @@ use super::firmware::Dialect;
 use super::generate::serial_cmd;
 use super::msp;
 use super::snapshot::{parse_dump, parse_serial_line, AuxSlot, Snapshot};
+use super::vtx_table::VtxTableState;
 use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 
@@ -31,6 +32,7 @@ struct State {
     settings: BTreeMap<String, String>,
     aux: BTreeMap<u8, AuxSlot>,
     resources: BTreeMap<String, String>,
+    vtxtable: VtxTableState,
 }
 
 impl State {
@@ -47,6 +49,7 @@ impl State {
             settings: s.settings.clone(),
             aux,
             resources: s.resources.clone(),
+            vtxtable: s.vtxtable.clone().unwrap_or_default(),
         }
     }
 }
@@ -109,7 +112,8 @@ fn unknown_command() -> String {
 }
 
 /// Lookup-table values MockFc enforces (`###ERROR IN set: INVALID VALUE###`). Only
-/// tables captured from SITL are listed (in firmware order); booleans are ON/OFF;
+/// tables captured from SITL (`serialrx_provider`) or identical in the settings.c of all
+/// three releases (`gps_sbas_mode`) are listed, in firmware order; booleans are ON/OFF;
 /// other settings accept any value.
 fn allowed_values(
     dialect: Dialect,
@@ -138,6 +142,7 @@ fn allowed_values(
             Dialect::V4_5 => [&["NONE"][..], &RX, &["SPEK1024"]].concat(),
             Dialect::V2025_12 => [&["NONE"][..], &RX, &["SPEK1024", "MAVLINK"]].concat(),
         }),
+        ("gps_sbas_mode", _) => Some(vec!["AUTO", "EGNOS", "WAAS", "MSAS", "GAGAN", "NONE"]),
         (_, Some("ON" | "OFF")) => Some(vec!["OFF", "ON"]),
         _ => None,
     }
@@ -333,6 +338,13 @@ impl MockFc {
                 o += "\r\n";
             }
         }
+        if !diff || d.vtxtable != s.vtxtable {
+            o += "\r\n# vtxtable\r\n";
+            for l in s.vtxtable.render() {
+                o += &l;
+                o += "\r\n";
+            }
+        }
         o += "\r\n# master\r\n";
         for (k, v) in &s.settings {
             if !diff || d.settings.get(k) != Some(v) {
@@ -436,6 +448,10 @@ impl MockFc {
                     };
                 };
                 let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_string());
+                // MODE_STRING (craft_name, pilot_name): 1..=16 chars, "-" = empty.
+                if k.ends_with("_name") && (v.is_empty() || v.len() > 16) {
+                    return err("set", "STRING MUST BE 1-16 CHARACTERS OR '-' FOR EMPTY");
+                }
                 if let Some(allowed) = allowed_values(self.dialect, &k, self.live.settings.get(&k))
                 {
                     if !allowed.iter().any(|x| x.eq_ignore_ascii_case(&v)) {
@@ -484,6 +500,17 @@ impl MockFc {
                 self.live.aux.insert(a.slot, a);
                 a.to_cli() + "\r\n"
             }
+            "vtxtable" if args.is_empty() => self
+                .live
+                .vtxtable
+                .render()
+                .into_iter()
+                .map(|l| l + "\r\n")
+                .collect(),
+            "vtxtable" => match self.live.vtxtable.apply(args) {
+                Ok(()) => String::new(),
+                Err(e) => err("vtxtable", &e),
+            },
             "resource" => {
                 let p: Vec<&str> = args.split_whitespace().collect();
                 if p.len() == 3 {
