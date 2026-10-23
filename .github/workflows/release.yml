@@ -1,6 +1,7 @@
 name: release
 
-# Tag vX.Y.Z (matching src-tauri/tauri.conf.json "version") -> build NSIS + MSI on
+# Tag vX.Y.Z or vX.Y.Z-N (matching src-tauri/tauri.conf.json "version"; see
+# .github/scripts/check-release-version.mjs for the MSI version rules) -> build NSIS + MSI on
 # windows-latest -> DRAFT GitHub release with installers, SHA256SUMS.txt and the
 # libwdi Corresponding Source (LGPL-3.0, see docs/PACKAGING.md). A maintainer
 # reviews and publishes the draft by hand; nothing here publishes.
@@ -16,6 +17,7 @@ on:
     paths:
       - .github/workflows/release.yml
       - .github/actions/build-wdi-simple/**
+      - .github/scripts/check-release-version.mjs
   workflow_dispatch:
 
 permissions:
@@ -36,18 +38,14 @@ jobs:
     runs-on: windows-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
-      - name: Check tag matches app version
+      # Version sources in sync, MSI-compatible (X.Y.Z or X.Y.Z-N, N <= 65535) and,
+      # on a tag, tag == "v" + version.
+      - name: Check app version (and tag)
         id: version
-        shell: bash
-        run: |
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "v$version" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match tauri.conf.json version $version (expected v$version)"
-            exit 1
-          fi
+        run: node .github/scripts/check-release-version.mjs
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -82,6 +80,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
           if (-not (7z l $setup.FullName | Select-String -SimpleMatch 'bfsw-wdi-simple.exe')) { throw "helper missing from $($setup.Name)" }
+      # WiX gets X.Y.Z.N for X.Y.Z-N (Tauri's convert_version); make sure the MSI really
+      # carries the version we expect so a preview never ships as a mislabelled build.
+      - name: Check MSI ProductVersion
+        shell: pwsh
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:APP_VERSION -replace '-', '.'
+          $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi | Select-Object -First 1
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $db = $installer.GetType().InvokeMember('OpenDatabase', 'InvokeMethod', $null, $installer, @($msi.FullName, 0))
+          $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db, @("SELECT Value FROM Property WHERE Property='ProductVersion'"))
+          $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+          $record = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
+          $actual = $record.GetType().InvokeMember('StringData', 'GetProperty', $null, $record, 1)
+          Write-Host "$($msi.Name): ProductVersion $actual (app version $env:APP_VERSION)"
+          if ($actual -ne $expected) { throw "MSI ProductVersion $actual, expected $expected" }
       - name: libwdi Corresponding Source (LGPL-3.0)
         shell: bash
         run: |
@@ -128,6 +144,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
           cd dist-release
@@ -138,6 +155,9 @@ jobs:
             fi
             gh release upload "$TAG" --clobber -- *
           else
+            # X.Y.Z-N versions are previews: mark them as GitHub pre-releases.
+            pre=()
+            if [ "$PRERELEASE" = "true" ]; then pre=(--prerelease); fi
             cat > ../notes.md <<NOTES
           Draft created by the release workflow from \`$TAG\` ($GITHUB_SHA). Review, then publish manually.
 
@@ -145,6 +165,6 @@ jobs:
           - \`SHA256SUMS.txt\`: verify with \`sha256sum -c SHA256SUMS.txt\` or PowerShell \`Get-FileHash\`.
           - \`libwdi-*-source.zip\`: Corresponding Source of the bundled WinUSB helper (libwdi, LGPL-3.0-or-later).
           NOTES
-            gh release create "$TAG" --draft --verify-tag --title "Betaflight Setup Wizard $TAG" \
+            gh release create "$TAG" --draft "${pre[@]}" --verify-tag --title "Betaflight Setup Wizard $TAG" \
               --notes-file ../notes.md -- *
           fi

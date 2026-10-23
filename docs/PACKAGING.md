@@ -122,9 +122,11 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 
 `.github/workflows/release.yml`
 
-1. Bump `version` in `src-tauri/tauri.conf.json` (and `Cargo.toml`/`package.json`)
-   on `main`.
-2. A maintainer pushes tag `vX.Y.Z` (must equal that version; the workflow fails
+1. Bump `version` in `src-tauri/tauri.conf.json`, `package.json` + `package-lock.json`
+   (`npm version <v> --no-git-tag-version`) and `src-tauri/Cargo.toml` (+ `Cargo.lock`)
+   on `main`. `.github/scripts/check-release-version.mjs` fails the release if they
+   differ.
+2. A maintainer pushes tag `v<version>` (must equal that version; the workflow fails
    otherwise).
 3. windows-latest builds the helper, runs tests, `tauri build` (NSIS + MSI), checks the
    helper is in the installer, packs `libwdi-<ref>-source.zip`, writes
@@ -135,6 +137,22 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 
 PRs that change `release.yml` or the helper action, and manual runs, execute only the
 build job (dry run with an artifact).
+
+### Versions (MSI rules)
+
+Windows Installer versions are `major.minor.build[.rev]` (major/minor <= 255, build
+<= 65535). Tauri's WiX bundler maps SemVer `X.Y.Z-N` to `X.Y.Z.N` and rejects any
+non-numeric or > 65535 pre-release (e.g. `-beta.1`) or `+build` metadata. So:
+
+- Release: `X.Y.Z` (tag `vX.Y.Z`).
+- Preview: `X.Y.Z-N` (tag `vX.Y.Z-N`), e.g. the first preview `0.1.0-1` → MSI
+  `0.1.0.1`. The draft is marked as a GitHub **pre-release**. The workflow checks the
+  built MSI's `ProductVersion`.
+- Windows Installer ignores the 4th field when it compares versions, and Tauri's MSI
+  uses `MajorUpgrade AllowSameVersionUpgrades="yes"`, so `0.1.0-1` → `0.1.0-2` →
+  `0.1.0` install over each other as upgrades. In SemVer `0.1.0-1` < `0.1.0`, so the
+  final release still sorts after its previews. The NSIS `VIProductVersion` is
+  `X.Y.Z.0` (Tauri only maps `+build` there); the NSIS display version stays `X.Y.Z-N`.
 
 ### Not enabled yet (later phases)
 
