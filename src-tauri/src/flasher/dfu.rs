@@ -380,6 +380,20 @@ impl<T: DfuTransport> DfuSe<T> {
             self.clear_status(false)?;
             return Ok(MassErase::Refused);
         }
+        // DfuSe runs the erase on the GETSTATUS that follows the command, and some
+        // bootloaders only answer that one when the erase is done: long timeout from here on.
+        self.transport.set_timeout(MASS_ERASE_CONTROL_TIMEOUT);
+        let r = self.finish_mass_erase(expected, deadline, progress);
+        self.transport.set_timeout(DEFAULT_CONTROL_TIMEOUT);
+        r
+    }
+
+    fn finish_mass_erase(
+        &mut self,
+        expected: u64,
+        deadline: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<MassErase> {
         let s = self.get_status()?;
         match s.state {
             state::DFU_DNBUSY => {}
@@ -394,10 +408,8 @@ impl<T: DfuTransport> DfuSe<T> {
             }
             _ => return Err(Self::fail("mass erase", s)),
         }
-        self.transport.set_timeout(MASS_ERASE_CONTROL_TIMEOUT);
-        let r = self.wait_mass_erase(s.poll_timeout_ms, expected, deadline, progress);
-        self.transport.set_timeout(DEFAULT_CONTROL_TIMEOUT);
-        r.map(|()| MassErase::Done)
+        self.wait_mass_erase(s.poll_timeout_ms, expected, deadline, progress)
+            .map(|()| MassErase::Done)
     }
 
     /// Poll until the mass erase ends. Elapsed time counts the requested sleeps plus the
@@ -1179,6 +1191,7 @@ pub(crate) mod sim {
 
         fn set_timeout(&mut self, timeout: Duration) {
             self.timeouts.push(timeout);
+            self.log.push(format!("TIMEOUT {}ms", timeout.as_millis()));
         }
     }
 }
@@ -1326,6 +1339,32 @@ mod tests {
             sim.timeouts,
             vec![MASS_ERASE_CONTROL_TIMEOUT, DEFAULT_CONTROL_TIMEOUT]
         );
+    }
+
+    #[test]
+    fn long_timeout_is_set_before_the_first_status_poll_of_a_mass_erase() {
+        let mass = format!("TIMEOUT {}ms", MASS_ERASE_CONTROL_TIMEOUT.as_millis());
+        let default = format!("TIMEOUT {}ms", DEFAULT_CONTROL_TIMEOUT.as_millis());
+        for refusal in [None, Some(SimMassErase::RefuseStatus)] {
+            let mut sim = with_settings(SimDfu::f405());
+            if let Some(r) = refusal {
+                sim.mass_erase = r;
+            }
+            let (r, sim, _) = run(sim, full());
+            r.unwrap();
+            let cmd = sim
+                .log
+                .iter()
+                .position(|l| l == "DNLOAD 0 [41] len=1")
+                .unwrap();
+            let after: Vec<&str> = sim.log[cmd + 1..].iter().map(String::as_str).collect();
+            assert_eq!(after[0], mass, "{refusal:?}: {after:?}");
+            assert_eq!(after[1], "GETSTATUS", "{refusal:?}: {after:?}");
+            // Back to the default before anything else is written.
+            let restored = after.iter().position(|l| *l == default).unwrap();
+            assert!(after[..restored].iter().all(|l| !l.starts_with("DNLOAD")));
+            assert_eq!(sim.timeouts.last(), Some(&DEFAULT_CONTROL_TIMEOUT));
+        }
     }
 
     #[test]
