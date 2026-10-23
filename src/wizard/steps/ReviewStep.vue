@@ -10,7 +10,7 @@ import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
 import { isHdOsdPlanError, osdChoice, withOsd } from "../osd";
-import { toUiError, uiError } from "../../errors/codes";
+import { toUiError, uiError, type UiError } from "../../errors/codes";
 import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
 import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
 import { calibrationWarnings } from "../guards";
@@ -18,6 +18,12 @@ import { modeKeyOf } from "../switches";
 import { wizard } from "../state";
 
 defineProps<{ stepId: string }>();
+
+/** config_plan refused an HD OSD: firmware without MSP DisplayPort. */
+function isHdNoDisplayport(e: UiError): boolean {
+  const reason = e.details && typeof e.details === "object" ? (e.details as { reason?: unknown }).reason : undefined;
+  return reason === "OSD_HD_NO_DISPLAYPORT" || isHdOsdPlanError(e);
+}
 const { t } = useI18n();
 const plan = ref<CliScript | null>(null);
 const previewOnly = ref(false);
@@ -45,12 +51,10 @@ async function load(): Promise<void> {
     }
   } catch (e) {
     const ue = toUiError(e);
-    // HD OSD on firmware without MSP DisplayPort: plain words and a way back to the OSD step.
-    // TODO(shared): config_plan has no distinct code or detail for this refusal yet (#67's
-    // cfg_err -> AppError::Config(String), no details), so isHdOsdPlanError matches the message.
-    // Asked of Config: keep code CONFIG and add details { reason: "OSD_HD_NO_DISPLAYPORT" }
-    // (like PORT_BUSY {heldBy}); then match the reason here, with the message only as a fallback.
-    error.value = isHdOsdPlanError(ue) ? { ...uiError("OSD_HD_UNSUPPORTED", ue.message) } : e;
+    // HD OSD on firmware without MSP DisplayPort (#78: CONFIG with details.reason
+    // OSD_HD_NO_DISPLAYPORT): plain words and a way back to the OSD step. The message
+    // match stays as a fallback for a backend from before #78.
+    error.value = isHdNoDisplayport(ue) ? { ...uiError("OSD_HD_UNSUPPORTED", ue.message) } : e;
   } finally {
     loading.value = false;
   }

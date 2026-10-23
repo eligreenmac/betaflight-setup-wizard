@@ -403,7 +403,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       const osd = (model as { osd?: { videoSystem?: string | null } | null }).osd;
       const hdOsd = !!osd && (osd.videoSystem === "HD" || (!osd.videoSystem && model.vtx.kind === "DIGITAL"));
       if (hdOsd && NO_DISPLAYPORT.includes(scenario) && !device.addedOptions.includes("MOCK_OSD_HD"))
-        throw { code: "CONFIG", message: "configuration error: HD OSD needs MSP DisplayPort, which this firmware build does not have" };
+        throw { code: "CONFIG", message: "configuration error: HD OSD needs MSP DisplayPort, which this firmware build does not have", details: { reason: "OSD_HD_NO_DISPLAYPORT" } };
       return generateCli(model, device.ports);
     },
     config_list_backups: () => {

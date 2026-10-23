@@ -11,7 +11,7 @@
  * is kept on the UiError. There is no backend BUSY code; a busy port is PORT_BUSY.
  */
 
-import type { BuildOptionsUnavailableDetails, DriverMissingDetails, PendingUnsavedChangesDetails, PortBusyDetails, RequiredOptionUnsupportedDetails } from "../types/model";
+import type { BuildOptionsUnavailableDetails, ConfigErrorDetails, DriverMissingDetails, PendingUnsavedChangesDetails, PortBusyDetails, RequiredOptionUnsupportedDetails } from "../types/model";
 
 export const ERROR_CATEGORIES = ["Connection", "Device", "Protocol", "Flash", "Network", "Io", "Safety", "Operation"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -129,7 +129,7 @@ export interface UiError {
   category: ErrorCategory;
   message: string;
   /** Structured extras from AppError (#38): PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail}. */
-  details?: PortBusyDetails | DriverMissingDetails | PendingUnsavedChangesDetails | BuildOptionsUnavailableDetails | RequiredOptionUnsupportedDetails;
+  details?: PortBusyDetails | DriverMissingDetails | PendingUnsavedChangesDetails | BuildOptionsUnavailableDetails | RequiredOptionUnsupportedDetails | ConfigErrorDetails;
 }
 
 export const isPortBusyDetails = (d: unknown): d is PortBusyDetails =>
