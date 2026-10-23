@@ -134,6 +134,18 @@ impl<S: SerialLink> CliSession<S> {
         Ok(self.link)
     }
 
+    /// Plain `exit`, reporting whether the FC printed `Rebooting` (`cliRebootEx`), i.e.
+    /// acknowledged the reboot that discards unsaved RAM changes.
+    pub fn exit_reporting_reboot(mut self) -> Result<(S, bool)> {
+        self.link.write_all(b"exit\n")?;
+        let out = drain(&mut self.link, Duration::from_millis(500), |t| {
+            t.contains("Rebooting")
+        })
+        .unwrap_or_default();
+        let rebooting = String::from_utf8_lossy(&out).contains("Rebooting");
+        Ok((self.link, rebooting))
+    }
+
     /// `exit noreboot` (Betaflight 4.5+ / API 1.46+): leave CLI and keep the FC running so MSP
     /// can continue on the same port. 4.4 ignores the argument and reboots, so callers must
     /// check the API version and expect a disconnect on 4.4.

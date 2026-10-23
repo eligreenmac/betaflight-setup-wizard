@@ -67,6 +67,10 @@ pub enum DeviceError {
     },
     #[error("accelerometer calibration failed: {0}")]
     AccCalibrationFailed(String),
+    /// An app-issued reboot was not confirmed (no MSP_REBOOT reply / no `Rebooting`) while
+    /// the RAM state was clean. Reported as `MSP`.
+    #[error("the flight controller did not confirm the reboot: {0}")]
+    RebootNotConfirmed(String),
     /// The FC's RAM may hold unsaved changes (ARCHITECTURE.md §4.1 "RAM state").
     #[error("the flight controller may have unsaved changes ({0})")]
     PendingUnsavedChanges(UnsavedChangesReason),
@@ -130,6 +134,7 @@ impl From<DeviceError> for AppError {
                 during,
             },
             DeviceError::AccCalibrationFailed(m) => AppError::AccCalibrationFailed(m),
+            DeviceError::RebootNotConfirmed(_) => AppError::Msp(msg),
             DeviceError::PendingUnsavedChanges(reason) => {
                 AppError::PendingUnsavedChanges { reason }
             }
@@ -182,6 +187,10 @@ mod tests {
             UnsavedChangesReason::MspWrite,
         ));
         assert_eq!(pending.code(), "PENDING_UNSAVED_CHANGES");
+        assert_eq!(
+            AppError::from(DeviceError::RebootNotConfirmed("COM7".into())).code(),
+            "MSP"
+        );
         assert_eq!(
             pending.details().unwrap(),
             serde_json::json!({"reason": "MSP_WRITE"})

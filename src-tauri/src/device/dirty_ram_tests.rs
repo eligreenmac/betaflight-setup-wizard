@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! RAM state ("dirty RAM", ARCHITECTURE.md §4.1): the connection remembers when the FC's RAM
 //! may hold changes that are not in EEPROM, and `device_acc_calibrate` refuses with
-//! `PENDING_UNSAVED_CHANGES` until a confirmed reboot / reconnect, because the firmware saves
-//! its whole RAM config at the end of an accelerometer calibration.
+//! `PENDING_UNSAVED_CHANGES` until a confirmed reboot (app-issued + acknowledged + same board
+//! re-verified; `device_reboot`), because the firmware saves its whole RAM config at the end
+//! of an accelerometer calibration. A port drop / plain reconnect never clears it.
 //!
 //! The fake FC answers sensor MSP from `sensors::sim`, CLI from config's `MockFc` (real dumps),
 //! and can be told to refuse MSP_REBOOT (error frame, no reboot), i.e. config's cleanup
@@ -69,13 +70,22 @@ struct Rig {
     /// MSP_REBOOT is answered with an error frame and the FC does not reboot.
     reboot_fails: Arc<AtomicBool>,
     fail: Arc<Mutex<Option<String>>>,
+    /// The port is listed / can be opened (USB unplugged = false).
+    present: Arc<AtomicBool>,
     m: ConnectionManager,
     port: Port,
 }
 
 fn rig(port: Port, api_minor: u8) -> Rig {
+    rig_ex(port, api_minor, true)
+}
+
+/// `exit_reboots = false`: plain `exit` leaves the CLI without rebooting or printing
+/// `Rebooting` (unknown firmware / lost output).
+fn rig_ex(port: Port, api_minor: u8, exit_reboots: bool) -> Rig {
     let (mut fc, sim) = sim::fake(Sim::default());
     fc.api_minor = api_minor;
+    fc.exit_reboots = exit_reboots;
     let fw = if api_minor >= 46 { "4.5" } else { "4.4" };
     let fail = Arc::new(Mutex::new(None));
     *fc.cli_backend.lock().unwrap() = Some(Box::new(Cfg {
@@ -97,6 +107,7 @@ fn rig(port: Port, api_minor: u8) -> Rig {
     }
     let f2 = fc.clone();
     let p2 = present.clone();
+    let p3 = present.clone();
     let opener: Opener = Arc::new(move |_path: &str| {
         if !p2.load(Ordering::SeqCst) {
             return Err(DeviceError::NotFound(PORT.into()));
@@ -104,7 +115,7 @@ fn rig(port: Port, api_minor: u8) -> Rig {
         Ok(Box::new(f2.serial()) as BoxLink)
     });
     let lister: Lister = Arc::new(move || {
-        if present.load(Ordering::SeqCst) {
+        if p3.load(Ordering::SeqCst) {
             vec![PortIdentity {
                 path: PORT.into(),
                 vid: Some(0x0483),
@@ -126,6 +137,7 @@ fn rig(port: Port, api_minor: u8) -> Rig {
         sim,
         reboot_fails,
         fail,
+        present,
         m,
         port,
     }
@@ -188,12 +200,24 @@ impl Rig {
             e.details().unwrap(),
             serde_json::json!({ "reason": reason })
         );
-        assert!(e.to_string().contains("reconnect or reboot"), "{e}");
+        assert!(e.to_string().contains("reboot the board first"), "{e}");
         assert_eq!(
             self.calibration_requests(),
             0,
             "MSP_ACC_CALIBRATION not sent"
         );
+    }
+    /// The user pulls the USB cable (battery connected: RAM survives) and plugs it back in
+    /// while the link reconnects. No reboot is issued.
+    fn replug_and_reconnect(&self) {
+        self.present.store(false, Ordering::SeqCst);
+        let p = self.present.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            p.store(true, Ordering::SeqCst);
+        });
+        self.m.with_link(|l| l.reconnect(RECONNECT)).unwrap();
+        t.join().unwrap();
     }
     fn assert_calibrates(&self) {
         let before = self.calibration_requests();
@@ -322,18 +346,103 @@ fn successful_apply_ends_clean() {
 
 #[test]
 fn failed_apply_on_4_4() {
-    // `exit` reboots: on USB the port drop confirms it.
-    let r = rig(Port::Usb, 45);
-    let res = r.apply(true, "44-usb").unwrap();
-    assert!(!res.saved);
-    assert_eq!(r.pending(), None);
-    r.assert_calibrates();
-    // On a UART bridge plain `exit` gives no evidence: stays marked until a reconnect.
-    let r = rig(Port::Uart, 45);
-    r.apply(true, "44-uart").unwrap();
+    // config's discard is plain `exit`, which prints `Rebooting`: acknowledged, and the
+    // reconnect re-verifies the board → confirmed on USB and UART alike.
+    for port in [Port::Usb, Port::Uart] {
+        let r = rig(port, 45);
+        let res = r.apply(true, &format!("44-{port:?}")).unwrap();
+        assert!(!res.saved);
+        assert_eq!(r.pending(), None, "{port:?}");
+        r.assert_calibrates();
+    }
+}
+
+#[test]
+fn usb_replug_without_an_app_reboot_keeps_the_flag() {
+    let r = rig(Port::Usb, 46);
+    r.failed_apply_without_reboot("replug");
+    r.replug_and_reconnect();
+    assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
     r.assert_refused("CLI_COMMAND");
-    r.m.connect(PORT).unwrap();
+    assert_eq!(
+        r.fc.reboots.load(Ordering::SeqCst),
+        0,
+        "the FC never rebooted"
+    );
+}
+
+/// Decision: an MSP_REBOOT answered with an error frame is not an acknowledgement, so a port
+/// drop after it (whatever caused it) does not confirm anything.
+#[test]
+fn msp_reboot_error_plus_port_drop_does_not_clear() {
+    let r = rig(Port::Usb, 46);
+    r.failed_apply_without_reboot("err-drop");
+    r.reboot_fails.store(true, Ordering::SeqCst);
+    assert!(r
+        .m
+        .with_link(|l| l.msp_request(codes::MSP_REBOOT, &[0]))
+        .is_err());
+    r.replug_and_reconnect();
+    assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
+    r.assert_refused("CLI_COMMAND");
+}
+
+#[test]
+fn device_reboot_clears() {
+    for port in [Port::Usb, Port::Uart] {
+        let r = rig(port, 46);
+        r.failed_apply_without_reboot(&format!("devreboot-{port:?}"));
+        let reboots = r.msp_reboots();
+        r.m.reboot().unwrap_or_else(|e| panic!("{port:?}: {e}"));
+        assert_eq!(r.msp_reboots(), reboots + 1, "{port:?}: MSP_REBOOT [0]");
+        assert_eq!(r.fc.msp_reboots.lock().unwrap().last().unwrap(), &vec![0u8]);
+        assert_eq!(r.pending(), None, "{port:?}");
+        r.assert_calibrates();
+        // A clean board reboots too (and stays clean).
+        r.m.reboot().unwrap();
+        assert_eq!(r.msp_reboots(), reboots + 2);
+    }
+}
+
+#[test]
+fn device_reboot_from_an_open_cli_sends_exit_never_save() {
+    for api in [45, 46, 47] {
+        let r = rig(Port::Uart, api);
+        r.m.with_link(|l| l.cli_exec("set gyro_lpf1_static_hz = 250"))
+            .unwrap();
+        assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
+        r.m.reboot().unwrap_or_else(|e| panic!("api {api}: {e}"));
+        assert_eq!(r.pending(), None, "api {api}");
+        let lines = r.fc.cli_lines.lock().unwrap().clone();
+        assert!(lines.iter().any(|l| l == "exit"), "api {api}: {lines:?}");
+        assert!(!lines.iter().any(|l| l.starts_with("save")), "api {api}");
+        assert_eq!(r.msp_reboots(), 0, "api {api}: `Rebooting` confirmed it");
+    }
+}
+
+#[test]
+fn unconfirmed_device_reboot_errors() {
+    // Dirty: PENDING_UNSAVED_CHANGES, still dirty.
+    let r = rig(Port::Usb, 46);
+    r.failed_apply_without_reboot("unconfirmed");
+    r.reboot_fails.store(true, Ordering::SeqCst);
+    let e = r.m.reboot().unwrap_err();
+    assert_eq!(e.code(), "PENDING_UNSAVED_CHANGES");
+    assert_eq!(
+        e.details().unwrap(),
+        serde_json::json!({ "reason": "CLI_COMMAND" })
+    );
+    assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
+    // The link is still usable; a later confirmed reboot clears it.
+    r.reboot_fails.store(false, Ordering::SeqCst);
+    r.m.reboot().unwrap();
     r.assert_calibrates();
+
+    // Clean: MSP.
+    let r = rig(Port::Uart, 46);
+    r.reboot_fails.store(true, Ordering::SeqCst);
+    assert_eq!(r.m.reboot().unwrap_err().code(), "MSP");
+    assert_eq!(r.pending(), None);
 }
 
 #[test]
@@ -364,4 +473,43 @@ fn open_cli_with_changes_is_left_by_rebooting_before_calibration() {
     assert_eq!(r.pending(), Some(UnsavedChangesReason::CliCommand));
     r.assert_calibrates();
     assert_eq!(r.pending(), None);
+}
+
+/// After our `exit` a port drop without `Rebooting` is no proof: the link reboots over MSP
+/// and only that reply confirms.
+#[test]
+fn exit_with_a_port_drop_but_no_rebooting_line_is_not_a_confirmed_reboot() {
+    for reboot_ok in [false, true] {
+        let r = rig_ex(Port::Usb, 46, false);
+        r.m.with_link(|l| l.cli_exec("set gyro_lpf1_static_hz = 250"))
+            .unwrap();
+        r.reboot_fails.store(!reboot_ok, Ordering::SeqCst);
+        // The cable is pulled and replugged right as the link leaves the CLI.
+        r.present.store(false, Ordering::SeqCst);
+        let p = r.present.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            p.store(true, Ordering::SeqCst);
+        });
+        let res = r.m.identify(); // leaves the CLI first
+        t.join().unwrap();
+        if reboot_ok {
+            res.unwrap();
+            assert_eq!(r.pending(), None, "acknowledged MSP_REBOOT after `exit`");
+            r.assert_calibrates();
+        } else {
+            // MSP_REBOOT error frame: the fallback fails, the link is detached, and the
+            // board stays marked (carried to the next connect).
+            assert!(res.is_err());
+            r.reboot_fails.store(false, Ordering::SeqCst);
+            let before = r.msp_reboots();
+            r.m.connect(PORT).unwrap();
+            assert_eq!(
+                r.msp_reboots(),
+                before + 1,
+                "connect reboots the marked board"
+            );
+            assert_eq!(r.pending(), None);
+        }
+    }
 }

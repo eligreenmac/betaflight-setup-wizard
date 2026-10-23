@@ -159,8 +159,10 @@ type DirtyCarry = Arc<Mutex<Vec<CarriedDirty>>>;
 /// **RAM state** (ARCHITECTURE.md §4.1): `ram_dirty` says the FC's RAM may hold changes
 /// that are not in EEPROM. It is set by [`mark_ram_dirty`](Self::mark_ram_dirty) (non-read-only
 /// CLI line, `exit noreboot`, MSP write; all in the `Connection` impl) and cleared only by
-/// [`confirm_reboot`](Self::confirm_reboot), i.e. after a reboot that was evidenced (port
-/// dropped, `Rebooting` printed, MSP_REBOOT acknowledged) and the same board re-verified.
+/// [`confirm_reboot`](Self::confirm_reboot), i.e. after a reboot the app issued in the same
+/// sequence and the FC acknowledged (MSP_REBOOT reply, `Rebooting` after our `exit`/`save`),
+/// followed by a reconnect that re-verified the same board. A port drop or a reconnect alone
+/// never clears it: a battery-powered FC keeps its RAM over a USB unplug/replug.
 pub struct FcConnection {
     port: PortIdentity,
     link: Link,
@@ -173,11 +175,11 @@ pub struct FcConnection {
     msp_timeout: Duration,
     /// `Some(first reason)` while RAM may hold unsaved changes.
     ram_dirty: Option<UnsavedChangesReason>,
-    /// The FC acknowledged a reboot request (MSP_REBOOT reply, `Rebooting` after `save`)
-    /// since the last change: the next successful reconnect counts as a confirmed reboot even
-    /// if the port never dropped (UART bridge).
+    /// The FC acknowledged an app-issued reboot (MSP_REBOOT reply, `Rebooting` after our
+    /// `exit`/`save`) since the last change. Consumed by the next reconnect: if that
+    /// re-verifies the same board, the reboot is confirmed.
     reboot_acked: bool,
-    /// Confirmed reboots on this connection (including the stale-CLI recovery on open).
+    /// Confirmed reboots on this connection (including a stale-CLI recovery on open).
     confirmed_reboots: u32,
     carry: DirtyCarry,
 }
@@ -326,20 +328,39 @@ impl FcConnection {
             self.port.path,
             c.reason
         );
-        self.reboot_to_discard_ram()
+        self.reboot_confirmed()
     }
 
-    /// Reboot the FC (MSP_REBOOT `[0]`, or plain `exit` if our CLI is open) and wait for
-    /// the same board. `PENDING_UNSAVED_CHANGES` if the reboot could not be confirmed.
-    fn reboot_to_discard_ram(&mut self) -> DResult<()> {
+    /// `device_reboot` ("Reboot board"), also the connect-time reboot of a board closed dirty:
+    /// an app-issued firmware reboot that only succeeds once it is confirmed.
+    ///
+    /// Our CLI open: plain `exit` (never `save`), see
+    /// [`exit_cli_and_reconnect`](Self::exit_cli_and_reconnect). Otherwise (or if that exit
+    /// was not confirmed): MSP_REBOOT `[0]`, which Betaflight answers before resetting
+    /// (msp.c `*mspPostProcessFn = mspRebootFn`; msp_serial.c waits for TX before running
+    /// it), then wait for the port to drop and return, re-verify API version + UID.
+    ///
+    /// Not confirmed (no reply / error frame) → `PENDING_UNSAVED_CHANGES {reason}` if RAM is
+    /// dirty (it stays dirty), else [`DeviceError::RebootNotConfirmed`] (`MSP`). The board did
+    /// not come back / a different board came back → the reconnect's `SERIAL` error.
+    pub fn reboot_confirmed(&mut self) -> DResult<()> {
+        let before = self.confirmed_reboots;
         if matches!(self.link, Link::Cli(_)) {
-            return self.leave_cli_for_msp();
+            self.leave_cli_for_msp()?;
+            if self.confirmed_reboots > before {
+                return Ok(());
+            }
         }
         let Link::Msp(mut m) = std::mem::replace(&mut self.link, Link::Detached) else {
             return Err(self.lost());
         };
         let acked = match m.reboot(RebootType::Firmware) {
             Ok(a) => a,
+            // Error frame: the FC refused, nothing rebooted; the link is still good.
+            Err(e @ (DeviceError::MspUnsupported(_) | DeviceError::MspMalformed(_))) => {
+                self.link = Link::Msp(m);
+                return Err(self.reboot_not_confirmed(&e.to_string()));
+            }
             Err(e) => {
                 self.link = Link::Msp(m);
                 return Err(e);
@@ -348,9 +369,18 @@ impl FcConnection {
         drop(m);
         self.reboot_acked = acked;
         self.reconnect_inner(DEFAULT_RECONNECT_TIMEOUT)?;
+        if self.confirmed_reboots > before {
+            Ok(())
+        } else {
+            Err(self.reboot_not_confirmed("no reply to MSP_REBOOT"))
+        }
+    }
+
+    fn reboot_not_confirmed(&self, why: &str) -> DeviceError {
+        log::warn!("{}: reboot not confirmed: {why}", self.port.path);
         match self.ram_dirty {
-            Some(r) => Err(DeviceError::PendingUnsavedChanges(r)),
-            None => Ok(()),
+            Some(r) => DeviceError::PendingUnsavedChanges(r),
+            None => DeviceError::RebootNotConfirmed(format!("{}: {why}", self.port.path)),
         }
     }
 
@@ -432,6 +462,8 @@ impl FcConnection {
             "{}: no MSP answer; assuming a stale CLI session, sending `exit`",
             self.port.path
         );
+        // Whoever left the CLI open may have changed settings in it.
+        self.mark_ram_dirty(UnsavedChangesReason::CliCommand, "stale CLI session");
         self.exit_cli_and_reconnect(link, deadline, timeout, "a stale CLI")
     }
 
@@ -458,10 +490,11 @@ impl FcConnection {
     ///    changes and any open batch. Only `exit noreboot` (4.5+) keeps them.
     /// 2. Follow the reboot like `reconnect`: a USB VCP disappears and re-enumerates, a UART
     ///    bridge stays. Settle, drain, retry MSP exactly once; still silent → error.
-    /// 3. If neither `Rebooting` nor a port drop was seen, the exit may not have rebooted
-    ///    (unknown firmware, lost output), so RAM may still hold the changes: reboot over
-    ///    MSP (MSP_REBOOT 68, `[0]` = firmware, like `config::session::discard` on 4.5+)
-    ///    once and wait for the FC again.
+    /// 3. `Rebooting` printed: confirmed reboot (RAM state cleared) once the board is
+    ///    re-verified. A port drop without it is no proof (a battery-powered FC keeps RAM over
+    ///    a USB replug); it is accepted only while the RAM state is clean (nothing to discard).
+    ///    Otherwise reboot over MSP (MSP_REBOOT 68, `[0]` = firmware, like
+    ///    `config::session::discard` on 4.5+) once, wait for the FC again; its reply confirms.
     /// 4. [`adopt`](Self::adopt) re-verifies MSP_UID: a different board is an error.
     fn exit_cli_and_reconnect(
         &mut self,
@@ -471,32 +504,49 @@ impl FcConnection {
         from: &str,
     ) -> DResult<()> {
         self.link = Link::Detached;
-        let mut rebooted = match link.write_all(STALE_CLI_EXIT) {
+        let seen = match link.write_all(STALE_CLI_EXIT) {
             Ok(()) => saw_reboot(&mut link, self.settle()),
-            Err(DeviceError::Disconnected) => true,
+            Err(DeviceError::Disconnected) => ExitSeen::PortDropped,
             Err(e) => return Err(e),
         };
         drop(link); // close the port so a re-enumerated VCP can be reopened
-        rebooted |= self.wait_gone(timeout);
+        let gone = self.wait_gone(timeout);
         let after_exit = format!("after leaving {from}");
         let (found, m, api) = self.wait_back(deadline, timeout, &after_exit)?;
-        if rebooted {
+        if seen == ExitSeen::Rebooting {
             self.adopt(found, m, api)?;
-            self.confirm_reboot("CLI `exit`");
+            self.confirm_reboot("CLI `exit` printed `Rebooting`");
             return Ok(());
         }
+        let dropped = gone || seen == ExitSeen::PortDropped;
+        if dropped && self.ram_dirty.is_none() {
+            // Nothing to discard; the drop is consistent with `exit`'s reboot. Not counted as
+            // a confirmed reboot.
+            return self.adopt(found, m, api);
+        }
         log::warn!(
-            "{}: `exit` did not visibly reboot the FC; rebooting over MSP to discard RAM changes",
-            found.path
+            "{}: `exit` did not print `Rebooting`{}; rebooting over MSP to discard RAM changes",
+            found.path,
+            if dropped {
+                " (a port drop alone is no proof)"
+            } else {
+                ""
+            }
         );
         let mut m = m;
         let acked = m.reboot(RebootType::Firmware)?;
         drop(m);
-        let gone = self.wait_gone(timeout);
+        self.wait_gone(timeout);
         let (found, m, api) = self.wait_back(deadline, timeout, "after MSP_REBOOT")?;
         self.adopt(found, m, api)?;
-        if acked || gone {
-            self.confirm_reboot("MSP_REBOOT after `exit`");
+        if acked {
+            self.confirm_reboot("MSP_REBOOT after `exit` acknowledged");
+        } else if let Some(r) = self.ram_dirty {
+            log::warn!(
+                "{}: MSP_REBOOT after `exit` not acknowledged; RAM may still hold unsaved \
+                 changes ({r})",
+                self.port.path
+            );
         }
         Ok(())
     }
@@ -659,6 +709,9 @@ impl FcConnection {
         self.link = Link::Detached; // closes the port
         let start = Instant::now();
         let deadline = start + timeout;
+        // Only an acknowledged, app-issued reboot (consumed here) can be confirmed by this
+        // reconnect; a port drop alone is no proof.
+        let acked = std::mem::take(&mut self.reboot_acked);
         // USB VCPs disappear while the FC reboots; UART bridges never do, so cap this wait.
         let gone = self.wait_gone(timeout);
         loop {
@@ -668,16 +721,12 @@ impl FcConnection {
                     match m.api_version() {
                         Ok(api) => match self.adopt(found, m, api) {
                             Ok(()) => {
-                                if gone || self.reboot_acked {
-                                    self.confirm_reboot(if gone {
-                                        "port dropped and came back"
-                                    } else {
-                                        "reboot acknowledged"
-                                    });
+                                if acked {
+                                    self.confirm_reboot("acknowledged reboot, board re-verified");
                                 } else if let Some(r) = self.ram_dirty {
                                     log::warn!(
-                                        "{}: reconnected, but the port never dropped and no \
-                                         reboot was acknowledged; RAM may still hold unsaved \
+                                        "{}: reconnected (port dropped: {gone}) without an \
+                                         acknowledged reboot; RAM may still hold unsaved \
                                          changes ({r})",
                                         self.port.path
                                     );
@@ -707,9 +756,18 @@ impl FcConnection {
     }
 }
 
-/// Read the FC's answer to `exit` for up to `window`: true once `Rebooting` shows up or the
-/// port drops (the FC reset under us).
-fn saw_reboot(link: &mut BoxLink, window: Duration) -> bool {
+/// What the FC showed after `exit`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExitSeen {
+    /// `Rebooting` printed (`cliRebootEx`): the FC acknowledged the reboot.
+    Rebooting,
+    /// The port dropped (FC reset, or the cable was pulled: no proof).
+    PortDropped,
+    Nothing,
+}
+
+/// Read the FC's answer to `exit` for up to `window`.
+fn saw_reboot(link: &mut BoxLink, window: Duration) -> ExitSeen {
     let mut seen = Vec::new();
     let mut buf = [0u8; 256];
     let until = Instant::now() + window;
@@ -721,14 +779,14 @@ fn saw_reboot(link: &mut BoxLink, window: Duration) -> bool {
                     .windows(CLI_REBOOT_MARKER.len())
                     .any(|w| w == CLI_REBOOT_MARKER)
                 {
-                    return true;
+                    return ExitSeen::Rebooting;
                 }
             }
-            Err(DeviceError::Disconnected) => return true,
-            Err(_) => return false,
+            Err(DeviceError::Disconnected) => return ExitSeen::PortDropped,
+            Err(_) => return ExitSeen::Nothing,
         }
     }
-    false
+    ExitSeen::Nothing
 }
 
 /// Discard whatever the FC sent (CLI banner, "Rebooting...", boot noise).
@@ -796,7 +854,13 @@ impl Connection for FcConnection {
             self.mark_ram_dirty(UnsavedChangesReason::ExitNoReboot, "exit noreboot");
             self.link = Link::Msp(self.client(s.exit_no_reboot()?));
         } else {
-            drop(s.exit()?);
+            // 4.4: plain `exit` reboots; `Rebooting` printed = acknowledged, the reconnect
+            // confirms it.
+            let (link, rebooting) = s.exit_reporting_reboot()?;
+            drop(link);
+            if rebooting {
+                self.reboot_acked = true;
+            }
         }
         Ok(())
     }
@@ -1009,6 +1073,12 @@ impl ConnectionManager {
 
     pub fn cli_exec(&self, line: &str) -> AppResult<String> {
         self.with_link(|l| l.cli_exec(line))
+    }
+
+    /// `device_reboot` ("Reboot board"): app-issued firmware reboot, resolved once confirmed;
+    /// clears the RAM state. See [`FcConnection::reboot_confirmed`] for the errors.
+    pub fn reboot(&self) -> AppResult<()> {
+        self.with_conn(|c| c.reboot_confirmed())
     }
 
     /// Reboot to DFU; the connection is closed afterwards (the VCP disappears).
