@@ -116,7 +116,10 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "port": { "$ref": "#/$defs/portName" },
-        "provider": { "enum": [null, "UBLOX", "NMEA"] }
+        "provider": { "enum": [null, "UBLOX", "NMEA"] },
+        "galileo": { "type": ["boolean", "null"],
+                     "description": "UBLOX only: gps_ublox_use_galileo. GLONASS/BeiDou are not configurable in 4.4-2025.12; null = keep" },
+        "sbasMode": { "enum": [null, "AUTO", "EGNOS", "WAAS", "MSAS", "GAGAN", "NONE"], "description": "gps_sbas_mode; null = keep" }
       }
     },
     "esc": {

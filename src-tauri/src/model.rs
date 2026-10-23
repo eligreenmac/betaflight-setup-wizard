@@ -368,6 +368,25 @@ pub struct Gps {
     pub enabled: bool,
     pub port: Option<String>,
     pub provider: Option<GpsProvider>,
+    /// UBLOX only: also track Galileo (`gps_ublox_use_galileo`). GPS is always on;
+    /// GLONASS / BeiDou are not configurable in 4.4 / 4.5 / 2025.12. null = keep.
+    #[serde(default)]
+    pub galileo: Option<bool>,
+    /// SBAS augmentation (`gps_sbas_mode`); null = keep.
+    #[serde(default)]
+    pub sbas_mode: Option<SbasMode>,
+}
+
+/// `gps_sbas_mode` values (same table on 4.4 / 4.5 / 2025.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SbasMode {
+    Auto,
+    Egnos,
+    Waas,
+    Msas,
+    Gagan,
+    None,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

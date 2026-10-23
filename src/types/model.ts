@@ -102,7 +102,14 @@ export interface DroneModel {
     channel?: number | null;
     power?: number | null;
   };
-  gps: { enabled: boolean; port: string | null; provider: GpsProvider | null };
+  gps: {
+    enabled: boolean;
+    port: string | null;
+    provider: GpsProvider | null;
+    /** UBLOX only: gps_ublox_use_galileo; null = keep. */
+    galileo?: boolean | null;
+    sbasMode?: SbasMode | null;
+  };
   esc: {
     protocol: EscProtocol;
     bidirectionalDshot: boolean;
@@ -118,6 +125,7 @@ export interface DroneModel {
   extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
 }
 
+export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
 /** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
 export interface VtxTable {
   bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
