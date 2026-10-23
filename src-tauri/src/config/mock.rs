@@ -295,7 +295,20 @@ impl MockFc {
 }
 
 impl Connection for MockFc {
-    fn msp_request(&mut self, _code: u16, _payload: &[u8]) -> AppResult<Vec<u8>> {
+    /// Only MSP_SET_REBOOT is modelled: it reboots, dropping unsaved RAM changes.
+    fn msp_request(&mut self, code: u16, _payload: &[u8]) -> AppResult<Vec<u8>> {
+        if self.unplugged {
+            return Err(AppError::Serial("port closed".into()));
+        }
+        if self.in_cli {
+            return Err(AppError::Msp("no MSP reply while in CLI mode".into()));
+        }
+        if code == super::session::MSP_SET_REBOOT {
+            self.log.push("MSP_SET_REBOOT".into());
+            self.live = self.saved.clone();
+            self.reboots += 1;
+            return Ok(vec![0]);
+        }
         Err(AppError::NotImplemented("MockFc::msp_request"))
     }
 
@@ -331,7 +344,12 @@ impl Connection for MockFc {
 
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
         if self.unplugged {
-            self.log.push(if save { "save" } else { "exit" }.into());
+            let exit = if self.dialect == Dialect::V4_4 {
+                "exit"
+            } else {
+                "exit noreboot"
+            };
+            self.log.push(if save { "save" } else { exit }.into());
             return Err(AppError::Serial("port closed".into()));
         }
         if !self.in_cli {
@@ -345,9 +363,16 @@ impl Connection for MockFc {
                 ));
             }
             self.saved = self.live.clone();
-        } else {
+        } else if self.dialect == Dialect::V4_4 {
             self.log.push("exit".into());
             self.live = self.saved.clone();
+        } else {
+            // device::Connection contract: `exit noreboot` on 4.5+ - leaves the CLI, keeps
+            // the unsaved changes active, no reboot.
+            self.log.push("exit noreboot".into());
+            self.in_cli = false;
+            self.batch_error = false;
+            return Ok(());
         }
         self.in_cli = false;
         self.batch_error = false;

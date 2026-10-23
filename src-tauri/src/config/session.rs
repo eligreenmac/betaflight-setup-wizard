@@ -24,6 +24,21 @@ use crate::model::{
 /// slow USB hubs and Windows driver binding.
 pub const REBOOT_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// MSP_SET_REBOOT; payload `[0]` = reboot into the firmware.
+pub const MSP_SET_REBOOT: u16 = 68;
+
+/// Leave the CLI throwing the unsaved batch away, so the FC never runs a half-applied
+/// configuration. On 4.4 `exit` reboots, which drops the RAM changes. On 4.5+ the device
+/// link leaves the CLI with `exit noreboot` (ARCHITECTURE §4.1), which keeps them active,
+/// so the FC is rebooted over MSP right after. Either way the caller must `reconnect`.
+fn discard<C: Connection + ?Sized>(conn: &mut C, dialect: Dialect) -> AppResult<()> {
+    conn.exit_cli(false)?;
+    if dialect != Dialect::V4_4 {
+        conn.msp_request(MSP_SET_REBOOT, &[0])?;
+    }
+    Ok(())
+}
+
 pub type Progress<'a> = &'a mut dyn FnMut(ConfigProgress);
 
 fn progress(cb: &mut dyn FnMut(ConfigProgress), stage: ConfigStage, fraction: f32, msg: &str) {
@@ -116,14 +131,16 @@ pub fn backup<C: Connection + ?Sized>(
 
 /// Send `lines` inside a CLI batch, stop at the first rejected command. Returns
 /// (applied, errors). `lines` must already be validated (`guard`); the batch is
-/// opened here and closed by `finish` (`save`) or discarded (`exit`).
+/// opened here and closed by `finish` (`save`) or discarded ([`discard`]).
 ///
 /// If the link itself fails (write/read error, timeout, disconnect) anywhere in the
-/// batch, a best-effort `exit` is sent so the FC does not stay in CLI mode with a
-/// half-applied, unsaved batch (`exit` reboots without saving); its own error is
-/// ignored and the original error is returned. `save` is never sent on that path.
+/// batch, a best-effort [`discard`] is made (`exit`, plus an MSP reboot on 4.5+) so the
+/// FC does not stay in CLI mode or keep running a half-applied, unsaved batch; its own
+/// errors are ignored and the original error is returned. `save` is never sent on that
+/// path.
 fn send_batch<C: Connection + ?Sized>(
     conn: &mut C,
+    dialect: Dialect,
     lines: &[String],
     cb: &mut dyn FnMut(ConfigProgress),
 ) -> AppResult<(usize, Vec<CliError>)> {
@@ -131,6 +148,9 @@ fn send_batch<C: Connection + ?Sized>(
         Ok(r) => Ok(r),
         Err(e) => {
             let _ = conn.exit_cli(false);
+            if dialect != Dialect::V4_4 {
+                let _ = conn.msp_request(MSP_SET_REBOOT, &[0]);
+            }
             Err(e)
         }
     }
@@ -173,6 +193,7 @@ fn send_batch_inner<C: Connection + ?Sized>(
 /// Shared tail of apply/rollback: save (or discard on error), reboot, reconnect.
 fn finish(
     conn: &mut dyn FcLink,
+    dialect: Dialect,
     applied: usize,
     errors: Vec<CliError>,
     backup: Option<Backup>,
@@ -182,8 +203,11 @@ fn finish(
     if saved {
         progress(cb, ConfigStage::Saving, 1.0, "save");
     }
-    // Without save the unsaved batch is discarded (`exit` reboots without saving).
-    conn.exit_cli(saved)?;
+    if saved {
+        conn.exit_cli(true)?;
+    } else {
+        discard(conn, dialect)?;
+    }
     progress(cb, ConfigStage::Rebooting, 1.0, "");
     conn.reconnect(REBOOT_TIMEOUT)?;
     progress(cb, ConfigStage::Reconnected, 1.0, "");
@@ -219,8 +243,8 @@ pub fn apply(
     }
     let bk = backup(conn, store, board_uid)?;
     progress(cb, ConfigStage::Backup, 1.0, &bk.path);
-    let (applied, errors) = send_batch(conn, &script.commands, cb)?;
-    finish(conn, applied, errors, Some(bk), cb)
+    let (applied, errors) = send_batch(conn, dialect, &script.commands, cb)?;
+    finish(conn, dialect, applied, errors, Some(bk), cb)
 }
 
 /// C6: read back (`dump all`) and compare with what `model` requires.
@@ -329,6 +353,6 @@ pub fn rollback(
     }
     let safety = backup(conn, store, board_uid)?;
     progress(cb, ConfigStage::Backup, 1.0, &safety.path);
-    let (applied, errors) = send_batch(conn, &lines, cb)?;
-    finish(conn, applied, errors, Some(safety), cb)
+    let (applied, errors) = send_batch(conn, dialect, &lines, cb)?;
+    finish(conn, dialect, applied, errors, Some(safety), cb)
 }
