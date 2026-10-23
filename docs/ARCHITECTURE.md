@@ -344,12 +344,16 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
 - **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
   backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
-  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's, or if
+  the backup's `boardUid` and the FC's UID (`FcLink::uid()`) are both known and differ (`CONFIG`, nothing sent).
+  The backup is always resolved by `id` inside the backups folder; the `path` field sent by the UI
+  is never opened.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
   for the UI's "open backups folder" action. `<boardUid>` is `FcInfo.uid`, i.e. the 24-char
   `mcu_id` hex (e.g. `backups/0033002b3138510b32383733/`), so the folder matches what
-  `mcu_id` prints in the CLI; `unknown` if MSP_UID failed.
+  `mcu_id` prints in the CLI. Config takes it from `FcLink::uid()` (cached by Device at connect, no
+  I/O; config never runs the `mcu_id` command); `unknown` if that is `None` (MSP_UID failed).
 - **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
   → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
   `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.
