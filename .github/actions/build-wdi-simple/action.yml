@@ -1,0 +1,91 @@
+name: Build WinUSB helper (libwdi wdi-simple)
+description: >
+  Builds libwdi's unmodified `wdi-simple` example from a pinned upstream tag
+  (WinUSB only) with MSVC, exactly like libwdi's own VS2022 CI, and copies it to
+  src-tauri/drivers/bfsw-wdi-simple.exe so the Tauri bundler ships it as a
+  resource. See docs/PACKAGING.md (LGPL-3.0 obligations).
+
+inputs:
+  libwdi-ref:
+    description: libwdi git tag to build
+    default: v1.5.1
+  libwdi-commit:
+    description: Expected commit of libwdi-ref (supply-chain pin)
+    default: 9b23b82a2dd1cbffc16d46c212f92c6bf8c0c602
+  wdk-redist-url:
+    description: WDK 8.0 redistributable components (WinUSB co-installers), as used by libwdi CI
+    default: https://go.microsoft.com/fwlink/p/?LinkID=253170
+
+runs:
+  using: composite
+  steps:
+    - name: Cache helper build
+      id: cache
+      uses: actions/cache@v6
+      with:
+        path: src-tauri/drivers/bfsw-wdi-simple.exe
+        key: wdi-simple-${{ inputs.libwdi-commit }}-${{ hashFiles('.github/actions/build-wdi-simple/action.yml') }}
+
+    - name: Fetch libwdi source and WDK redist
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $src = Join-Path $env:RUNNER_TEMP 'libwdi'
+        git clone --quiet --depth 1 --branch '${{ inputs.libwdi-ref }}' https://github.com/pbatard/libwdi $src
+        $head = (git -C $src rev-parse HEAD).Trim()
+        if ($head -ne '${{ inputs.libwdi-commit }}') { throw "libwdi ${{ inputs.libwdi-ref }} is $head, expected ${{ inputs.libwdi-commit }}" }
+        Push-Location $src
+        curl.exe -sSfL '${{ inputs.wdk-redist-url }}' -o wdk-redist.msi
+        $p = Start-Process msiexec.exe -ArgumentList '/a','wdk-redist.msi','/qn',"TARGETDIR=$src\wdk" -Wait -PassThru
+        if ($p.ExitCode -ne 0) { throw "msiexec failed: $($p.ExitCode)" }
+        if (-not (Test-Path 'wdk\Windows Kits\8.0\redist\wdf\x64\WdfCoInstaller01011.dll')) { throw 'WDK redist layout unexpected' }
+        # WinUSB only: do not embed libusb-win32 / libusbK drivers.
+        (Get-Content msvc\config.h) `
+          -replace '^#define LIBUSB0_DIR .*$', '/* LIBUSB0_DIR disabled by BFSW: WinUSB only */' `
+          -replace '^#define LIBUSBK_DIR .*$', '/* LIBUSBK_DIR disabled by BFSW: WinUSB only */' |
+          Set-Content msvc\config.h
+        # x86/x64 only: hosted runners no longer ship the v143 ARM64 tools, and the
+        # app is x64-only, so drop the embedded ARM64 installer (OPT_ARM) and its
+        # project reference. Fail loudly if upstream layout changes.
+        $cfg = Get-Content -Raw msvc\config.h
+        if ($cfg -notmatch '(?m)^#define OPT_ARM\s*$') { throw 'OPT_ARM define not found in msvc\config.h' }
+        ($cfg -replace '(?m)^#define OPT_ARM\s*$', '/* OPT_ARM disabled by BFSW: x86/x64 only */') | Set-Content -NoNewline msvc\config.h
+        $proj = 'libwdi\.msvc\libwdi_static.vcxproj'
+        $xml = Get-Content -Raw $proj
+        $patched = $xml -replace '(?s)\s*<ProjectReference Include="installer_arm64\.vcxproj">.*?</ProjectReference>', ''
+        if ($patched -eq $xml) { throw 'installer_arm64 ProjectReference not found' }
+        Set-Content -NoNewline -Path $proj -Value $patched
+        # ...and stop the solution from building installer_arm64 itself.
+        $sln = Get-Content libwdi.sln
+        $kept = $sln | Where-Object { $_ -notmatch '^\s*\{6AC16F78-F266-4AE0-BD63-550A55F54C15\}\.[^=]*\.Build\.0\s*=' }
+        if ($kept.Count -eq $sln.Count) { throw 'installer_arm64 Build.0 entries not found in libwdi.sln' }
+        $kept | Set-Content libwdi.sln
+        Pop-Location
+        "LIBWDI_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+    - name: Add MSBuild to PATH
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: microsoft/setup-msbuild@v3
+
+    - name: Build wdi-simple (Win32 pass builds installer_x86, then x64; ARM64 excluded)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: cmd
+      working-directory: ${{ env.LIBWDI_SRC }}
+      run: |
+        for %%P in (Win32 x64) do (
+          msbuild libwdi.sln /m /p:Configuration=Release,Platform=%%P,BuildMacros="WDK_DIR=\"../wdk/Windows Kits/8.0\"" || exit /b 1
+        )
+
+    - name: Copy helper into src-tauri/drivers
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Copy-Item (Join-Path $env:LIBWDI_SRC 'x64\Release\examples\wdi-simple.exe') 'src-tauri\drivers\bfsw-wdi-simple.exe'
+
+    - name: Show helper checksum
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        Get-FileHash -Algorithm SHA256 'src-tauri\drivers\bfsw-wdi-simple.exe' | Format-List

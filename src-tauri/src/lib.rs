@@ -19,6 +19,7 @@ pub mod system;
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             // device
             device::commands::device_list_ports,
