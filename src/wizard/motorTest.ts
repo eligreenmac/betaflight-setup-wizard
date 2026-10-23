@@ -23,7 +23,7 @@ export interface MotorAcks {
 }
 export const acksComplete = (a: MotorAcks): boolean => a.propsRemoved === true && a.batteryDisconnected === true;
 
-export type StopTrigger = "requested" | "blur" | "pagehide" | "beforeunload" | "app-close" | "navigation" | "unmount" | "ipc-error" | "backend" | "acks-withdrawn";
+export type StopTrigger = "requested" | "blur" | "pagehide" | "beforeunload" | "navigation" | "unmount" | "ipc-error" | "backend" | "acks-withdrawn";
 
 export interface MotorTestDeps {
   start: (a: MotorTestStartArgs) => Promise<unknown>;
@@ -85,7 +85,18 @@ export class MotorTestController {
       await this.stop("ipc-error", ue);
       throw ue;
     }
-    if (gen !== this.generation) return; // stopped while the start was in flight
+    if (gen !== this.generation) {
+      // Stopped while the start was in flight: the backend may have started the motor
+      // AFTER our stop arrived, so send exactly one more stop (unless a newer start owns it).
+      if (!this.state.active && !this.state.running) {
+        try {
+          await this.deps.stop();
+        } catch (e) {
+          this.state.error ??= toUiError(e);
+        }
+      }
+      return;
+    }
     this.state.running = true;
     this.state.motor = motor;
     if (this.timer === null) this.timer = this.deps.setInterval(() => void this.tick(), MOTOR_KEEPALIVE_MS);
@@ -137,8 +148,6 @@ export interface StopTriggerSources {
   target?: Pick<EventTarget, "addEventListener" | "removeEventListener">;
   /** Wizard step id (or route); any change stops the motors. */
   navigation?: () => unknown;
-  /** App/window close hook (src/api/window.ts). */
-  onAppClose?: (handler: () => Promise<void>) => Promise<Unlisten>;
   /** Subscribe to backend `motor-test://stopped` events. */
   backendEvents?: boolean;
 }
@@ -162,15 +171,6 @@ export function bindMotorStopTriggers(ctl: MotorTestController, src: StopTrigger
     }
   }
   if (src.navigation) disposers.push(watch(src.navigation, () => void ctl.stop("navigation"), { flush: "sync" }));
-  if (src.onAppClose) {
-    let off: Unlisten | null = null;
-    let disposed = false;
-    void src.onAppClose(() => ctl.stop("app-close")).then((u) => (disposed ? u() : (off = u)));
-    disposers.push(() => {
-      disposed = true;
-      off?.();
-    });
-  }
   if (src.backendEvents) {
     let off: Unlisten | null = null;
     let disposed = false;

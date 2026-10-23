@@ -248,7 +248,7 @@
       "stop": "Stop all motors",
       "idle": "Motors are stopped.",
       "running": "Motor {n} is spinning. Select it again or Stop to stop it.",
-      "usbOnlyNote": "Motors stop automatically when you leave this step, switch windows, or close the app.",
+      "usbOnlyNote": "Motors stop when you leave this step or switch windows. Closing the app also stops them, and they stop on their own within half a second if the app stops responding.",
       "orderOk": "The right motor spins for each button.",
       "directionOk": "Every motor spins in the direction shown."
     },

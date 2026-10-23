@@ -4,7 +4,6 @@
 // step guards, and the motor test is stopped by every global stop trigger.
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { onAppCloseRequested } from "./api/window";
 import BackupsPanel from "./components/BackupsPanel.vue";
 import IssueList from "./components/IssueList.vue";
 import LanguageToggle from "./components/LanguageToggle.vue";
@@ -26,7 +25,6 @@ onMounted(() => {
   unbind = bindMotorStopTriggers(motorTest, {
     target: window,
     navigation: () => nav.currentId,
-    onAppClose: onAppCloseRequested,
     backendEvents: true,
   });
 });

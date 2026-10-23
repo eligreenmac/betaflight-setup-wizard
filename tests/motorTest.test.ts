@@ -107,6 +107,7 @@ describe("keepalive timer", () => {
     expect(d.stop).toHaveBeenCalledTimes(1);
     release();
     await p;
+    expect(d.stop).toHaveBeenCalledTimes(2); // one extra stop for the late start
     await vi.advanceTimersByTimeAsync(1000);
     expect(d.keepalive).not.toHaveBeenCalled();
     expect(c.state.running).toBe(false);
@@ -158,20 +159,27 @@ describe("stop triggers", () => {
     off();
   });
 
-  it("app close stops the motors before the window goes away", async () => {
-    const { d, c } = await running();
-    let closeHandler: (() => Promise<void>) | null = null;
-    const off = bindMotorStopTriggers(c, {
-      onAppClose: async (h) => {
-        closeHandler = h;
-        return () => undefined;
-      },
-    });
+  it("a start that resolves after a stop gets exactly one extra stop; a timely start gets none", async () => {
+    const d = fakeDeps();
+    const order: string[] = [];
+    let release!: () => void;
+    d.start = vi.fn(() => new Promise<void>((r) => (release = () => (order.push("start resolved"), r()))));
+    d.stop = vi.fn(async () => void order.push("stop"));
+    const c = new MotorTestController(d);
+    const p = c.start(2, { port: "COM5", acks: ACKS });
+    await c.stop("navigation");
+    await c.stop("unmount"); // already stopped: no backend call
+    release();
+    await p;
     await flush();
-    await closeHandler!();
-    expect(d.stop).toHaveBeenCalledTimes(1);
-    expect(c.state.lastStop).toBe("app-close");
-    off();
+    expect(order).toEqual(["stop", "start resolved", "stop"]);
+    expect(c.state).toMatchObject({ active: false, running: false, motor: null });
+
+    const d2 = fakeDeps();
+    const c2 = new MotorTestController(d2);
+    await c2.start(0, { port: "COM5", acks: ACKS });
+    await c2.stop("requested");
+    expect(d2.stop).toHaveBeenCalledTimes(1);
   });
 
   it("component unmount stops the motors (Esc step calls stop('unmount'))", async () => {
