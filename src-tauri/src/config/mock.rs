@@ -369,6 +369,7 @@ impl MockFc {
         let args = args.trim();
         match cmd {
             "version" => self.banner(),
+            "mcu_id" => format!("mcu_id {}\r\n", self.mcu_id),
             "batch" => match args {
                 "start" => {
                     self.batch_error = false;
