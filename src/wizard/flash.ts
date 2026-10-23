@@ -6,7 +6,8 @@
  */
 import { api } from "../api/commands";
 import { onEvent } from "../api/events";
-import type { AppError, Backup, DfuDevice, FcInfo, FcSerialPort, FlashProgress } from "../types/model";
+import { uiError, type ErrorCode, type UiError } from "../errors/codes";
+import type { Backup, DfuDevice, FcInfo, FcSerialPort, FlashProgress } from "../types/model";
 
 export const UPDATE_STAGES = ["download", "backup", "bootloader", "flash", "reconnect"] as const;
 export type UpdateStage = (typeof UPDATE_STAGES)[number];
@@ -29,7 +30,7 @@ export interface PollOptions {
 }
 export const DEFAULT_POLL: PollOptions = { tries: 30, intervalMs: 500 };
 
-const fail = (code: string, message: string): AppError => ({ code, message });
+const fail = (code: ErrorCode, message: string): UiError => uiError(code, message);
 const sleep = (ms: number) => (ms > 0 ? new Promise<void>((r) => setTimeout(r, ms)) : Promise.resolve());
 
 export async function pollUntil<T>(fn: () => Promise<T | null | undefined>, opts: PollOptions): Promise<T | null> {
@@ -44,10 +45,21 @@ export async function pollUntil<T>(fn: () => Promise<T | null | undefined>, opts
 /**
  * Runs the whole update. Re-entrant after a failure: if the board is already in DFU
  * (e.g. after FLASH_FAILED or after installing the DFU driver) it skips the reboot.
- * Throws AppError-shaped objects; DFU_NOT_FOUND / DRIVER_MISSING are raised UI-side
+ * Throws UiError (DESIGN.md §6); DFU_NOT_FOUND / DRIVER_MISSING are raised UI-side
  * when the backend can't (yet) report them itself.
  */
-export async function runFirmwareUpdate(fc: FcInfo, release: string, hooks: UpdateHooks, poll: PollOptions = DEFAULT_POLL): Promise<UpdateResult> {
+export interface UpdateOptions {
+  /** Erase the whole chip (offered after VERIFY_MISMATCH, as DESIGN.md §6 suggests). */
+  fullErase?: boolean;
+}
+
+export async function runFirmwareUpdate(
+  fc: FcInfo,
+  release: string,
+  hooks: UpdateHooks,
+  poll: PollOptions = DEFAULT_POLL,
+  opts: UpdateOptions = {},
+): Promise<UpdateResult> {
   hooks.onStage("download");
   const image = await api.flasher.fetchFirmware({ target: fc.boardName, release, options: fc.buildOptions, offlineOnly: false });
 
@@ -68,7 +80,7 @@ export async function runFirmwareUpdate(fc: FcInfo, release: string, hooks: Upda
   hooks.onStage("flash");
   const unlisten = await onEvent("flasher://progress", hooks.onProgress);
   try {
-    await api.flasher.flash(image, dfu.serial, { fullErase: false, manifest: true });
+    await api.flasher.flash(image, dfu.serial, { fullErase: opts.fullErase ?? false, manifest: true });
   } finally {
     unlisten();
   }

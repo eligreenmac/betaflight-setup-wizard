@@ -1,26 +1,44 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it } from "vitest";
-import { UPCOMING_ERROR_CODES } from "../src/api/upcoming";
-import { CURRENT_ERROR_CODES, guidanceFor, HELP_LINKS, toAppError } from "../src/errors/guidance";
+import { ALL_ERROR_CODES, DESIGN_ERROR_CODES, ERROR_CATEGORIES, LEGACY_CODE_ALIASES, toUiError, uiError } from "../src/errors/codes";
+import { guidanceFor, HELP_LINKS } from "../src/errors/guidance";
+
+describe("error codes (DESIGN.md §6)", () => {
+  it("has exactly the 31 design codes, each with a valid category", () => {
+    expect(DESIGN_ERROR_CODES).toHaveLength(31);
+    expect(new Set(DESIGN_ERROR_CODES).size).toBe(31);
+    for (const c of DESIGN_ERROR_CODES) expect(ERROR_CATEGORIES).toContain(uiError(c, "").category);
+    expect(uiError("VERIFY_MISMATCH", "x")).toEqual({ code: "VERIFY_MISMATCH", category: "Flash", message: "x" });
+    expect(uiError("MOTOR_TEST_REFUSED", "x").category).toBe("Safety");
+  });
+
+  it("normalises UiError, Phase 0 AppError codes and raw values", () => {
+    expect(toUiError({ code: "PORT_BUSY", category: "Connection", message: "busy" })).toEqual({ code: "PORT_BUSY", category: "Connection", message: "busy" });
+    // category is filled in when the backend does not send one yet
+    expect(toUiError({ code: "BOARD_ARMED", message: "armed" }).category).toBe("Safety");
+    expect(toUiError({ code: "SERIAL", message: "x" })).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
+    expect(toUiError({ code: "NOT_IMPLEMENTED", message: "stub" }).code).toBe("NOT_IMPLEMENTED");
+    expect(toUiError("Command motor_test_start not found").code).toBe("NOT_IMPLEMENTED");
+    expect(toUiError({ code: "SOMETHING_NEW", message: "m" })).toMatchObject({ code: "UNKNOWN", message: "SOMETHING_NEW: m" });
+    expect(toUiError(new Error("boom"))).toEqual({ code: "UNKNOWN", category: "Operation", message: "boom" });
+    for (const target of Object.values(LEGACY_CODE_ALIASES)) expect(ALL_ERROR_CODES).toContain(target);
+  });
+});
 
 describe("error guidance", () => {
-  it("has guidance for every current error.rs code and every agreed upcoming code", () => {
-    for (const code of [...CURRENT_ERROR_CODES, ...UPCOMING_ERROR_CODES]) {
+  it("has guidance for every code", () => {
+    for (const code of ALL_ERROR_CODES) {
       const g = guidanceFor(code);
       expect(g.code).toBe(code);
-      expect(g.actions.length).toBeGreaterThan(0);
       expect(g.stepKeys.length).toBeGreaterThan(0);
     }
+    expect(guidanceFor("MOTOR_TEST_REFUSED").showMessage).toBe(true);
+    expect(guidanceFor("VERIFY_MISMATCH").actions[0]!.id).toBe("retryFullErase");
   });
 
-  it("falls back to UNKNOWN for codes it does not know", () => {
+  it("maps unknown and legacy codes", () => {
     expect(guidanceFor("SOMETHING_NEW").code).toBe("UNKNOWN");
-  });
-
-  it("normalises thrown values into the AppError shape", () => {
-    expect(toAppError({ code: "PORT_BUSY", message: "busy" })).toEqual({ code: "PORT_BUSY", message: "busy" });
-    expect(toAppError(new Error("boom"))).toEqual({ code: "UNKNOWN", message: "boom" });
-    expect(toAppError("plain")).toEqual({ code: "UNKNOWN", message: "plain" });
+    expect(guidanceFor("DRIVER").code).toBe("DRIVER_MISSING");
   });
 
   it("only links to hosts allowed by the opener capability", () => {

@@ -13,7 +13,8 @@
  * shows a disabled control with guidance instead of failing.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AppError, Backup, CliScript, DroneModel, FcSerialPort, VerifyReport } from "../types/model";
+import type { Backup, CliScript, DroneModel, FcSerialPort, VerifyReport } from "../types/model";
+import { toUiError, uiError, type UiError } from "../errors/codes";
 
 // ---- types (proposed shapes; confirm in the shared PR) -------------------------
 
@@ -27,25 +28,63 @@ export interface ApplyProgress {
   message: string | null;
 }
 
-/** Payload of `device://rc-channels` while rc_channels_stream is enabled. */
+/** `rc://channels` (DESIGN.md §4): raw values, usually 1000..2000, Betaflight channel order. */
 export interface RcChannels {
-  /** Raw channel values in µs (1000..2000), channel 1 first. */
+  seq: number;
+  timestampMs: number;
   channels: number[];
 }
+/** `rc://stopped` (DESIGN.md §4). */
+export interface RcStopped {
+  reason: "requested" | "disconnected" | "error";
+  error: UiError | null;
+}
 
-/** Agreed error codes that are not in error.rs yet. */
-export const UPCOMING_ERROR_CODES = [
-  "BOARD_NOT_FOUND",
-  "PORT_BUSY",
-  "DRIVER_MISSING",
-  "DFU_NOT_FOUND",
-  "FLASH_FAILED",
-  "VERIFY_MISMATCH",
-] as const;
+// ---- motor test (DESIGN.md §4/§5) ------------------------------------------------
+
+/** UI keepalive period while a motor test runs (backend watchdog default 500 ms). */
+export const MOTOR_KEEPALIVE_MS = 200;
+export const DEFAULT_MOTOR_WATCHDOG_MS = 500;
+/** Backend default cap (15 % of the DShot range); over-cap requests are refused, not clamped. */
+export const DEFAULT_MAX_TEST_THROTTLE = 1150;
+export const HARD_MAX_TEST_THROTTLE = 1250;
+/** What the wizard asks for when the user taps a motor: just enough to see direction. */
+export const WIZARD_TEST_THROTTLE = 1100;
+
+export interface MotorTestLimits {
+  maxThrottle: number;
+  /** Watchdog in ms (backend clamps to 100..2000). */
+  watchdog: number;
+}
+/** TODO(shared): exact MotorOutputConfig fields (DESIGN.md names the type only). */
+export interface MotorOutputConfig {
+  motorCount?: number;
+  stopValue?: number;
+  protocol?: string;
+  [k: string]: unknown;
+}
+export interface MotorTestStartArgs {
+  port: string;
+  /** 0-based Betaflight motor index; null = all motors. */
+  motorIndex: number | null;
+  /** Raw throttle value (stop value .. maxThrottle). */
+  throttle: number;
+  propsOffConfirmed: boolean;
+  limits?: MotorTestLimits;
+}
+/** `motor-test://stopped` (DESIGN.md §4). */
+export interface MotorTestStopped {
+  reason: "requested" | "watchdog" | "armed" | "disconnected" | "error";
+  error: UiError | null;
+}
+
 
 export const UPCOMING_EVENTS = {
   applyProgress: "config://apply-progress",
-  rcChannels: "device://rc-channels",
+  /** DESIGN.md §4 */
+  motorTestStopped: "motor-test://stopped",
+  rcChannels: "rc://channels",
+  rcStopped: "rc://stopped",
 } as const;
 
 /** Wizard-managed roles, as named in a config plan. */
@@ -73,12 +112,15 @@ export interface UpcomingCommandMap {
   config_plan: [{ model: DroneModel; ports: FcSerialPort[] }, ConfigPlan];
   /** Backups for the connected board (%APPDATA%/<app>/backups/<board-uid>/), newest first. */
   config_list_backups: [Record<string, never>, Backup[]];
-  /** Spin one motor (0-based index, Betaflight order) at a low test throttle (percent, 0..100). */
-  motor_test_start: [{ motor: number; throttlePercent: number }, void];
-  /** Stop all motors. Must be safe to call at any time. */
+  /** DESIGN.md §4: starts the session on first call, later calls update the throttle; feeds the watchdog. */
+  motor_test_start: [MotorTestStartArgs, { outputConfig: MotorOutputConfig; limits: MotorTestLimits }];
+  /** Every MOTOR_KEEPALIVE_MS while a test runs; MOTOR_TEST_NOT_ACTIVE once the watchdog fired. */
+  motor_test_keepalive: [Record<string, never>, void];
+  /** Stops all motors and hands the port back; DISCONNECTED when the port is gone. */
   motor_test_stop: [Record<string, never>, void];
-  /** Start/stop streaming RC channels as `device://rc-channels` events. */
-  rc_channels_stream: [{ enabled: boolean }, void];
+  /** Emits `rc://channels` and `rc://stopped`. rateHz default 15, clamped 1..50. */
+  rc_channels_stream_start: [{ port: string; rateHz?: number }, void];
+  rc_channels_stream_stop: [Record<string, never>, void];
 }
 export type UpcomingCommand = keyof UpcomingCommandMap;
 export type UpcomingBackend = <K extends UpcomingCommand>(cmd: K, args: UpcomingCommandMap[K][0]) => Promise<UpcomingCommandMap[K][1]>;
@@ -109,11 +151,9 @@ export function normalizeVerify(r: VerifyReport): VerifyOutcome {
 // ---- backend -----------------------------------------------------------------
 
 /** Tauri reports unknown commands as a plain string; map that to NOT_IMPLEMENTED. */
-export function toNotImplemented(cmd: string, e: unknown): unknown {
-  if (typeof e === "string" && /not found|unknown command/i.test(e)) {
-    return { code: "NOT_IMPLEMENTED", message: `backend has no ${cmd} yet` } satisfies AppError;
-  }
-  return e;
+export function toNotImplemented(cmd: string, e: unknown): UiError {
+  if (typeof e === "string" && /not found|unknown command/i.test(e)) return uiError("NOT_IMPLEMENTED", `backend has no ${cmd} yet`);
+  return toUiError(e);
 }
 
 const tauriBackend: UpcomingBackend = async (cmd, args) => {
@@ -132,11 +172,14 @@ export function resetUpcomingBackend(): void {
   backend = tauriBackend;
 }
 
-/** TODO(shared): becomes `api.config.plan` / `api.config.listBackups` / `api.device.motorTest*` / `api.device.rcChannelsStream`. */
+/** TODO(shared): becomes `api.config.plan` / `api.config.listBackups` / `api.device.motorTest*` / `api.device.rcChannelsStream*`. */
+const none = {} as Record<string, never>;
 export const upcoming = {
   configPlan: (model: DroneModel, ports: FcSerialPort[]) => backend("config_plan", { model, ports }),
-  configListBackups: () => backend("config_list_backups", {} as Record<string, never>),
-  motorTestStart: (motor: number, throttlePercent: number) => backend("motor_test_start", { motor, throttlePercent }),
-  motorTestStop: () => backend("motor_test_stop", {} as Record<string, never>),
-  rcChannelsStream: (enabled: boolean) => backend("rc_channels_stream", { enabled }),
+  configListBackups: () => backend("config_list_backups", none),
+  motorTestStart: (args: MotorTestStartArgs) => backend("motor_test_start", args),
+  motorTestKeepalive: () => backend("motor_test_keepalive", none),
+  motorTestStop: () => backend("motor_test_stop", none),
+  rcChannelsStreamStart: (port: string, rateHz?: number) => backend("rc_channels_stream_start", rateHz === undefined ? { port } : { port, rateHz }),
+  rcChannelsStreamStop: () => backend("rc_channels_stream_stop", none),
 };

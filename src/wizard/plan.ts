@@ -6,7 +6,7 @@
  */
 import { api } from "../api/commands";
 import { upcoming, type ConfigPlan, type PlanRole } from "../api/upcoming";
-import { isNotImplemented } from "../errors/guidance";
+import { isNotImplemented } from "../errors/codes";
 import type { DroneModel, FcSerialPort } from "../types/model";
 import { plannedClearings, type PortRole, type RoleOptions } from "./ports";
 

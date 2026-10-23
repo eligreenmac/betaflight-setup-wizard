@@ -2,7 +2,7 @@
 /** Backup listing and restore (config_rollback). */
 import { api } from "../api/commands";
 import { upcoming } from "../api/upcoming";
-import { isNotImplemented } from "../errors/guidance";
+import { isNotImplemented, uiError } from "../errors/codes";
 import type { ApplyResult, Backup, FcSerialPort } from "../types/model";
 
 export interface BackupList {
@@ -35,7 +35,7 @@ export interface RestoreResult {
 /** Restore, then re-read the ports so the wizard reflects the restored board. */
 export async function restoreBackup(backup: Backup): Promise<RestoreResult> {
   const result = await api.config.rollback(backup);
-  if (result.errors.length > 0) throw { code: "CLI", message: result.errors.map((e) => `${e.command}: ${e.response}`).join("\n") };
+  if (result.errors.length > 0) throw uiError("CLI_ERROR", result.errors.map((e) => `${e.command}: ${e.response}`).join("\n"));
   const ports = await api.config.readPorts();
   return { result, ports };
 }

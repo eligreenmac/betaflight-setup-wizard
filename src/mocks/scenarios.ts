@@ -13,9 +13,11 @@ import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
 import type { UpcomingBackend, UpcomingCommand, UpcomingCommandMap } from "../api/upcoming";
-import type { AppError, Backup, DroneModel, FcSerialPort, FlashStage } from "../types/model";
+import type { Backup, DroneModel, FcSerialPort, FlashStage } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask } from "../wizard/ports";
 import { ROLE_TO_PLAN } from "../wizard/plan";
+import { uiError, type ErrorCode, type UiError } from "../errors/codes";
+import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../api/upcoming";
 
 export const SCENARIOS = [
   "happy",
@@ -30,6 +32,7 @@ export const SCENARIOS = [
   "onboard-elrs",
   "fw-2025",
   "rollback-fail",
+  "flash-verify",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -57,11 +60,17 @@ interface MockDevice {
   flashFailuresLeft: number;
   verifyFailuresLeft: number;
   motorsSpinning: Set<number>;
+  /** Calls seen by the mock, in order (tests assert on stop / keepalive traffic). */
+  motorLog: string[];
+  /** Force the next motor_test_* call to fail with this error (tests). */
+  motorFailNext: UiError | null;
+  armed: boolean;
   rcTimer: ReturnType<typeof setInterval> | null;
   backups: { backup: Backup; ports: FcSerialPort[] }[];
 }
 
-const err = (code: string, message: string): AppError => ({ code, message });
+/** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
+const err = (code: ErrorCode, message: string): UiError => uiError(code, message);
 const UID = "3a0021000c51333038363834";
 
 export function isScenario(s: string | null | undefined): s is Scenario {
@@ -93,6 +102,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     flashFailuresLeft: scenario === "flash-fail" ? 1 : 0,
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     motorsSpinning: new Set(),
+    motorLog: [],
+    motorFailNext: null,
+    armed: false,
     rcTimer: null,
     backups: [],
   };
@@ -125,7 +137,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
           ],
     device_connect: ({ path }) => {
       if (scenario === "port-busy") throw err("PORT_BUSY", `${path}: Access is denied. (os error 5)`);
-      if (path !== "COM5") throw err("SERIAL", `${path}: no MSP response`);
+      if (path !== "COM5") throw err("SERIAL_ERROR", `${path}: no MSP response`);
     },
     device_disconnect: () => undefined,
     device_identify: () => ({
@@ -158,7 +170,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false };
     },
     flasher_list_cache: () => [],
-    flasher_flash: async ({ image }) => {
+    flasher_flash: async ({ image, options }) => {
       if (!device.inDfu) throw err("DFU_NOT_FOUND", "no DFU device");
       if (!device.dfuDriverOk) throw err("DRIVER_MISSING", "WinUSB driver not installed for 0483:df11");
       if (device.flashFailuresLeft > 0) {
@@ -167,6 +179,10 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         events.emit("flasher://progress", { stage: "FAILED", fraction: 0.4, message: "write failed at 0x08020000" });
         device.inDfu = false;
         throw err("FLASH_FAILED", "DFU write failed at 0x08020000");
+      }
+      if (scenario === "flash-verify" && !options.fullErase) {
+        await stages(["ERASING", "WRITING", "VERIFYING"]);
+        throw err("VERIFY_MISMATCH", "verify failed at 0x08000010: wrote 0x01, read 0x02");
       }
       await stages(["ERASING", "WRITING", "VERIFYING", "REBOOTING"]);
       device.inDfu = false;
@@ -200,9 +216,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     },
     config_rollback: async ({ backup }) => {
       await sleep(stepMs * 3);
-      if (scenario === "rollback-fail") throw err("CLI", "###ERROR### in line 12: serial 2 131073 115200 57600 0 115200");
+      if (scenario === "rollback-fail") throw err("CLI_ERROR", "###ERROR### in line 12: serial 2 131073 115200 57600 0 115200");
       const hit = device.backups.find((b) => b.backup.path === backup.path);
-      if (!hit) throw err("IO", `backup file not found: ${backup.path}`);
+      if (!hit) throw err("IO_ERROR", `backup file not found: ${backup.path}`);
       device.ports = hit.ports.map((p) => ({ ...p }));
       return { applied: 42, errors: [], saved: true };
     },
@@ -230,26 +246,56 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       return { ...generateCli(model, ports), clearings };
     },
     config_list_backups: () => device.backups.map((b) => b.backup),
-    motor_test_start: ({ motor }) => {
-      device.motorsSpinning.add(motor);
+    motor_test_start: ({ motorIndex, throttle, propsOffConfirmed, limits }) => {
+      device.motorLog.push(`start ${motorIndex} ${throttle}`);
+      motorFault();
+      const lim = { maxThrottle: Math.min(limits?.maxThrottle ?? DEFAULT_MAX_TEST_THROTTLE, HARD_MAX_TEST_THROTTLE), watchdog: limits?.watchdog ?? DEFAULT_MOTOR_WATCHDOG_MS };
+      // Same gate order as device::motor::check_gate (DESIGN.md §5).
+      if (!propsOffConfirmed) throw err("MOTOR_TEST_REFUSED", "props-off not confirmed");
+      if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
+      if (motorIndex !== null && (motorIndex < 0 || motorIndex > 3)) throw err("MOTOR_TEST_REFUSED", `motor index ${motorIndex} >= motor count 4`);
+      if (throttle < 1000 || throttle > lim.maxThrottle) throw err("MOTOR_TEST_REFUSED", `throttle ${throttle} outside 1000..${lim.maxThrottle}`);
+      device.motorsSpinning.clear();
+      if (motorIndex === null) [0, 1, 2, 3].forEach((m) => device.motorsSpinning.add(m));
+      else device.motorsSpinning.add(motorIndex);
+      return { outputConfig: { motorCount: 4, stopValue: 1000, protocol: "DSHOT600" }, limits: lim };
+    },
+    motor_test_keepalive: () => {
+      device.motorLog.push("keepalive");
+      motorFault();
+      if (device.motorsSpinning.size === 0) throw err("MOTOR_TEST_NOT_ACTIVE", "no motor test running");
     },
     motor_test_stop: () => {
+      device.motorLog.push("stop");
       device.motorsSpinning.clear();
+      motorFault();
     },
-    rc_channels_stream: ({ enabled }) => {
+    rc_channels_stream_start: ({ rateHz }) => {
+      if (device.rcTimer) clearInterval(device.rcTimer);
+      const hz = Math.min(50, Math.max(1, rateHz ?? 15));
+      let seq = 0;
+      device.rcTimer = setInterval(() => {
+        seq++;
+        // Sticks centred; AUX1 toggles every ~3 s, AUX2 cycles low/mid/high every ~2 s.
+        const t = (seq / hz) * 1000;
+        const aux1 = Math.floor(t / 3000) % 2 === 0 ? 1000 : 2000;
+        const aux2 = [1000, 1500, 2000][Math.floor(t / 2000) % 3]!;
+        events.emit("rc://channels", { seq, timestampMs: Math.round(t), channels: [1500, 1500, 1000, 1500, aux1, aux2, 1000, 1000] });
+      }, 1000 / hz);
+    },
+    rc_channels_stream_stop: () => {
       if (device.rcTimer) clearInterval(device.rcTimer);
       device.rcTimer = null;
-      if (!enabled) return;
-      let t = 0;
-      device.rcTimer = setInterval(() => {
-        t++;
-        // Sticks centred; AUX1 toggles every ~3 s, AUX2 cycles low/mid/high.
-        const aux1 = Math.floor(t / 6) % 2 === 0 ? 1000 : 2000;
-        const aux2 = [1000, 1500, 2000][Math.floor(t / 4) % 3]!;
-        events.emit("device://rc-channels", { channels: [1500, 1500, 1000, 1500, aux1, aux2, 1000, 1000] });
-      }, 500);
+      events.emit("rc://stopped", { reason: "requested", error: null });
     },
   };
+  function motorFault(): void {
+    const e = device.motorFailNext;
+    if (e) {
+      device.motorFailNext = null;
+      throw e;
+    }
+  }
   const upcoming: UpcomingBackend = (async (cmd: UpcomingCommand, args: never) => {
     await sleep(latency / 2);
     if (scenario === "legacy-backend") throw err("NOT_IMPLEMENTED", `mock: ${cmd}`);

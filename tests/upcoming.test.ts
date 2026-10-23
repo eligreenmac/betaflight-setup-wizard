@@ -12,7 +12,7 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
   it("maps Tauri's unknown-command string to NOT_IMPLEMENTED", () => {
     expect(toNotImplemented("motor_test_start", "Command motor_test_start not found")).toMatchObject({ code: "NOT_IMPLEMENTED" });
     const appErr = { code: "SERIAL", message: "x" };
-    expect(toNotImplemented("motor_test_start", appErr)).toBe(appErr);
+    expect(toNotImplemented("motor_test_start", appErr)).toEqual({ code: "SERIAL_ERROR", category: "Connection", message: "x" });
   });
 
   it("normalises verify mismatches from both the agreed {key} and current {setting} shapes", () => {
@@ -25,10 +25,20 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
 
   it("motor test and RC stream work against the mock; legacy backend reports NOT_IMPLEMENTED", async () => {
     const mock = installMock({ latencyMs: 0 });
-    await upcoming.motorTestStart(2, 5);
+    await expect(upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1100, propsOffConfirmed: false })).rejects.toMatchObject({
+      code: "MOTOR_TEST_REFUSED",
+      category: "Safety",
+    });
+    await expect(upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1200, propsOffConfirmed: true })).rejects.toMatchObject({
+      code: "MOTOR_TEST_REFUSED",
+    }); // over the 1150 cap: refused, not clamped
+    const r = await upcoming.motorTestStart({ port: "COM5", motorIndex: 2, throttle: 1100, propsOffConfirmed: true });
+    expect(r.limits).toEqual({ maxThrottle: 1150, watchdog: 500 });
     expect(mock.device.motorsSpinning.has(2)).toBe(true);
+    await upcoming.motorTestKeepalive();
     await upcoming.motorTestStop();
     expect(mock.device.motorsSpinning.size).toBe(0);
+    await expect(upcoming.motorTestKeepalive()).rejects.toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "legacy-backend" });
     await expect(upcoming.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
@@ -83,6 +93,20 @@ describe("firmware update orchestration", () => {
   });
 });
 
+describe("flash verify mismatch (DESIGN.md §6)", () => {
+  it("raises VERIFY_MISMATCH (category Flash) and succeeds when retried with full erase", async () => {
+    const { runFirmwareUpdate } = await import("../src/wizard/flash");
+    installMock({ latencyMs: 0, stepMs: 0, scenario: "flash-verify" });
+    await api.device.connect("COM5");
+    const fc = await api.device.identify();
+    const hooks = { onStage: () => undefined, onProgress: () => undefined };
+    const poll = { tries: 3, intervalMs: 0 };
+    await expect(runFirmwareUpdate(fc, "4.5.2", hooks, poll)).rejects.toMatchObject({ code: "VERIFY_MISMATCH", category: "Flash" });
+    const r = await runFirmwareUpdate(fc, "4.5.2", hooks, poll, { fullErase: true });
+    expect(r.fc.firmwareVersion).toBe("4.5.2");
+  });
+});
+
 describe("review plan, backups and rollback", () => {
   it("uses config_plan when present, else falls back to generate + UI clearings", async () => {
     const { fetchPlan } = await import("../src/wizard/plan");
@@ -120,6 +144,6 @@ describe("review plan, backups and rollback", () => {
     expect((await listBackups([before])).source).toBe("session");
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "rollback-fail" });
-    await expect(restoreBackup(before)).rejects.toMatchObject({ code: "CLI" });
+    await expect(restoreBackup(before)).rejects.toMatchObject({ code: "CLI_ERROR", category: "Protocol" });
   });
 });

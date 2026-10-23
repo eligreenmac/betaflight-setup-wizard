@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * AppError.code -> plain-language guidance with concrete next actions.
- * Text lives in the locales under `errors.<CODE>.{title,body,step1..n}`.
- *
- * Covers today's error.rs codes AND the agreed upcoming ones (BOARD_NOT_FOUND,
- * PORT_BUSY, DRIVER_MISSING, DFU_NOT_FOUND, FLASH_FAILED, VERIFY_MISMATCH), so the
- * detailed guidance works the moment the backend starts sending them.
+ * UiError.code -> plain-language guidance with concrete next actions
+ * (codes from drafts DESIGN.md §6). Text lives in the locales under
+ * `errors.<CODE>.{title,body,step1..n}`; tests/i18n.test.ts checks every key exists.
  */
-import type { AppError } from "../types/model";
-import { UPCOMING_ERROR_CODES } from "../api/upcoming";
+import { ALL_ERROR_CODES, isErrorCode, toUiError, type ErrorCode, type UiError } from "./codes";
 
-export const CURRENT_ERROR_CODES = ["NOT_IMPLEMENTED", "NOT_CONNECTED", "SERIAL", "MSP", "CLI", "USB", "FIRMWARE", "CONFIG", "DRIVER", "IO"] as const;
-export const KNOWN_ERROR_CODES = [...CURRENT_ERROR_CODES, ...UPCOMING_ERROR_CODES, "UNKNOWN"] as const;
-export type ErrorCode = (typeof KNOWN_ERROR_CODES)[number];
+export { isNotImplemented, toUiError, type UiError } from "./codes";
 
-export type GuidanceActionId = "retry" | "reconnect" | "retryFlash" | "installDriver" | "editPorts" | "reapply" | "openLink";
+export type GuidanceActionId =
+  | "retry"
+  | "reconnect"
+  | "retryFlash"
+  | "retryFullErase"
+  | "installDriver"
+  | "goFirmware"
+  | "editPorts"
+  | "openLink";
 
 export interface GuidanceAction {
   id: GuidanceActionId;
@@ -30,86 +32,82 @@ export interface Guidance {
   stepKeys: string[];
   actions: GuidanceAction[];
   severity: "error" | "warning";
+  /** The backend message says exactly what went wrong (e.g. which safety rule refused); show it, not only in "details". */
+  showMessage: boolean;
 }
 
-/** Help links. All must stay inside the opener capability scope (see src/api/opener.ts). */
+/** Help links. All must stay inside the opener capability scope (src/api/links.ts). */
 export const HELP_LINKS = {
   firmwareInstall: "https://betaflight.com/docs/wiki/getting-started/firmware-installation",
   issues: "https://github.com/eligreenmac/betaflight-setup-wizard/issues",
 } as const;
 
-/** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */
-export const STEP_COUNTS: Record<ErrorCode, number> = {
-  NOT_IMPLEMENTED: 1,
-  NOT_CONNECTED: 2,
-  SERIAL: 2,
-  MSP: 2,
-  CLI: 1,
-  USB: 2,
-  FIRMWARE: 2,
-  CONFIG: 1,
-  DRIVER: 2,
-  IO: 1,
-  BOARD_NOT_FOUND: 4,
-  PORT_BUSY: 2,
-  DRIVER_MISSING: 2,
-  DFU_NOT_FOUND: 3,
-  FLASH_FAILED: 3,
-  VERIFY_MISMATCH: 2,
-  UNKNOWN: 1,
-};
-
 const retry: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain", primary: true };
+const retry2: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain" };
 const reconnect: GuidanceAction = { id: "reconnect", labelKey: "actions.reconnect", primary: true };
 const retryFlash: GuidanceAction = { id: "retryFlash", labelKey: "actions.retryFlash", primary: true };
 const installDriver: GuidanceAction = { id: "installDriver", labelKey: "actions.installDriver", primary: true };
+const goFirmware: GuidanceAction = { id: "goFirmware", labelKey: "actions.goFirmware", primary: true };
 const firmwareHelp: GuidanceAction = { id: "openLink", labelKey: "actions.openFirmwareHelp", href: HELP_LINKS.firmwareInstall };
 const reportIssue: GuidanceAction = { id: "openLink", labelKey: "actions.reportIssue", href: HELP_LINKS.issues };
 
-const ACTIONS: Record<ErrorCode, GuidanceAction[]> = {
-  NOT_IMPLEMENTED: [reportIssue],
-  NOT_CONNECTED: [reconnect],
-  SERIAL: [retry],
-  MSP: [reconnect],
-  CLI: [retry, reportIssue],
-  USB: [retryFlash, firmwareHelp],
-  FIRMWARE: [retry, firmwareHelp],
-  CONFIG: [{ id: "editPorts", labelKey: "actions.editPorts", primary: true }, reportIssue],
-  DRIVER: [installDriver, firmwareHelp],
-  IO: [retry, reportIssue],
-  BOARD_NOT_FOUND: [retry],
-  PORT_BUSY: [retry],
-  DRIVER_MISSING: [installDriver, firmwareHelp, { id: "retry", labelKey: "actions.tryAgain" }],
-  DFU_NOT_FOUND: [retryFlash, { id: "installDriver", labelKey: "actions.installDriver" }, firmwareHelp],
-  FLASH_FAILED: [retryFlash, firmwareHelp],
-  VERIFY_MISMATCH: [{ id: "reapply", labelKey: "actions.reapply", primary: true }],
-  UNKNOWN: [retry, reportIssue],
-};
-
-export function isKnownCode(code: string): code is ErrorCode {
-  return (KNOWN_ERROR_CODES as readonly string[]).includes(code);
+interface Entry {
+  steps: number;
+  actions: GuidanceAction[];
+  warning?: boolean;
+  showMessage?: boolean;
 }
 
-export function guidanceFor(code: string): Guidance {
-  const c: ErrorCode = isKnownCode(code) ? code : "UNKNOWN";
+const TABLE: Record<ErrorCode, Entry> = {
+  BOARD_NOT_FOUND: { steps: 4, actions: [retry] },
+  PORT_BUSY: { steps: 2, actions: [retry] },
+  DISCONNECTED: { steps: 2, actions: [reconnect] },
+  TIMEOUT: { steps: 2, actions: [retry] },
+  SERIAL_ERROR: { steps: 2, actions: [retry] },
+  DRIVER_MISSING: { steps: 2, actions: [installDriver, firmwareHelp, retry2] },
+  USB_ERROR: { steps: 2, actions: [retry] },
+  UNSUPPORTED_FIRMWARE: { steps: 2, actions: [goFirmware] },
+  MSP_UNSUPPORTED: { steps: 1, actions: [goFirmware, reportIssue] },
+  MSP_BAD_RESPONSE: { steps: 1, actions: [retry, reportIssue] },
+  CLI_ERROR: { steps: 1, actions: [retry, reportIssue], showMessage: true },
+  DFU_NOT_FOUND: { steps: 3, actions: [retryFlash, { id: "installDriver", labelKey: "actions.installDriver" }, firmwareHelp] },
+  FLASH_FAILED: { steps: 3, actions: [retryFlash, firmwareHelp] },
+  VERIFY_MISMATCH: { steps: 2, actions: [{ id: "retryFullErase", labelKey: "actions.retryFullErase", primary: true }, firmwareHelp] },
+  READ_PROTECTED: { steps: 2, actions: [firmwareHelp, reportIssue] },
+  REPLUG_REQUIRED: { steps: 2, actions: [retryFlash] },
+  FIRMWARE_TOO_LARGE: { steps: 1, actions: [reportIssue] },
+  INVALID_FIRMWARE: { steps: 1, actions: [retryFlash] },
+  NO_FLASH_LAYOUT: { steps: 1, actions: [firmwareHelp, reportIssue] },
+  NETWORK_ERROR: { steps: 2, actions: [retry] },
+  BUILD_API_ERROR: { steps: 1, actions: [retry] },
+  BUILD_FAILED: { steps: 1, actions: [retry, firmwareHelp], showMessage: true },
+  IO_ERROR: { steps: 1, actions: [retry, reportIssue] },
+  DATA_ERROR: { steps: 1, actions: [retry] },
+  MOTOR_TEST_REFUSED: { steps: 1, actions: [], showMessage: true },
+  BOARD_ARMED: { steps: 1, actions: [] },
+  MOTOR_TEST_NOT_ACTIVE: { steps: 1, actions: [], warning: true },
+  CANCELLED: { steps: 1, actions: [], warning: true },
+  BUSY: { steps: 1, actions: [retry], warning: true },
+  INVALID_ARGUMENT: { steps: 1, actions: [reportIssue] },
+  INTERNAL: { steps: 1, actions: [reportIssue] },
+  NOT_IMPLEMENTED: { steps: 1, actions: [reportIssue], warning: true },
+  UNKNOWN: { steps: 1, actions: [retry, reportIssue] },
+};
+
+/** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */
+export const STEP_COUNTS = Object.fromEntries(ALL_ERROR_CODES.map((c) => [c, TABLE[c].steps])) as Record<ErrorCode, number>;
+
+export function guidanceFor(codeOrError: string | UiError): Guidance {
+  const raw = typeof codeOrError === "string" ? codeOrError : codeOrError.code;
+  const c: ErrorCode = isErrorCode(raw) ? raw : toUiError({ code: raw, message: "" }).code;
+  const e = TABLE[c];
   return {
     code: c,
     titleKey: `errors.${c}.title`,
     bodyKey: `errors.${c}.body`,
-    stepKeys: Array.from({ length: STEP_COUNTS[c] }, (_, i) => `errors.${c}.step${i + 1}`),
-    actions: ACTIONS[c],
-    severity: c === "VERIFY_MISMATCH" || c === "NOT_IMPLEMENTED" ? "warning" : "error",
+    stepKeys: Array.from({ length: e.steps }, (_, i) => `errors.${c}.step${i + 1}`),
+    actions: e.actions,
+    severity: e.warning ? "warning" : "error",
+    showMessage: !!e.showMessage,
   };
 }
-
-/** Normalise anything a command can reject with into the AppError shape. */
-export function toAppError(e: unknown): AppError {
-  if (e && typeof e === "object" && "code" in e && typeof (e as AppError).code === "string") {
-    const ae = e as AppError;
-    return { code: ae.code, message: String(ae.message ?? "") };
-  }
-  if (e instanceof Error) return { code: "UNKNOWN", message: e.message };
-  return { code: "UNKNOWN", message: typeof e === "string" ? e : JSON.stringify(e) };
-}
-
-export const isNotImplemented = (e: unknown): boolean => toAppError(e).code === "NOT_IMPLEMENTED";
