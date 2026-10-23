@@ -38,6 +38,7 @@ pub fn run() {
             config::commands::config_read_ports,
             config::commands::config_backup,
             config::commands::config_generate,
+            config::commands::config_elrs_uid,
             config::commands::config_plan,
             config::commands::config_apply,
             config::commands::config_verify,

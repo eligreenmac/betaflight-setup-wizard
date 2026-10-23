@@ -81,8 +81,11 @@ export interface DroneModel {
     telemetry: boolean;
     inverted: boolean;
     halfDuplex: boolean;
-    /** SPI EXPRESSLRS only; null = keep current UID. */
-    elrsBindingPhrase?: string | null;
+    /**
+     * SPI EXPRESSLRS only: 6-byte UID (from `api.config.elrsUid(phrase)`); null = keep current UID.
+     * Never put the binding phrase in the model, local storage or logs: hash it, then drop it.
+     */
+    elrsUid?: number[] | null;
     /** SPI EXPRESSLRS only; must match the board's chip (SX1280: ISM2400/CE2400). */
     elrsDomain?: ElrsDomain | null;
   };
