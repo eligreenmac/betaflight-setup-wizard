@@ -58,6 +58,8 @@ describe("orientation math", () => {
   it("sameAlignment", () => {
     expect(sameAlignment(null, { roll: 0, pitch: 0, yaw: 0 })).toBe(false);
     expect(sameAlignment({ roll: 0, pitch: 0, yaw: 90 }, { roll: 0, pitch: 0, yaw: 90 })).toBe(true);
+    expect(sameAlignment({ roll: 0, pitch: 0, yaw: -90 }, { roll: 0, pitch: 0, yaw: 270 })).toBe(true);
+    expect(sameAlignment({ roll: -180, pitch: 0, yaw: 0 }, { roll: 180, pitch: 0, yaw: 0 })).toBe(true);
   });
 
   it("undoes the FC's current alignment: the preview of preset A is right whatever is stored", () => {

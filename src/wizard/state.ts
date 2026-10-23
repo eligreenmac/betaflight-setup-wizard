@@ -20,7 +20,7 @@ import {
 } from "../types/model";
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
 import { MAX_AUX, MODES, modeKeyOf, modeName, normalizeModeNames, SWITCH_POSITIONS, type ModeKey } from "./switches";
-import type { Airmode } from "./modelExt";
+import type { Airmode, OptionalMode } from "./modelExt";
 import { defaultTelemetry } from "./receiver";
 import { emptyExt, type ModelExt } from "./modelExt";
 import type { SensorsInfo } from "../api/pending";
@@ -31,7 +31,8 @@ export type CrsfFamily = "ELRS" | "CROSSFIRE" | null;
 /** ExpressLRS binding: "phrase" = binding phrase (SPI: hashed to receiver.elrsUid); "button" = bind mode. */
 export type ElrsBinding = "phrase" | "button" | null;
 /** PREARM on the Switches step: added, explicitly skipped, or not decided (optional). */
-export type PrearmChoice = "add" | "skip" | null;
+/** add = on a switch; skip = keep whatever the FC has; remove = delete the FC's PREARM ranges (removeModes). */
+export type PrearmChoice = "add" | "skip" | "remove" | null;
 /** Beepers step: keep the board's beeps, or choose them (starts from the recommendation). */
 export type BeeperMode = "keep" | "choose" | null;
 export type CalibrationStatus = "idle" | "running" | "done" | "failed";
@@ -230,7 +231,9 @@ export function addModeSwitch(s: WizardState, k: ModeKey): void {
   while (auxUsed.has(aux) && aux < MAX_AUX - 1) aux++;
   s.model.switches.push({ mode: modeName(k), auxChannel: aux, rangeMin: SWITCH_POSITIONS.high[0], rangeMax: SWITCH_POSITIONS.high[1] });
   if (k === "prearm") s.ui.prearmChoice = "add";
-  if (k === "airMode") s.ext.airmode = "switch";
+  if (k === "airMode") s.ext.airmode = "SWITCH";
+  const opt = optionalModeOf(k);
+  if (opt) s.ext.removeModes = s.ext.removeModes.filter((m) => m !== opt);
   markDirty(s);
 }
 
@@ -240,24 +243,45 @@ export function removeModeSwitch(s: WizardState, index: number): void {
   s.model.switches.splice(index, 1);
   if (k === "prearm") s.ui.prearmChoice = null;
   // Without its switch, "air mode on a switch" is no answer any more: back to "keep".
-  if (k === "airMode" && s.ext.airmode === "switch") s.ext.airmode = null;
+  if (k === "airMode" && s.ext.airmode === "SWITCH") s.ext.airmode = null;
   markDirty(s);
 }
 
-/** PREARM: add it on a switch, or explicitly skip it (removes any PREARM switch). */
-export function setPrearm(s: WizardState, choice: "add" | "skip"): void {
-  if (choice === "add") addModeSwitch(s, "prearm");
-  else {
-    s.model.switches = s.model.switches.filter((x) => modeKeyOf(x.mode) !== "prearm");
-    s.ui.prearmChoice = "skip";
-    markDirty(s);
-  }
+/** The #65 OptionalMode for a mode key (the modes removeModes can delete), else null. */
+export function optionalModeOf(k: ModeKey | null): OptionalMode | null {
+  return k === "prearm" ? "PREARM" : k === "turtle" ? "FLIP OVER AFTER CRASH" : k === "airMode" ? "AIR MODE" : null;
 }
 
-/** AIRMODE: "always" (feature), "switch" (AIR MODE box on a switch), "off", or null = keep. */
+/**
+ * Delete (on = true) the FC's existing ranges for an optional mode, or stop doing so.
+ * The wizard cannot read the FC's mode ranges, so this is offered as "remove it if the
+ * board has one"; config_plan treats removing a mode the FC does not have as a no-op.
+ * A switch for the same mode in this plan is dropped (you cannot add and remove it).
+ */
+export function setModeRemoval(s: WizardState, mode: OptionalMode, on: boolean): void {
+  const rest = s.ext.removeModes.filter((m) => m !== mode);
+  s.ext.removeModes = on ? [...rest, mode] : rest;
+  if (on) {
+    s.model.switches = s.model.switches.filter((x) => optionalModeOf(modeKeyOf(x.mode)) !== mode);
+    if (mode === "AIR MODE" && s.ext.airmode === "SWITCH") s.ext.airmode = null;
+  }
+  markDirty(s);
+}
+
+/** PREARM: on a switch, skip (= keep the FC's PREARM, null), or remove the FC's PREARM ranges. */
+export function setPrearm(s: WizardState, choice: "add" | "skip" | "remove"): void {
+  if (choice === "add") return addModeSwitch(s, "prearm");
+  s.model.switches = s.model.switches.filter((x) => modeKeyOf(x.mode) !== "prearm");
+  s.ext.removeModes = s.ext.removeModes.filter((m) => m !== "PREARM");
+  if (choice === "remove") s.ext.removeModes.push("PREARM");
+  s.ui.prearmChoice = choice;
+  markDirty(s);
+}
+
+/** AIRMODE: ALWAYS (feature), SWITCH (an "AIR MODE" switch), OFF, or null = keep. */
 export function setAirmode(s: WizardState, mode: Airmode | null): void {
   s.ext.airmode = mode;
-  if (mode === "switch") addModeSwitch(s, "airMode");
+  if (mode === "SWITCH") addModeSwitch(s, "airMode");
   else s.model.switches = s.model.switches.filter((x) => modeKeyOf(x.mode) !== "airMode");
   markDirty(s);
 }

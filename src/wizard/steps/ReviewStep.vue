@@ -62,17 +62,19 @@ const rows = computed(() => {
   const x = wizard.ext;
   const skip = new Set(simulatedFields());
   const keep = t("review.keep");
-  r.push([t("review.airmode"), x.airmode ? t(`switches.airmode.${x.airmode}`) : keep]);
-  r.push([
-    t("review.sensors"),
-    x.sensors && !skip.has("sensors")
-      ? `${t("calibration.sensors.acc")}: ${x.sensors.acc ? t("review.on") : t("review.off")} · ${t("calibration.sensors.baro")}: ${x.sensors.baro ? t("review.on") : t("review.off")}`
-      : keep,
-  ]);
+  r.push([t("review.airmode"), x.airmode ? t(`switches.airmode.${x.airmode.toLowerCase()}`) : keep]);
+  if (x.removeModes.length)
+    r.push([t("review.removeModes"), x.removeModes.map((m) => { const k = modeKeyOf(m); return k ? t(`switches.modes.${k}`) : m; }).join(", ")]);
+  const sensorParts = x.sensors && !skip.has("sensors")
+    ? (["acc", "baro", "mag"] as const).filter((k) => x.sensors![k] !== null).map((k) => `${t(`calibration.sensors.${k}`)}: ${x.sensors![k] ? t("review.on") : t("review.off")}`)
+    : [];
+  r.push([t("review.sensors"), sensorParts.length ? sensorParts.join(" · ") : keep]);
   const preset = x.boardAlignment && ALIGNMENT_PRESETS.find((p) => sameAlignment(x.boardAlignment, p.align));
   r.push([t("review.alignment"), x.boardAlignment && !skip.has("boardAlignment") ? (preset ? t(`calibration.orientation.presets.${preset.id}`) : `${x.boardAlignment.roll}/${x.boardAlignment.pitch}/${x.boardAlignment.yaw}`) : keep]);
   r.push([t("review.accCalibration"), t(`review.calibration.${wizard.ui.accCalibration}`)]);
   r.push([t("review.beepers"), x.beepers ? (x.beepers.disabled.length ? t("review.beepersOff", { list: x.beepers.disabled.join(", ") }) : t("review.beepersAllOn")) : keep]);
+  if (x.beepers?.dshotBeaconDisabled)
+    r.push([t("review.beacon"), x.beepers.dshotBeaconDisabled.length ? t("review.beepersOff", { list: x.beepers.dshotBeaconDisabled.join(", ") }) : t("review.beepersAllOn")]);
   return r;
 });
 const unplanned = computed(() => (previewOnly.value ? [] : unplannedChoices(wizard.ext, plan.value)));

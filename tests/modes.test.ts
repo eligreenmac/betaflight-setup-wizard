@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { describe, expect, it } from "vitest";
+import { mockFirmwareCatalog } from "../src/mocks/scenarios";
+import { catalogState, resetCatalog } from "../src/api/catalog";
 import { displayBoxName, MODES, modeAvailable, modeKeyOf, modeName, normalizeModeNames, usesNewModeNames } from "../src/wizard/switches";
 import { validateSwitches } from "../src/wizard/guards";
 import { createWizardState, setBoard } from "../src/wizard/state";
@@ -9,7 +11,7 @@ const fc = (firmwareVersion: string): FcInfo => ({ fcVariant: "BTFL", firmwareVe
 
 describe("mode names: stable in the model, labels by firmware", () => {
   it("the model only ever holds the stable config::modes names", () => {
-    expect(Object.values(MODES)).toEqual(["ARM", "ANGLE", "BEEPER", "FLIP OVER AFTER CRASH", "ALTHOLD", "POSHOLD", "PREARM", "AIR MODE"]);
+    expect(Object.values(MODES)).toEqual(["ARM", "ANGLE", "HORIZON", "BEEPER", "FLIP OVER AFTER CRASH", "ALTHOLD", "POSHOLD", "GPS RESCUE", "PREARM", "AIR MODE"]);
     for (const fw of ["4.4.3", "4.5.2", "2025.12.0"]) {
       expect(modeName("altHold")).toBe("ALTHOLD");
       expect(modeName("posHold")).toBe("POSHOLD");
@@ -54,7 +56,26 @@ describe("mode names: stable in the model, labels by firmware", () => {
     expect(validateSwitches(s).map((i) => i.key)).toContain("validation.modeNeedsFirmware");
     setBoard(s, fc("2025.12.0"), [], "COM5");
     expect(validateSwitches(s)).toEqual([]);
-    s.model.switches.push({ mode: "HORIZON", auxChannel: 3, rangeMin: 1700, rangeMax: 2100 });
+    s.model.switches.push({ mode: "MAG", auxChannel: 3, rangeMin: 1700, rangeMax: 2100 });
     expect(validateSwitches(s).map((i) => i.key)).toContain("validation.modeUnknown");
+  });
+
+  it("with the firmware catalog, its mode list decides availability", () => {
+    const cat45 = mockFirmwareCatalog("4.5.1").modes;
+    expect(modeAvailable("altHold", "4.5.1", cat45)).toBe(false);
+    expect(modeAvailable("gpsRescue", "4.5.1", cat45)).toBe(true);
+    expect(modeAvailable("airMode", "4.5.1", cat45)).toBe(true);
+    expect(modeAvailable("altHold", "2025.12.0", mockFirmwareCatalog("2025.12.0").modes)).toBe(true);
+    // A catalog without PREARM: not offered, and refused if present.
+    expect(modeAvailable("prearm", "4.5.1", ["ARM", "ANGLE"])).toBe(false);
+    expect(modeAvailable("prearm", "4.5.1", [])).toBe(true); // empty = built-in rules
+    try {
+      catalogState.catalog = { beepers: [], beaconEvents: [], osdElements: [], modes: ["ARM", "ANGLE"] };
+      const s = createWizardState();
+      s.model.switches.push({ mode: "PREARM", auxChannel: 3, rangeMin: 1700, rangeMax: 2100 });
+      expect(validateSwitches(s).map((i) => i.key)).toContain("validation.modeNotInFirmware");
+    } finally {
+      resetCatalog();
+    }
   });
 });

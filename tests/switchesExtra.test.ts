@@ -11,7 +11,9 @@ import { guards } from "../src/wizard/guards";
 import { nav, resetNav } from "../src/wizard/nav";
 import { toPlanModel } from "../src/wizard/modelExt";
 import { generateCli } from "../src/mocks/scenarios";
-import { addModeSwitch, createWizardState, removeModeSwitch, resetWizard, setAirmode, setPrearm, wizard, type WizardState } from "../src/wizard/state";
+import { addModeSwitch, createWizardState, removeModeSwitch, resetWizard, setAirmode, setModeRemoval, setPrearm, wizard, type WizardState } from "../src/wizard/state";
+import { unplannedChoices } from "../src/wizard/modelExt";
+import type { DroneModelNext } from "../src/types/pendingModel";
 import { detectSwitch, MODES, modeKeyOf, SWITCH_POSITIONS } from "../src/wizard/switches";
 import { settle } from "./walk";
 
@@ -51,7 +53,7 @@ describe("switch validation", () => {
 
   it("any mode overlapping the ARM range is refused (incl. the new modes)", () => {
     const s = createWizardState();
-    setAirmode(s, "switch");
+    setAirmode(s, "SWITCH");
     const a = s.model.switches.find((x) => x.mode === "AIR MODE")!;
     a.auxChannel = 0;
     expect(keys(s)).toContain("validation.armOverlap");
@@ -70,37 +72,92 @@ describe("switch validation", () => {
     const s = createWizardState();
     expect(s.ext.airmode).toBeNull();
     expect("airmode" in toPlanModel(s.model, s.ext)).toBe(false);
-    setAirmode(s, "always");
-    expect(toPlanModel(s.model, s.ext).airmode).toBe("always");
+    setAirmode(s, "ALWAYS");
+    expect(toPlanModel(s.model, s.ext).airmode).toBe("ALWAYS");
     expect(modes(s)).toEqual(["ARM"]);
-    setAirmode(s, "switch");
+    setAirmode(s, "SWITCH");
     expect(modes(s)).toEqual(["ARM", "AIR MODE"]);
     expect(keys(s)).toEqual([]);
-    setAirmode(s, "off");
+    setAirmode(s, "OFF");
     expect(modes(s)).toEqual(["ARM"]);
-    expect(toPlanModel(s.model, s.ext).airmode).toBe("off");
+    expect(toPlanModel(s.model, s.ext).airmode).toBe("OFF");
     setAirmode(s, null);
     expect("airmode" in toPlanModel(s.model, s.ext)).toBe(false);
   });
 
   it("removing the AIR MODE row goes back to 'keep'; a missing switch is reported", () => {
     const s = createWizardState();
-    setAirmode(s, "switch");
+    setAirmode(s, "SWITCH");
     removeModeSwitch(s, s.model.switches.findIndex((x) => x.mode === "AIR MODE"));
     expect(s.ext.airmode).toBeNull();
-    s.ext.airmode = "switch";
+    s.ext.airmode = "SWITCH";
     expect(keys(s)).toEqual(["validation.airmodeSwitchMissing"]);
   });
 
   it("the mock CLI maps the spaced and squashed names to box ids", () => {
     const s = createWizardState();
     setPrearm(s, "add");
-    setAirmode(s, "switch");
+    setAirmode(s, "SWITCH");
     addModeSwitch(s, "turtle");
     const cli = generateCli(toPlanModel(s.model, s.ext), []).commands.filter((c) => c.startsWith("aux "));
     expect(cli.map((c) => c.split(" ")[2])).toEqual(["0", "36", "28", "35"]);
     expect(modeKeyOf("AIRMODE")).toBe("airMode");
     expect(modeKeyOf("FLIP_OVER_AFTER_CRASH")).toBe("turtle");
+  });
+
+  it("PREARM: skip = keep (null, nothing sent); remove = removeModes; add drops the removal", () => {
+    const s = createWizardState();
+    setPrearm(s, "skip");
+    let p = toPlanModel(s.model, s.ext);
+    expect("removeModes" in p).toBe(false);
+    expect(modes(s)).toEqual(["ARM"]);
+    setPrearm(s, "remove");
+    expect(s.ui.prearmChoice).toBe("remove");
+    p = toPlanModel(s.model, s.ext);
+    expect(p.removeModes).toEqual(["PREARM"]);
+    expect(modes(s)).toEqual(["ARM"]);
+    setPrearm(s, "add");
+    expect(s.ext.removeModes).toEqual([]);
+    expect(modes(s)).toEqual(["ARM", "PREARM"]);
+    setPrearm(s, "remove");
+    expect(modes(s)).toEqual(["ARM"]);
+  });
+
+  it("turtle / AIR MODE removal: removing drops the plan's switch; airmode SWITCH goes back to keep", () => {
+    const s = createWizardState();
+    addModeSwitch(s, "turtle");
+    setModeRemoval(s, "FLIP OVER AFTER CRASH", true);
+    expect(modes(s)).toEqual(["ARM"]);
+    setAirmode(s, "SWITCH");
+    setModeRemoval(s, "AIR MODE", true);
+    expect(s.ext.airmode).toBeNull();
+    expect(toPlanModel(s.model, s.ext).removeModes).toEqual(["FLIP OVER AFTER CRASH", "AIR MODE"]);
+    // Adding the switch again cancels its removal.
+    addModeSwitch(s, "turtle");
+    expect(s.ext.removeModes).toEqual(["AIR MODE"]);
+    setModeRemoval(s, "AIR MODE", false);
+    expect("removeModes" in toPlanModel(s.model, s.ext)).toBe(false);
+    // The mock plan writes a reset line for a removal (a no-op on the real engine if the FC has none).
+    setModeRemoval(s, "PREARM", true);
+    const p = toPlanModel(s.model, s.ext);
+    expect(generateCli(p, []).commands.filter((c) => c.startsWith("aux ")).length).toBe(p.switches.length + 1);
+    expect(unplannedChoices(s.ext, generateCli(p, []))).toEqual([]);
+  });
+
+  it("the plan model has the exact #65 shapes", () => {
+    const s = createWizardState();
+    setAirmode(s, "SWITCH");
+    setPrearm(s, "remove");
+    s.ext.sensors = { acc: null, baro: false, mag: null };
+    s.ext.beepers = { disabled: ["ON_USB"], dshotBeaconDisabled: null };
+    s.ext.boardAlignment = { roll: 0, pitch: 0, yaw: 90 };
+    const p: DroneModelNext = toPlanModel(s.model, s.ext);
+    expect(p.airmode).toBe("SWITCH");
+    expect(p.switches.map((x) => x.mode)).toEqual(["ARM", "AIR MODE"]);
+    expect(p.removeModes).toEqual(["PREARM"]);
+    expect(p.sensors).toEqual({ baro: false });
+    expect(p.beepers).toEqual({ disabled: ["ON_USB"], dshotBeaconDisabled: null });
+    expect(p.boardAlignment).toEqual({ roll: 0, pitch: 0, yaw: 90 });
   });
 
   it("detectSwitch picks the AUX channel that moved most, with its position", () => {
@@ -139,7 +196,7 @@ describe("Switches step UI", () => {
 
   it("PREARM skip, turtle and air mode controls change the model", async () => {
     await open();
-    expect(w!.text()).toContain("Skip, I don't want this");
+    expect(w!.get('[data-section="prearm"]').text()).toContain("If the board already has a prearm switch, it stays");
     await w!.get('[data-prearm="skip"]').setValue(true);
     expect(wizard.ui.prearmChoice).toBe("skip");
     await w!.get('[data-prearm="add"]').setValue(true);
@@ -147,11 +204,23 @@ describe("Switches step UI", () => {
     await w!.get('[data-add="turtle"]').trigger("click");
     expect(wizard.model.switches.map((s) => s.mode)).toContain("FLIP OVER AFTER CRASH");
     await w!.get('[data-airmode="switch"]').setValue(true);
-    expect(wizard.ext.airmode).toBe("switch");
+    expect(wizard.ext.airmode).toBe("SWITCH");
     expect(wizard.model.switches.map((s) => s.mode)).toContain("AIR MODE");
     await w!.get('[data-airmode="always"]').setValue(true);
-    expect(wizard.ext.airmode).toBe("always");
+    expect(wizard.ext.airmode).toBe("ALWAYS");
     expect(wizard.model.switches.map((s) => s.mode)).not.toContain("AIR MODE");
+    await w!.get('[data-prearm="remove"]').setValue(true);
+    expect(wizard.ext.removeModes).toEqual(["PREARM"]);
+    expect(wizard.model.switches.map((s) => s.mode)).not.toContain("PREARM");
+    // "Remove an existing AIR MODE switch" is offered when air mode is not on a switch.
+    await w!.get('[data-remove-mode="airMode"]').setValue(true);
+    expect(wizard.ext.removeModes).toEqual(["PREARM", "AIR MODE"]);
+    expect(w!.find('[data-remove-mode="turtle"]').exists()).toBe(false); // turtle is on a switch now
+    // Mode availability from the catalog: 4.5 has no ALTHOLD; GPS modes only with GPS.
+    const adds = w!.findAll("[data-add]").map((b) => b.attributes("data-add"));
+    expect(adds).toContain("horizon");
+    expect(adds).not.toContain("altHold");
+    expect(adds).not.toContain("gpsRescue");
     // Generic add buttons do not duplicate the explained modes.
     expect(w!.findAll("[data-add]").map((b) => b.attributes("data-add"))).not.toContain("prearm");
   });

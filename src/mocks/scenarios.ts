@@ -30,9 +30,11 @@ import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from 
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
-import { availableBeepers, beeperName } from "../wizard/beepers";
+import { CATALOG_COMMAND, type FirmwareCatalog } from "../api/catalog";
+import { BEEPER_NAMES } from "../types/pendingModel";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
+import { compareVersions } from "../wizard/version";
 
 export const SCENARIOS = [
   "happy",
@@ -511,6 +513,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     await sleep(fast(cmd) ? latency / 2 : latency);
     const p = pendingHandlers[cmd as unknown as PendingCommandName];
     if (p) return p(args);
+    // TODO(shared): Config's read-only catalog (api/catalog.ts), not in CommandMap yet.
+    if ((cmd as string) === CATALOG_COMMAND) return mockFirmwareCatalog((args as { firmwareVersion?: string }).firmwareVersion ?? "");
     return inner(cmd, args);
   }) as Backend;
 
@@ -526,6 +530,23 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
   IRC_TRAMP: "VTX_TRAMP",
   VTX_MSP: "VTX_MSP",
 };
+
+const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
+
+/**
+ * Demo config_firmware_catalog(firmwareVersion) (shape assumed in api/catalog.ts).
+ * 2025.12 has no RC_SMOOTHING_INIT_FAIL; ALTHOLD / POSHOLD are managed from 2025.12.
+ * Unknown / empty version = the 4.5 lists.
+ */
+export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
+  const v2025 = isV2025(firmwareVersion);
+  return {
+    beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
+    beaconEvents: ["RX_LOST", "RX_SET"],
+    osdElements: [],
+    modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
+  };
+}
 
 /** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
 export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): CliScript {
@@ -561,22 +582,33 @@ export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): C
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
   if (model.esc.telemetryPort) commands.push("feature ESC_SENSOR");
   // Like config::modes: stable names only, mapped to permanent box ids here (backend side).
-  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, AIRMODE: 28, FLIPOVERAFTERCRASH: 35, PREARM: 36 };
+  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, HORIZON: 2, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, AIRMODE: 28, FLIPOVERAFTERCRASH: 35, PREARM: 36, GPSRESCUE: 46 };
   model.switches.forEach((s, i) => {
     const id = boxIds[s.mode.toUpperCase().replace(/[^A-Z0-9]/g, "")];
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
-  // Proposed fields (wizard/modelExt.ts); absent / null = keep the board's value.
-  if (model.airmode) commands.push(model.airmode === "always" ? "feature AIRMODE" : "feature -AIRMODE");
-  if (model.sensors) commands.push(`set acc_hardware = ${model.sensors.acc ? "AUTO" : "NONE"}`, `set baro_hardware = ${model.sensors.baro ? "AUTO" : "NONE"}`);
+  // #65 fields (types/pendingModel.ts); absent / null = keep the board's value.
+  const fw = model.fc.firmwareVersion || "";
+  (model.removeModes ?? []).forEach((m, i) => {
+    // The demo FC has no ranges for these: reset a spare slot like the engine would (no-op otherwise).
+    const id = boxIds[m.replace(/[^A-Z0-9]/g, "")];
+    if (id !== undefined) commands.push(`aux ${model.switches.length + i} 0 0 900 900 0 0`);
+  });
+  if (model.airmode) commands.push(model.airmode === "ALWAYS" ? "feature AIRMODE" : "feature -AIRMODE");
+  for (const k of ["acc", "baro", "mag"] as const) {
+    const v = model.sensors?.[k];
+    if (typeof v === "boolean") commands.push(`set ${k}_hardware = ${v ? "AUTO" : "NONE"}`);
+  }
   if (model.boardAlignment) for (const k of ["roll", "pitch", "yaw"] as const) commands.push(`set align_board_${k} = ${model.boardAlignment[k]}`);
   if (model.beepers) {
-    const off = new Set(model.beepers.disabled);
-    for (const b of availableBeepers(model.fc.firmwareVersion || null)) {
-      const n = beeperName(b, model.fc.firmwareVersion || null);
-      commands.push(off.has(n) ? `beeper -${n}` : `beeper ${n}`);
+    const off = new Set<string>(model.beepers.disabled);
+    for (const n of mockFirmwareCatalog(fw).beepers) {
+      const cli = isV2025(fw) && n === "CRASH_FLIP" ? "CRASHFLIP" : n;
+      commands.push(off.has(n) ? `beeper -${cli}` : `beeper ${cli}`);
     }
+    if (model.beepers.dshotBeaconDisabled)
+      for (const e of ["RX_LOST", "RX_SET"]) commands.push(model.beepers.dshotBeaconDisabled.includes(e as never) ? `beacon -${e}` : `beacon ${e}`);
   }
   commands.push("save");
   return { commands, warnings, dialect: "4.5", cleared };

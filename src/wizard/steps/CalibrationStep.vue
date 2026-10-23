@@ -14,11 +14,13 @@ import { sourceMismatch } from "../../api/fallback";
 import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
-import { calibrationWarnings } from "../guards";
+import { accModeSwitches, calibrationWarnings, mayHaveUnsavedChanges, sensorIssues } from "../guards";
 import type { BoardAlignment } from "../modelExt";
 import { motorTest } from "../motorTest";
 import { ALIGNMENT_PRESETS, alignedAttitude, sameAlignment, tiltDirection, type Euler } from "../orientation";
 import { markDirty, wizard } from "../state";
+import { modeKeyOf } from "../switches";
+import { ACC_MODES } from "../switches";
 
 defineProps<{ stepId: string }>();
 const { t } = useI18n();
@@ -27,14 +29,31 @@ const { t } = useI18n();
 const sensorsState = ref<"loading" | "ok" | "unavailable" | "error">("loading");
 const sensorsError = ref<UiError | null>(null);
 const sensors = computed(() => wizard.ui.sensors);
-const accOn = computed(() => (wizard.ext.sensors ? wizard.ext.sensors.acc : (sensors.value?.acc.enabled ?? false)));
-const baroOn = computed(() => (wizard.ext.sensors ? wizard.ext.sensors.baro : (sensors.value?.baro.enabled ?? false)));
+type SensorKey = "acc" | "baro" | "mag";
+/** Planned state of a sensor: the user's answer, else what the FC has now (null = keep). */
+const isOn = (k: SensorKey): boolean => wizard.ext.sensors?.[k] ?? sensors.value?.[k].enabled ?? false;
+const accOn = computed(() => isOn("acc"));
 const sensorsSimulated = computed(() => sourceMismatch(SENSORS_COMMAND));
 const warnings = computed(() => calibrationWarnings(wizard));
+const errors = computed(() => sensorIssues(wizard));
+const unsaved = computed(() => mayHaveUnsavedChanges(wizard));
 
-function setSensor(which: "acc" | "baro", on: boolean): void {
-  // First touch: the untouched sensor keeps its current state (an explicit, full answer).
-  wizard.ext.sensors = { acc: accOn.value, baro: baroOn.value, [which]: on };
+/** Only the touched sensor gets a value; the others stay null (= keep). */
+function setSensor(which: SensorKey, on: boolean): void {
+  wizard.ext.sensors = { acc: null, baro: null, mag: null, ...wizard.ext.sensors, [which]: on };
+  markDirty();
+}
+const anySensorAnswer = computed(() => !!wizard.ext.sensors && Object.values(wizard.ext.sensors).some((v) => v !== null));
+
+// Fixes for "accelerometer off, but a mode that needs it is on a switch".
+function fixAccOn(): void {
+  // Back to the FC's own setting if it has the acc on, else switch it on (AUTO).
+  setSensor("acc", true);
+  if (wizard.ext.sensors && sensors.value?.acc.enabled) wizard.ext.sensors.acc = null;
+  markDirty();
+}
+function fixRemoveModes(): void {
+  wizard.model.switches = wizard.model.switches.filter((m) => !ACC_MODES.includes(modeKeyOf(m.mode)!));
   markDirty();
 }
 
@@ -54,7 +73,8 @@ async function loadSensors(): Promise<void> {
 // ---- accelerometer calibration
 const calError = ref<UiError | null>(null);
 async function calibrate(): Promise<void> {
-  if (wizard.ui.accCalibration === "running") return;
+  // Calibration saves to EEPROM together with any pending RAM change: never with unsaved changes.
+  if (wizard.ui.accCalibration === "running" || unsaved.value) return;
   calError.value = null;
   wizard.ui.accCalibration = "running";
   const wasLive = live.value === "on";
@@ -73,6 +93,8 @@ async function calibrate(): Promise<void> {
 // ---- live attitude
 const live = ref<"off" | "starting" | "on" | "busy" | "unavailable" | "error">("off");
 const liveError = ref<UiError | null>(null);
+/** Why the live view stopped on its own (DISCONNECTED / ERROR), for the retry message. */
+const stopReason = ref<string | null>(null);
 const reported = ref<Euler | null>(null);
 let offs: Unlisten[] = [];
 const attitudeSimulated = computed(() => sourceMismatch(ATTITUDE_START_COMMAND));
@@ -81,16 +103,18 @@ const current = computed<BoardAlignment>(() => wizard.ui.sensors?.alignment ?? {
 const preview = computed<BoardAlignment>(() => wizard.ext.boardAlignment ?? current.value);
 // The FC applies its current alignment before reporting; undo it for the preview (0/0/0 if unknown).
 const shown = computed(() => (reported.value ? alignedAttitude(reported.value, preview.value, current.value) : null));
+const currentIsPreset = computed(() => ALIGNMENT_PRESETS.some((p) => sameAlignment(current.value, p.align)));
 const direction = computed(() => (shown.value ? tiltDirection(shown.value) : null));
 
 async function startAttitude(): Promise<void> {
   live.value = "starting";
   liveError.value = null;
+  stopReason.value = null;
   // Only one stream at a time on the port: stop the RC stream and any motor test first.
   await api.device.rcStreamStop().catch(() => undefined);
   await motorTest.stop("navigation");
   try {
-    await pendingApi.attitudeStreamStart(20);
+    await pendingApi.attitudeStreamStart(10);
     live.value = "on";
   } catch (e) {
     const ue = toUiError(e);
@@ -135,6 +159,7 @@ onMounted(async () => {
     await onEvent(PENDING_EVENTS.attitudeStopped, (s: AttitudeStopped) => {
       if (s.reason === "REQUESTED" || live.value !== "on") return;
       reported.value = null;
+      stopReason.value = s.reason;
       liveError.value = s.error ? toUiError(s.error) : null;
       live.value = "error";
     }),
@@ -185,15 +210,31 @@ onBeforeUnmount(() => {
           </li>
           <li v-if="sensors.baro.present || !sensors.baro.enabled" data-sensor="baro">
             <label class="choice">
-              <input type="checkbox" data-test="baro-toggle" :checked="baroOn" @change="setSensor('baro', ($event.target as HTMLInputElement).checked)" />
+              <input type="checkbox" data-test="baro-toggle" :checked="isOn('baro')" @change="setSensor('baro', ($event.target as HTMLInputElement).checked)" />
               <strong>{{ t("calibration.sensors.baro") }}</strong>
             </label>
             <small class="hint">{{ t("calibration.sensors.baroHint") }}</small>
             <small v-if="!sensors.baro.present && !sensors.baro.enabled" class="hint">{{ t("calibration.sensors.offHint") }}</small>
           </li>
+          <li v-if="sensors.mag.present" data-sensor="mag">
+            <label class="choice">
+              <input type="checkbox" data-test="mag-toggle" :checked="isOn('mag')" @change="setSensor('mag', ($event.target as HTMLInputElement).checked)" />
+              <strong>{{ t("calibration.sensors.mag") }}</strong>
+            </label>
+            <small class="hint">{{ t("calibration.sensors.magHint") }}</small>
+          </li>
         </ul>
-        <p v-if="wizard.ext.sensors === null" class="hint">{{ t("calibration.sensors.keepHint") }}</p>
+        <p v-if="!anySensorAnswer" class="hint">{{ t("calibration.sensors.keepHint") }}</p>
       </template>
+      <div v-for="e in errors" :key="e.key" class="callout callout--danger" role="alert" :data-error="e.key">
+        <p>{{ t(e.key, e.params ?? {}) }}</p>
+        <div class="btn-row">
+          <button type="button" class="btn btn--small btn--primary" data-test="fix-acc-on" @click="fixAccOn">{{ t("calibration.sensors.fixAccOn") }}</button>
+          <button type="button" class="btn btn--small" data-test="fix-remove-modes" @click="fixRemoveModes">
+            {{ t("calibration.sensors.fixRemoveModes", { modes: accModeSwitches(wizard).join(", ") }) }}
+          </button>
+        </div>
+      </div>
       <div v-for="w in warnings" :key="w.key" class="callout callout--warn" :data-warning="w.key">{{ t(w.key) }}</div>
     </section>
 
@@ -210,13 +251,15 @@ onBeforeUnmount(() => {
           type="button"
           class="btn btn--primary"
           data-test="calibrate"
-          :disabled="wizard.ui.accCalibration === 'running' || !accOn"
+          :disabled="wizard.ui.accCalibration === 'running' || !accOn || unsaved"
           @click="calibrate"
         >
           {{ wizard.ui.accCalibration === "failed" ? t("calibration.acc.retry") : t("calibration.acc.calibrate") }}
         </button>
       </div>
+      <p class="hint" data-test="saves-now">{{ t("calibration.acc.savesNow") }}</p>
       <p v-if="!accOn" class="hint">{{ t("calibration.acc.accOff") }}</p>
+      <p v-if="unsaved" class="callout callout--warn" data-test="unsaved-changes">{{ t("calibration.acc.unsaved") }}</p>
       <p v-if="sensors?.accCalibrated === false && wizard.ui.accCalibration !== 'done'" class="callout callout--warn" data-test="needs-calibration">
         {{ t("calibration.acc.needed") }}
       </p>
@@ -238,7 +281,15 @@ onBeforeUnmount(() => {
       <div v-if="live === 'unavailable'" class="callout callout--warn" data-test="attitude-unavailable">{{ t("calibration.orientation.unavailable") }}</div>
       <template v-else-if="live === 'busy' || live === 'error'">
         <div class="callout callout--warn" data-test="attitude-busy">
-          {{ live === "busy" ? t("calibration.orientation.busy") : t("calibration.orientation.failed") }}
+          {{
+            live === "busy"
+              ? t("calibration.orientation.busy")
+              : stopReason === "DISCONNECTED"
+                ? t("calibration.orientation.stoppedDisconnected")
+                : stopReason
+                  ? t("calibration.orientation.stoppedError")
+                  : t("calibration.orientation.failed")
+          }}
         </div>
         <button type="button" class="btn btn--small" data-test="attitude-retry" @click="startAttitude">{{ t("actions.tryAgain") }}</button>
       </template>
@@ -292,14 +343,19 @@ onBeforeUnmount(() => {
               type="button"
               class="btn btn--small"
               :data-preset="p.id"
-              :aria-pressed="sameAlignment(wizard.ext.boardAlignment, p.align)"
+              :aria-pressed="sameAlignment(preview, p.align)"
               :disabled="attitudeSimulated"
               @click="choose(p.align)"
             >
               {{ t(`calibration.orientation.presets.${p.id}`) }}
             </button>
           </div>
+          <p class="hint" data-test="alignment-current">
+            {{ t("calibration.orientation.current", { roll: current.roll, pitch: current.pitch, yaw: current.yaw }) }}
+            <span v-if="!currentIsPreset"> {{ t("calibration.orientation.currentCustom") }}</span>
+          </p>
           <p class="hint">{{ t("calibration.orientation.presetsHint") }}</p>
+          <p class="hint" data-test="alignment-after-apply">{{ t("calibration.orientation.afterApply") }}</p>
           <button v-if="wizard.ext.boardAlignment" type="button" class="btn btn--small btn--link" data-test="alignment-keep" @click="keepAlignment">
             {{ t("calibration.orientation.keep") }}
           </button>

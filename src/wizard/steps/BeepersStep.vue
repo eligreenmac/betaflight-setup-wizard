@@ -4,40 +4,70 @@
 // "Choose" starts from the recommendation (Betaflight defaults, but no beeping on USB
 // power) and stores the firmware names to turn off. Only the beepers the detected
 // firmware has are shown; the forced demo shows the full list.
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import { useI18n } from "vue-i18n";
-import { demoState } from "../../api/fallback";
-import { availableBeepers, BEEPER_GROUPS, beeperName, isBeeperOn, KEEP_ON, recommendedDisabled, setBeeper, type BeeperDef } from "../beepers";
+import { catalogState, loadCatalog } from "../../api/catalog";
+import {
+  availableBeaconEvents,
+  availableBeepers,
+  BEEPER_GROUPS,
+  isBeeperOn,
+  KEEP_ON,
+  recommendedDisabled,
+  setBeacon,
+  setBeeper,
+  type BeeperDef,
+} from "../beepers";
+import type { DshotBeaconCondition } from "../../types/pendingModel";
 import { markDirty, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
 const { t } = useI18n();
 
-const fw = computed<string | null>(() => (demoState.forced ? null : wizard.fc?.firmwareVersion || wizard.model.fc.firmwareVersion || null));
-const list = computed(() => availableBeepers(fw.value));
+const fwVersion = computed(() => wizard.fc?.firmwareVersion || wizard.model.fc.firmwareVersion || null);
+onMounted(() => void loadCatalog(fwVersion.value));
+/** The firmware's lists (config_firmware_catalog); null until loaded = the full #65 list. */
+const catBeepers = computed(() => catalogState.catalog?.beepers ?? null);
+const list = computed(() => availableBeepers(catBeepers.value));
 const groups = computed(() => BEEPER_GROUPS.map((g) => ({ g, items: list.value.filter((b) => b.group === g) })).filter((x) => x.items.length));
 const disabled = computed(() => wizard.ext.beepers?.disabled ?? []);
 const isRecommended = computed(() => {
-  const rec = new Set(recommendedDisabled(fw.value));
+  const rec = new Set(recommendedDisabled(catBeepers.value));
   return disabled.value.length === rec.size && disabled.value.every((n) => rec.has(n));
 });
 
 function setMode(mode: "keep" | "choose"): void {
   wizard.ui.beeperMode = mode;
   if (mode === "keep") wizard.ext.beepers = null;
-  else wizard.ext.beepers ??= { disabled: recommendedDisabled(fw.value) };
+  else wizard.ext.beepers ??= { disabled: recommendedDisabled(catBeepers.value) };
   markDirty();
 }
 function toggle(b: BeeperDef, on: boolean): void {
   if (!wizard.ext.beepers) return;
-  wizard.ext.beepers = { disabled: setBeeper(wizard.ext.beepers.disabled, b, on, fw.value) };
+  wizard.ext.beepers = { ...wizard.ext.beepers, disabled: setBeeper(wizard.ext.beepers.disabled, b, on, catBeepers.value) };
   markDirty();
 }
 function reset(): void {
-  wizard.ext.beepers = { disabled: recommendedDisabled(fw.value) };
+  wizard.ext.beepers = { ...wizard.ext.beepers, disabled: recommendedDisabled(catBeepers.value) };
   markDirty();
 }
-const locked = (b: BeeperDef) => KEEP_ON.includes(b.key);
+const locked = (b: BeeperDef) => KEEP_ON.includes(b.name);
+
+// ---- DShot beacon (the motors beep): optional, null = keep.
+const dshot = computed(() => wizard.model.esc.protocol.startsWith("DSHOT"));
+const beaconEvents = computed(() => availableBeaconEvents(catalogState.catalog?.beaconEvents ?? null));
+const beacon = computed(() => wizard.ext.beepers?.dshotBeaconDisabled ?? null);
+function setBeaconMode(change: boolean): void {
+  if (!wizard.ext.beepers) return;
+  // Changing starts from Betaflight's default: the beacon sounds for both events.
+  wizard.ext.beepers = { ...wizard.ext.beepers, dshotBeaconDisabled: change ? (beacon.value ?? []) : null };
+  markDirty();
+}
+function toggleBeacon(e: DshotBeaconCondition, on: boolean): void {
+  if (!wizard.ext.beepers || !beacon.value) return;
+  wizard.ext.beepers = { ...wizard.ext.beepers, dshotBeaconDisabled: setBeacon(beacon.value, e, on) };
+  markDirty();
+}
 </script>
 
 <template>
@@ -72,21 +102,38 @@ const locked = (b: BeeperDef) => KEEP_ON.includes(b.key);
         <h3>{{ t(`beepers.groups.${grp.g}`) }}</h3>
         <p class="hint">{{ t(`beepers.groupHints.${grp.g}`) }}</p>
         <ul>
-          <li v-for="b in grp.items" :key="b.key">
+          <li v-for="b in grp.items" :key="b.name">
             <label>
               <input
                 type="checkbox"
-                :data-beeper="b.key"
-                :checked="isBeeperOn(disabled, b, fw)"
+                :data-beeper="b.name"
+                :checked="isBeeperOn(disabled, b)"
                 :disabled="locked(b)"
                 @change="toggle(b, ($event.target as HTMLInputElement).checked)"
               />
               <span>
-                <strong>{{ t(`beepers.items.${b.key}`) }}</strong>
-                <small class="mono" dir="ltr"> {{ beeperName(b, fw) }}</small>
-                <small class="hint" style="display: block">{{ t(`beepers.explain.${b.key}`) }}</small>
+                <strong>{{ t(`beepers.items.${b.name}`) }}</strong>
+                <small class="mono" dir="ltr"> {{ b.name }}</small>
+                <small class="hint" style="display: block">{{ t(`beepers.explain.${b.name}`) }}</small>
                 <small v-if="locked(b)" class="hint" style="display: block">{{ t("beepers.locked") }}</small>
               </span>
+            </label>
+          </li>
+        </ul>
+      </section>
+
+      <section v-if="dshot && beaconEvents.length" class="subcard" data-section="beacon">
+        <h3>{{ t("beepers.beacon.title") }}</h3>
+        <p>{{ t("beepers.beacon.body") }}</p>
+        <div class="choice-row" role="radiogroup" :aria-label="t('beepers.beacon.title')">
+          <label><input type="radio" name="beacon" data-beacon="keep" :checked="beacon === null" @change="setBeaconMode(false)" /> {{ t("beepers.beacon.keep") }}</label>
+          <label><input type="radio" name="beacon" data-beacon="change" :checked="beacon !== null" @change="setBeaconMode(true)" /> {{ t("beepers.beacon.change") }}</label>
+        </div>
+        <ul v-if="beacon !== null">
+          <li v-for="e in beaconEvents" :key="e">
+            <label>
+              <input type="checkbox" :data-beacon-event="e" :checked="!beacon.includes(e)" @change="toggleBeacon(e, ($event.target as HTMLInputElement).checked)" />
+              {{ t(`beepers.beacon.events.${e}`) }}
             </label>
           </li>
         </ul>

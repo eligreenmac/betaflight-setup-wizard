@@ -356,7 +356,9 @@
       "altHold": "Altitude hold",
       "posHold": "Position hold",
       "prearm": "Prearm (second safety switch)",
-      "airMode": "Air mode"
+      "airMode": "Air mode",
+      "horizon": "Horizon (self-level, flips allowed)",
+      "gpsRescue": "GPS Rescue (fly home)"
     },
     "detect": "Detect",
     "detecting": "Flip the switch now… (cancel)",
@@ -365,7 +367,11 @@
       "title": "Prearm: a second safety switch (optional)",
       "body": "With prearm, the quad only arms if this switch is on first. It protects against arming by accident, for example when you bump the arm switch while carrying the quad.",
       "add": "Add a prearm switch",
-      "skip": "Skip, I don't want this"
+      "skip": "Skip",
+      "addHint": "A switch row is added above. Arm only works after this switch is on.",
+      "skipHint": "The wizard does not change prearm. If the board already has a prearm switch, it stays.",
+      "remove": "Remove it",
+      "removeHint": "If the board already has a prearm switch, it is removed. If it has none, nothing changes."
     },
     "turtle": {
       "title": "Turtle mode: flip over after a crash (optional)",
@@ -385,7 +391,9 @@
       "offHint": "At zero throttle the quad may wobble or drop and is harder to control.",
       "keep": "Keep the board's current setting",
       "keepHint": "The wizard does not change air mode."
-    }
+    },
+    "removeExisting": "If the board already has a switch for {mode}, remove it",
+    "removeHint": "The wizard cannot see which switches the board has now. Removing a switch the board does not have changes nothing."
   },
   "calibration": {
     "sensors": {
@@ -402,9 +410,13 @@
       "alwaysOn": "Always on",
       "missing": "Not on this board",
       "keepHint": "If you do not change anything here, the board keeps its current sensor settings.",
-      "offHint": "Turned off in the board's settings. Turn it on if your board has one; the board looks for it after the settings are applied."
+      "offHint": "Turned off in the board's settings. Turn it on if your board has one; the board looks for it after the settings are applied.",
+      "mag": "Magnetometer (compass)",
+      "magHint": "Knows which way is north. Only some GPS features use it; if you are not sure, leave it as it is.",
+      "fixAccOn": "Turn the accelerometer back on",
+      "fixRemoveModes": "Remove these switches: {modes}"
     },
-    "warnAngleNoAcc": "Angle mode is on a switch, but the accelerometer is off. Angle mode will not work without it.",
+    "warnAngleNoAcc": "A mode on your switches (Angle, Horizon, altitude or position hold, GPS Rescue) needs the accelerometer, but this board has no working one. That mode will not work.",
     "warnGpsNoAcc": "The GPS is on, but the accelerometer is off. Some GPS features, like GPS Rescue, need it.",
     "acc": {
       "title": "Calibrate the accelerometer",
@@ -418,7 +430,9 @@
       "failedHint": "Make sure the quad is level and not moving, then try again.",
       "accOff": "Turn the accelerometer on to calibrate it.",
       "optional": "Recommended if you use Angle or Horizon mode. You can continue without it.",
-      "needed": "The board says its accelerometer has not been calibrated yet."
+      "needed": "The board says its accelerometer has not been calibrated yet.",
+      "savesNow": "The calibration is saved on the board right away, before you apply the other settings.",
+      "unsaved": "The last apply did not finish, so the board may hold unsaved changes. Unplug the board, plug it back in and reconnect before you calibrate."
     },
     "orientation": {
       "title": "Is the board mounted the right way?",
@@ -453,8 +467,14 @@
       "unavailable": "This app version cannot show the board's movement yet. You can skip this check.",
       "busy": "The board is busy with another live test. Stop it and try again.",
       "failed": "The live view could not start.",
-      "simulated": "This movement is from the demo, not from your board, so the mounting cannot be changed here."
-    }
+      "simulated": "This movement is from the demo, not from your board, so the mounting cannot be changed here.",
+      "current": "The board is set now to: roll {roll}°, pitch {pitch}°, yaw {yaw}°.",
+      "currentCustom": "This is not one of the choices below.",
+      "afterApply": "The board itself changes only after you apply the settings. The picture shows the result already.",
+      "stoppedDisconnected": "The live view stopped: the board was disconnected. Check the USB cable, then try again.",
+      "stoppedError": "The live view stopped: the board stopped answering. Try again."
+    },
+    "warnAltholdNoBaro": "Altitude hold is on a switch, but the barometer is turned off. Without it, altitude hold is much less accurate."
   },
   "beepers": {
     "choose": "Choose the beeps (recommended)",
@@ -498,7 +518,8 @@
       "ON_USB": "Beep on USB power",
       "DISARM_REPEAT": "Disarmed reminder",
       "CAM_CONNECTION_OPEN": "Camera menu opened",
-      "CAM_CONNECTION_CLOSE": "Camera menu closed"
+      "CAM_CONNECTION_CLOSE": "Camera menu closed",
+      "MULTI_BEEPS": "Confirmation beeps"
     },
     "explain": {
       "RX_LOST": "Beeps when the radio signal is lost, so you can find the quad.",
@@ -523,7 +544,18 @@
       "ON_USB": "Lets the quad beep when it is only powered from USB. Off keeps your desk quiet.",
       "DISARM_REPEAT": "Keeps beeping while disarmed with the throttle up.",
       "CAM_CONNECTION_OPEN": "Beeps when the camera settings menu opens.",
-      "CAM_CONNECTION_CLOSE": "Beeps when the camera settings menu closes."
+      "CAM_CONNECTION_CLOSE": "Beeps when the camera settings menu closes.",
+      "MULTI_BEEPS": "Short beeps that confirm a change, for example a new profile chosen with the sticks."
+    },
+    "beacon": {
+      "title": "Motor beacon (DShot)",
+      "body": "With DShot, the motors themselves can beep. They are much louder than a buzzer, which helps you find a quad that crashed in tall grass.",
+      "keep": "Keep the board's current setting",
+      "change": "Choose",
+      "events": {
+        "RX_LOST": "When the radio signal is lost",
+        "RX_SET": "When you turn on the beeper switch"
+      }
     }
   },
   "review": {
@@ -569,8 +601,11 @@
       "airmode": "air mode",
       "sensors": "sensors",
       "boardAlignment": "board mounting",
-      "beepers": "beeps"
-    }
+      "beepers": "beeps",
+      "removeModes": "switches to remove"
+    },
+    "removeModes": "Switches to remove",
+    "beacon": "Motor beacon"
   },
   "apply": {
     "ready": "{n} settings are ready to write.",
@@ -730,7 +765,10 @@
     "turtleNeedsDshot": "Turtle mode needs the DShot ESC protocol. Change the ESC protocol, or remove turtle mode.",
     "airmodeSwitchMissing": "Air mode is set to \"on a switch\": add the switch.",
     "calibrationRunning": "Wait until the calibration is finished.",
-    "beepersChoose": "Choose the recommended beeps, or keep the current ones."
+    "beepersChoose": "Choose the recommended beeps, or keep the current ones.",
+    "accNeededByModes": "The accelerometer is turned off, but these switches need it: {modes}. Turn the accelerometer on, or remove those switches.",
+    "alignmentInvalid": "The board mounting angles must be whole degrees from -180 to 360.",
+    "modeNotInFirmware": "{mode} is not available in Betaflight {version}. Remove it."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -955,7 +993,7 @@
     "BOARD_MOVING": {
       "title": "The quad is moving",
       "body": "The quad must be completely still to calibrate. Nothing was changed.",
-      "step1": "Put the quad down on a flat, level surface and let go of it and the cable.",
+      "step1": "Keep it still: put the quad on a table, and let go of it and the cable.",
       "step2": "Try again."
     },
     "BOARD_MOVING_DURING": {

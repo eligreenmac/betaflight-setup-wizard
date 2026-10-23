@@ -113,11 +113,15 @@ describe("i18n", () => {
       ...["done", "active", "failed"].map((s) => `stageState.${s}`),
       // Switches / Calibration / Beepers
       ...["always", "switch", "off", "keep"].flatMap((k) => [`switches.airmode.${k}`, `switches.airmode.${k}Hint`]),
-      ...["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc"],
+      ...["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc", "calibration.warnAltholdNoBaro"],
+      ...["acc", "baro", "mag"].map((k) => `calibration.sensors.${k}`),
       ...["level", "noseDown", "noseUp", "rightDown", "leftDown"].map((d) => `calibration.orientation.direction.${d}`),
       ...ALIGNMENT_PRESETS.map((p) => `calibration.orientation.presets.${p.id}`),
       ...BEEPER_GROUPS.flatMap((g) => [`beepers.groups.${g}`, `beepers.groupHints.${g}`]),
-      ...BEEPERS.flatMap((b) => [`beepers.items.${b.key}`, `beepers.explain.${b.key}`]),
+      ...BEEPERS.flatMap((b) => [`beepers.items.${b.name}`, `beepers.explain.${b.name}`]),
+      ...["RX_LOST", "RX_SET"].map((e) => `beepers.beacon.events.${e}`),
+      ...["add", "skip", "remove"].flatMap((c) => [`switches.prearm.${c}`, `switches.prearm.${c}Hint`]),
+      ...["stoppedDisconnected", "stoppedError", "failed", "busy"].map((k) => `calibration.orientation.${k}`),
       ...["idle", "running", "done", "failed"].map((s) => `review.calibration.${s}`),
       ...EXT_FIELDS.map((f) => `review.fields.${f}`),
     ];

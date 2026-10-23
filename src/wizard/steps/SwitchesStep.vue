@@ -9,7 +9,8 @@ import { useI18n } from "vue-i18n";
 import { api, EVENTS } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { isNotImplemented } from "../../errors/codes";
-import { addModeSwitch, markDirty, removeModeSwitch, setAirmode, setPrearm, wizard } from "../state";
+import { addModeSwitch, markDirty, removeModeSwitch, setAirmode, setModeRemoval, setPrearm, wizard } from "../state";
+import { catalogState, loadCatalog } from "../../api/catalog";
 import type { Airmode } from "../modelExt";
 import {
   auxToChannelIndex,
@@ -18,6 +19,7 @@ import {
   MAX_AUX,
   MODE_KEYS,
   displayBoxName,
+  GPS_MODES,
   modeAvailable,
   modeKeyOf,
   positionOf,
@@ -39,16 +41,26 @@ let offs: Unlisten[] = [];
 const used = computed(() => new Set(wizard.model.switches.map((s) => modeKeyOf(s.mode))));
 const addable = computed(() =>
   MODE_KEYS.filter(
-    (k) => k !== "arm" && k !== "turtle" && !SPECIAL_MODES.includes(k) && !used.value.has(k) && modeAvailable(k, fw.value) && (k !== "posHold" || wizard.model.gps.enabled),
+    (k) =>
+      k !== "arm" &&
+      k !== "turtle" &&
+      !SPECIAL_MODES.includes(k) &&
+      !used.value.has(k) &&
+      available(k) &&
+      (!GPS_MODES.includes(k) || wizard.model.gps.enabled),
   ),
 );
+/** Mode availability: the firmware catalog's mode list when loaded, else the built-in versions. */
+const available = (k: ModeKey) => modeAvailable(k, fw.value, catalogState.catalog?.modes);
+const removing = (m: "PREARM" | "FLIP OVER AFTER CRASH" | "AIR MODE") => wizard.ext.removeModes.includes(m);
 const dshot = computed(() => wizard.model.esc.protocol.startsWith("DSHOT"));
 const airmodeChoices: { value: Airmode | null; key: string }[] = [
-  { value: "always", key: "always" },
-  { value: "switch", key: "switch" },
-  { value: "off", key: "off" },
+  { value: "ALWAYS", key: "always" },
+  { value: "SWITCH", key: "switch" },
+  { value: "OFF", key: "off" },
   { value: null, key: "keep" },
 ];
+const prearmChoice = computed(() => (used.value.has("prearm") ? "add" : removing("PREARM") ? "remove" : wizard.ui.prearmChoice === "skip" ? "skip" : null));
 
 // ---- "Detect": remember the sticks/switches now, then pick the AUX channel that moves.
 const detecting = ref<number | null>(null);
@@ -101,6 +113,7 @@ function active(sw: { auxChannel: number; rangeMin: number; rangeMax: number }):
 }
 
 onMounted(async () => {
+  void loadCatalog(fw.value);
   if (!wizard.connectedPath) return void (live.value = "unavailable");
   offs.push(await onEvent(EVENTS.rcChannels, (p) => ((channels.value = p.channels), (live.value = "on"))));
   offs.push(await onEvent(EVENTS.rcStopped, () => (live.value = "stopped")));
@@ -163,30 +176,38 @@ onBeforeUnmount(() => {
     </div>
     <p class="hint">{{ t("switches.armHint") }}</p>
 
-    <section class="subcard" data-section="prearm">
+    <section v-if="available('prearm')" class="subcard" data-section="prearm">
       <h3>{{ t("switches.prearm.title") }}</h3>
       <p>{{ t("switches.prearm.body") }}</p>
-      <div class="choice-row" role="radiogroup" :aria-label="t('switches.prearm.title')">
-        <label>
-          <input type="radio" name="prearm" data-prearm="add" :checked="wizard.ui.prearmChoice === 'add' || used.has('prearm')" @change="setPrearm(wizard, 'add')" />
-          {{ t("switches.prearm.add") }}
-        </label>
-        <label>
-          <input type="radio" name="prearm" data-prearm="skip" :checked="wizard.ui.prearmChoice === 'skip' && !used.has('prearm')" @change="setPrearm(wizard, 'skip')" />
-          {{ t("switches.prearm.skip") }}
+      <div class="choice-col" role="radiogroup" :aria-label="t('switches.prearm.title')">
+        <label v-for="c in (['add', 'skip', 'remove'] as const)" :key="c">
+          <input type="radio" name="prearm" :data-prearm="c" :checked="prearmChoice === c" @change="setPrearm(wizard, c)" />
+          <span>
+            <strong>{{ t(`switches.prearm.${c}`) }}</strong>
+            <small class="hint" style="display: block">{{ t(`switches.prearm.${c}Hint`) }}</small>
+          </span>
         </label>
       </div>
     </section>
 
-    <section class="subcard" data-section="turtle">
+    <section v-if="available('turtle')" class="subcard" data-section="turtle">
       <h3>{{ t("switches.turtle.title") }}</h3>
       <p>{{ t("switches.turtle.body") }}</p>
       <p :class="['hint', dshot ? '' : 'hint--warn']">{{ dshot ? t("switches.turtle.dshotOk") : t("switches.turtle.needsDshot") }}</p>
       <button v-if="!used.has('turtle')" type="button" class="btn btn--small" data-add="turtle" @click="add('turtle')">+ {{ t("switches.modes.turtle") }}</button>
       <p v-else class="hint">{{ t("switches.turtle.added") }}</p>
+      <label v-if="!used.has('turtle')" class="choice">
+        <input
+          type="checkbox"
+          data-remove-mode="turtle"
+          :checked="removing('FLIP OVER AFTER CRASH')"
+          @change="setModeRemoval(wizard, 'FLIP OVER AFTER CRASH', ($event.target as HTMLInputElement).checked)"
+        />
+        {{ t("switches.removeExisting", { mode: t("switches.modes.turtle") }) }}
+      </label>
     </section>
 
-    <section class="subcard" data-section="airmode">
+    <section v-if="available('airMode')" class="subcard" data-section="airmode">
       <h3>{{ t("switches.airmode.title") }}</h3>
       <p>{{ t("switches.airmode.body") }}</p>
       <div class="choice-col" role="radiogroup" :aria-label="t('switches.airmode.title')">
@@ -198,6 +219,16 @@ onBeforeUnmount(() => {
           </span>
         </label>
       </div>
+      <label v-if="wizard.ext.airmode !== 'SWITCH'" class="choice">
+        <input
+          type="checkbox"
+          data-remove-mode="airMode"
+          :checked="removing('AIR MODE')"
+          @change="setModeRemoval(wizard, 'AIR MODE', ($event.target as HTMLInputElement).checked)"
+        />
+        {{ t("switches.removeExisting", { mode: t("switches.modes.airMode") }) }}
+      </label>
+      <p class="hint">{{ t("switches.removeHint") }}</p>
     </section>
   </div>
 </template>

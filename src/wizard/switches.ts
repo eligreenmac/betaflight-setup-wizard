@@ -21,6 +21,8 @@ export const auxToChannelIndex = (aux: number): number => aux + 4;
 
 import { compareVersions } from "./version";
 
+const squash = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
 /**
  * Modes the wizard offers. DroneModel.switches[].mode stores only the STABLE mode name
  * (schemas/drone-model.schema.json, config::modes canonical names: "ARM", "ANGLE",
@@ -30,9 +32,15 @@ import { compareVersions } from "./version";
  * PREARM and AIR MODE use config::modes' canonical spelling on main ("PREARM",
  * "AIR MODE"); its resolver also accepts "AIRMODE" / "FLIP_OVER_AFTER_CRASH".
  */
-export const MODE_KEYS = ["arm", "angle", "beeper", "turtle", "altHold", "posHold", "prearm", "airMode"] as const;
+export const MODE_KEYS = ["arm", "angle", "horizon", "beeper", "turtle", "altHold", "posHold", "gpsRescue", "prearm", "airMode"] as const;
 export type ModeKey = (typeof MODE_KEYS)[number];
-export const OPTIONAL_MODES: ModeKey[] = ["angle", "beeper", "turtle", "altHold", "posHold", "prearm", "airMode"];
+export const OPTIONAL_MODES: ModeKey[] = ["angle", "horizon", "beeper", "turtle", "altHold", "posHold", "gpsRescue", "prearm", "airMode"];
+/** Modes that need the accelerometer (self-levelling / GPS): acc:false with one of these is an error. */
+export const ACC_MODES: ModeKey[] = ["angle", "horizon", "altHold", "posHold", "gpsRescue"];
+/** Modes that need the barometer to work well (baro:false with one of these is a warning). */
+export const BARO_MODES: ModeKey[] = ["altHold"];
+/** Modes that use GPS (offered only when GPS is enabled). */
+export const GPS_MODES: ModeKey[] = ["posHold", "gpsRescue"];
 /** Modes with their own section on the Switches step (not in the generic "add" row). */
 export const SPECIAL_MODES: ModeKey[] = ["prearm", "airMode"];
 
@@ -40,10 +48,12 @@ export const SPECIAL_MODES: ModeKey[] = ["prearm", "airMode"];
 export const MODES = {
   arm: "ARM",
   angle: "ANGLE",
+  horizon: "HORIZON",
   beeper: "BEEPER",
   turtle: "FLIP OVER AFTER CRASH",
   altHold: "ALTHOLD",
   posHold: "POSHOLD",
+  gpsRescue: "GPS RESCUE",
   prearm: "PREARM",
   airMode: "AIR MODE",
 } as const satisfies Record<ModeKey, string>;
@@ -62,10 +72,12 @@ export const MODE_MIN_FIRMWARE: Partial<Record<ModeKey, string>> = { altHold: MO
 const DISPLAY_NAMES: Record<ModeKey, { legacy: string; current: string }> = {
   arm: { legacy: "ARM", current: "ARM" },
   angle: { legacy: "ANGLE", current: "ANGLE" },
+  horizon: { legacy: "HORIZON", current: "HORIZON" },
   beeper: { legacy: "BEEPER", current: "BEEPER" },
   turtle: { legacy: "FLIP OVER AFTER CRASH", current: "FLIP OVER AFTER CRASH" },
   altHold: { legacy: "BARO", current: "ALTHOLD" },
   posHold: { legacy: "GPS HOLD", current: "POS HOLD" },
+  gpsRescue: { legacy: "GPS RESCUE", current: "GPS RESCUE" },
   prearm: { legacy: "PREARM", current: "PREARM" },
   airMode: { legacy: "AIR MODE", current: "AIR MODE" },
 };
@@ -85,13 +97,17 @@ export function displayBoxName(key: ModeKey, firmwareVersion: string | null | un
   return usesNewModeNames(firmwareVersion) ? n.current : n.legacy;
 }
 
-/** Can the config engine set this mode on the given firmware? (unknown version = yes) */
-export function modeAvailable(key: ModeKey, firmwareVersion: string | null | undefined): boolean {
+/**
+ * Can the config engine set this mode on the given firmware? With the firmware catalog
+ * (config_firmware_catalog().modes, non-empty) that list decides; otherwise the built-in
+ * minimum versions (unknown version = yes).
+ */
+export function modeAvailable(key: ModeKey, firmwareVersion: string | null | undefined, catalogModes?: string[] | null): boolean {
+  if (catalogModes && catalogModes.length) return catalogModes.some((m) => squash(m) === squash(MODES[key]));
   const min = MODE_MIN_FIRMWARE[key];
   return !min || !firmwareVersion || compareVersions(firmwareVersion, min) >= 0;
 }
 
-const squash = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 /** Older spellings accepted when reading a model (e.g. saved by an earlier build). */
 const ALIASES: Record<string, ModeKey> = { BARO: "altHold", ALTITUDEHOLD: "altHold", GPSHOLD: "posHold", POSITIONHOLD: "posHold", TURTLE: "turtle", FLIP: "turtle" };
 

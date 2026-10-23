@@ -87,7 +87,14 @@ export const ALIGNMENT_PRESETS: AlignmentPreset[] = [
   { id: "roll180yaw270", align: { roll: 180, pitch: 0, yaw: 270 } },
 ];
 
-export const sameAlignment = (a: BoardAlignment | null, b: BoardAlignment): boolean => !!a && a.roll === b.roll && a.pitch === b.pitch && a.yaw === b.yaw;
+const deg360 = (x: number) => ((x % 360) + 360) % 360;
+/** Same alignment? Angles compared modulo 360 (-90 = 270). */
+export const sameAlignment = (a: BoardAlignment | null, b: BoardAlignment): boolean =>
+  !!a && deg360(a.roll) === deg360(b.roll) && deg360(a.pitch) === deg360(b.pitch) && deg360(a.yaw) === deg360(b.yaw);
+
+/** #65: board alignment is whole degrees, -180..360 on each axis. */
+export const validAlignment = (a: BoardAlignment): boolean =>
+  [a.roll, a.pitch, a.yaw].every((x) => Number.isInteger(x) && x >= -180 && x <= 360);
 
 /** Which way the frame is tilted, for "did the picture move the same way?" checks. */
 export function tiltDirection(e: Euler, threshold = 15): "noseDown" | "noseUp" | "rightDown" | "leftDown" | "level" {

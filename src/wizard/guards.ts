@@ -8,7 +8,9 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
-import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, NEEDS_DSHOT, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { ACC_MODES, BARO_MODES, MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, NEEDS_DSHOT, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { catalogState } from "../api/catalog";
+import { validAlignment } from "./orientation";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
@@ -53,7 +55,10 @@ export function validateSwitches(s: WizardState): Issue[] {
     const k = modeKeyOf(m.mode);
     const fw = s.fc?.firmwareVersion ?? s.model.fc.firmwareVersion;
     if (!k || m.mode !== MODES[k]) issues.push({ key: "validation.modeUnknown", params: { mode: m.mode } });
-    else if (!modeAvailable(k, fw)) issues.push({ key: "validation.modeNeedsFirmware", params: { mode: m.mode, version: MODE_MIN_FIRMWARE[k] ?? "" } });
+    else if (!modeAvailable(k, fw, catalogState.catalog?.modes)) {
+      const min = MODE_MIN_FIRMWARE[k];
+      issues.push(min ? { key: "validation.modeNeedsFirmware", params: { mode: m.mode, version: min } } : { key: "validation.modeNotInFirmware", params: { mode: m.mode, version: fw || "?" } });
+    }
     const badRange =
       m.rangeMin < RANGE_MIN || m.rangeMax > RANGE_MAX || m.rangeMin >= m.rangeMax || m.rangeMin % RANGE_STEP !== 0 || m.rangeMax % RANGE_STEP !== 0;
     if (badRange) issues.push({ key: "validation.modeRangeInvalid", params: { mode: m.mode } });
@@ -79,17 +84,42 @@ export function validateSwitches(s: WizardState): Issue[] {
     const k = modeKeyOf(m.mode);
     if (k && NEEDS_DSHOT.includes(k) && !s.model.esc.protocol.startsWith("DSHOT")) issues.push({ key: "validation.turtleNeedsDshot" });
   }
-  if (s.ext.airmode === "switch" && !sw.some((m) => m.mode === MODES.airMode)) issues.push({ key: "validation.airmodeSwitchMissing" });
+  if (s.ext.airmode === "SWITCH" && !sw.some((m) => m.mode === MODES.airMode)) issues.push({ key: "validation.airmodeSwitchMissing" });
   return issues;
 }
+
+/** Switches in the plan whose mode needs the accelerometer (ANGLE, HORIZON, ALTHOLD, POSHOLD, GPS RESCUE). */
+export function accModeSwitches(s: WizardState): string[] {
+  return s.model.switches.filter((m) => ACC_MODES.includes(modeKeyOf(m.mode)!)).map((m) => m.mode);
+}
+
+/**
+ * Blocking: the plan turns the accelerometer off (sensors.acc = false) while a switch for
+ * a mode that needs it is in the plan. The Calibration step offers the fixes.
+ */
+export function sensorIssues(s: WizardState): Issue[] {
+  const modes = accModeSwitches(s);
+  const out: Issue[] = s.ext.sensors?.acc === false && modes.length ? [{ key: "validation.accNeededByModes", params: { modes: modes.join(", ") } }] : [];
+  if (s.ext.boardAlignment && !validAlignment(s.ext.boardAlignment)) out.push({ key: "validation.alignmentInvalid" });
+  return out;
+}
+
+/**
+ * The flight controller may hold unsaved RAM changes after an apply that failed half-way.
+ * Acc calibration saves to EEPROM (with any pending RAM changes), so it waits until the
+ * board was reconnected (reconnecting resets applyStatus).
+ */
+export const mayHaveUnsavedChanges = (s: WizardState): boolean => s.ui.applyStatus === "applying" || s.ui.applyStatus === "failed";
 
 /** Non-blocking warnings on the Calibration step (shown there and on Review). */
 export function calibrationWarnings(s: WizardState): Issue[] {
   const out: Issue[] = [];
-  const accOn = s.ext.sensors ? s.ext.sensors.acc : s.ui.sensors ? s.ui.sensors.acc.present && s.ui.sensors.acc.enabled : true;
-  const self = s.model.switches.filter((m) => m.mode === MODES.angle);
-  if (!accOn && self.length) out.push({ key: "calibration.warnAngleNoAcc" });
+  const explicitOff = s.ext.sensors?.acc === false;
+  const accOn = s.ext.sensors?.acc ?? (s.ui.sensors ? s.ui.sensors.acc.present && s.ui.sensors.acc.enabled : true);
+  // acc:false + those modes is a blocking error (sensorIssues); here only a board without one.
+  if (!accOn && !explicitOff && accModeSwitches(s).length) out.push({ key: "calibration.warnAngleNoAcc" });
   if (!accOn && s.model.gps.enabled) out.push({ key: "calibration.warnGpsNoAcc" });
+  if (s.ext.sensors?.baro === false && s.model.switches.some((m) => BARO_MODES.includes(modeKeyOf(m.mode)!))) out.push({ key: "calibration.warnAltholdNoBaro" });
   return out;
 }
 
@@ -174,7 +204,7 @@ export const guards: Record<string, StepGuard> = {
     canEnter: configured,
     // Calibration and the orientation check are recommended, not gating (the board may
     // already be calibrated, and some backends cannot calibrate yet). Running = wait.
-    validate: (s) => (s.ui.accCalibration === "running" ? [{ key: "validation.calibrationRunning" }] : []),
+    validate: (s) => [...(s.ui.accCalibration === "running" ? [{ key: "validation.calibrationRunning" }] : []), ...sensorIssues(s)],
   },
   beepers: {
     canEnter: configured,

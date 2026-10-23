@@ -12,7 +12,10 @@ import { guidanceFor } from "../src/errors/guidance";
 import { i18n, setLocale } from "../src/i18n";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { createScenarioMock, type Scenario, type ScenarioMock } from "../src/mocks/scenarios";
-import { calibrationWarnings, guards } from "../src/wizard/guards";
+import { calibrationWarnings, guards, sensorIssues } from "../src/wizard/guards";
+import { generateCli } from "../src/mocks/scenarios";
+import { isWriteCommand } from "../src/api/fallback";
+import { ALL_STEPS } from "../src/wizard/engine";
 import { simulatedFields, toPlanModel, unplannedChoices } from "../src/wizard/modelExt";
 import { nav, resetNav } from "../src/wizard/nav";
 import { addModeSwitch, createWizardState, resetWizard, wizard } from "../src/wizard/state";
@@ -34,8 +37,9 @@ afterEach(async () => {
   uninstallMock();
 });
 
-async function open(scenario: Scenario = "happy"): Promise<VueWrapper> {
+async function open(scenario: Scenario = "happy", setup?: (d: ScenarioMock["device"]) => void): Promise<VueWrapper> {
   mock = installMock({ scenario, latencyMs: 0, stepMs: 0 });
+  setup?.(mock.device);
   w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
   await settle();
   await w.get('[data-test="next"]').trigger("click");
@@ -106,25 +110,91 @@ describe("sensors", () => {
     expect(w!.get('[data-sensor="acc"]').text()).toContain("Not on this board");
   });
 
-  it("first toggle sets both sensors explicitly; ANGLE with acc off warns (not blocking)", async () => {
+  it("only the touched sensor is set; acc off + ANGLE is a blocking error with fixes", async () => {
     await open();
     addModeSwitch(wizard, "angle");
     await w!.get('[data-test="acc-toggle"]').setValue(false);
-    expect(wizard.ext.sensors).toEqual({ acc: false, baro: false });
-    expect(w!.find('[data-warning="calibration.warnAngleNoAcc"]').exists()).toBe(true);
-    await w!.get('[data-test="baro-toggle"]').setValue(true);
-    expect(wizard.ext.sensors).toEqual({ acc: false, baro: true });
+    expect(wizard.ext.sensors).toEqual({ acc: false, baro: null, mag: null });
+    expect(toPlanModel(wizard.model, wizard.ext).sensors).toEqual({ acc: false });
+    expect(guards.calibration!.validate(wizard)).toEqual([{ key: "validation.accNeededByModes", params: { modes: "ANGLE" } }]);
+    expect(w!.find('[data-error="validation.accNeededByModes"]').exists()).toBe(true);
+    // Fix 1: turn the acc back on (the FC has it on: back to keep).
+    await w!.get('[data-test="fix-acc-on"]').trigger("click");
+    expect(wizard.ext.sensors?.acc).toBeNull();
     expect(guards.calibration!.validate(wizard)).toEqual([]);
+    // Fix 2: remove the switches that need it.
+    await w!.get('[data-test="acc-toggle"]').setValue(false);
+    await w!.get('[data-test="fix-remove-modes"]').trigger("click");
+    expect(wizard.model.switches.map((x) => x.mode)).toEqual(["ARM"]);
+    expect(guards.calibration!.validate(wizard)).toEqual([]);
+    await w!.get('[data-test="baro-toggle"]').setValue(true);
+    expect(wizard.ext.sensors).toEqual({ acc: false, baro: true, mag: null });
   });
 
-  it("calibrationWarnings: ANGLE / GPS without acc", () => {
+  it("acc:false blocks with every acc mode (ANGLE, HORIZON, ALTHOLD, POSHOLD, GPS RESCUE), not with others", () => {
+    for (const k of ["angle", "horizon", "altHold", "posHold", "gpsRescue"] as const) {
+      const s = createWizardState();
+      s.ext.sensors = { acc: false, baro: null, mag: null };
+      addModeSwitch(s, k);
+      expect(sensorIssues(s).map((i) => i.key)).toEqual(["validation.accNeededByModes"]);
+      expect(guards.calibration!.validate(s).map((i) => i.key)).toContain("validation.accNeededByModes");
+    }
+    const s = createWizardState();
+    s.ext.sensors = { acc: false, baro: null, mag: null };
+    addModeSwitch(s, "beeper");
+    addModeSwitch(s, "turtle");
+    expect(sensorIssues(s)).toEqual([]);
+    // acc kept (null) on a board without one: only a warning.
+    const t2 = createWizardState();
+    t2.ui.sensors = { gyro: { present: true }, acc: { present: false, enabled: true }, baro: { present: false, enabled: true }, mag: { present: false, enabled: true }, accCalibrated: null, alignment: null };
+    addModeSwitch(t2, "angle");
+    expect(sensorIssues(t2)).toEqual([]);
+    expect(calibrationWarnings(t2).map((i) => i.key)).toEqual(["calibration.warnAngleNoAcc"]);
+  });
+
+  it("calibrationWarnings: GPS without acc; baro:false + ALTHOLD is a warning", () => {
     const s = createWizardState();
     expect(calibrationWarnings(s)).toEqual([]);
-    s.ext.sensors = { acc: false, baro: false };
+    s.ext.sensors = { acc: false, baro: false, mag: null };
     expect(calibrationWarnings(s)).toEqual([]);
-    addModeSwitch(s, "angle");
     s.model.gps.enabled = true;
-    expect(calibrationWarnings(s).map((i) => i.key)).toEqual(["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc"]);
+    expect(calibrationWarnings(s).map((i) => i.key)).toEqual(["calibration.warnGpsNoAcc"]);
+    s.ext.sensors = { acc: null, baro: false, mag: null };
+    addModeSwitch(s, "altHold");
+    expect(calibrationWarnings(s).map((i) => i.key)).toEqual(["calibration.warnAltholdNoBaro"]);
+    expect(guards.calibration!.validate(s)).toEqual([]);
+  });
+
+  it("magnetometer toggle only when one is present", async () => {
+    await open();
+    expect(w!.find('[data-test="mag-toggle"]').exists()).toBe(false);
+    w!.unmount();
+    w = null;
+    uninstallMock();
+    resetWizard();
+    resetNav();
+    const m = await open("happy", (d) => (d.sensors.mag = { present: true, enabled: true }));
+    void m;
+    await w!.get('[data-test="mag-toggle"]').setValue(false);
+    expect(wizard.ext.sensors).toEqual({ acc: null, baro: null, mag: false });
+    expect(generateCli(toPlanModel(wizard.model, wizard.ext), []).commands).toContain("set mag_hardware = NONE");
+  });
+
+  it("calibration is saved right away (one line) and waits after a failed apply", async () => {
+    await open();
+    expect(w!.get('[data-test="saves-now"]').text()).toContain("saved on the board right away");
+    wizard.ui.applyStatus = "failed";
+    await settle();
+    expect(w!.find('[data-test="unsaved-changes"]').exists()).toBe(true);
+    expect(w!.get('[data-test="calibrate"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("no step before calibration writes settings to the board", () => {
+    // Acc calibration saves the FC's RAM to EEPROM. Only Apply writes settings (config_apply),
+    // and Apply comes after Calibration.
+    const ids = ALL_STEPS.map((x) => x.id);
+    expect(ids.indexOf("apply")).toBeGreaterThan(ids.indexOf("calibration"));
+    expect(isWriteCommand("config_apply")).toBe(true);
   });
 });
 
@@ -191,7 +261,7 @@ describe("accelerometer calibration", () => {
     await pendingApi.sensors();
     expect(simulatedFields()).toContain("sensors");
     const s = createWizardState();
-    s.ext.sensors = { acc: false, baro: false };
+    s.ext.sensors = { acc: false, baro: false, mag: null };
     expect("sensors" in toPlanModel(s.model, s.ext)).toBe(false);
   });
 });
@@ -232,6 +302,39 @@ describe("orientation", () => {
     mock.events.emit("device://attitude-stopped", { reason: "ERROR", error: { code: "DISCONNECTED", message: "port lost" } });
     await settle();
     expect(w!.find('[data-test="attitude-retry"]').exists()).toBe(true);
+    expect(w!.get('[data-test="attitude-busy"]').text()).toContain("stopped answering");
+    await w!.get('[data-test="attitude-retry"]').trigger("click");
+    await waitFor(() => mock.device.attitudeTimer !== null);
+    expect(w!.find('[data-test="attitude-retry"]').exists()).toBe(false);
+  });
+
+  it("attitude-stopped DISCONNECTED says the board was disconnected, with a retry", async () => {
+    await open();
+    await waitFor(() => mock.device.attitudeTimer !== null);
+    mock.events.emit("device://attitude-stopped", { reason: "DISCONNECTED", error: null });
+    await settle();
+    expect(w!.get('[data-test="attitude-busy"]').text()).toContain("disconnected");
+    expect(w!.find('[data-test="attitude-retry"]').exists()).toBe(true);
+  });
+
+  it("presets start from the board's current alignment; the change takes effect after Apply", async () => {
+    await open("happy", (d) => (d.alignment = { roll: 0, pitch: 0, yaw: 270 }));
+    await w!.get('[data-orientation="no"]').setValue(true);
+    await settle();
+    expect(w!.get('[data-preset="yaw270"]').attributes("aria-pressed")).toBe("true");
+    expect(w!.get('[data-test="alignment-current"]').text()).toContain("yaw 270°");
+    expect(w!.get('[data-test="alignment-after-apply"]').text()).toContain("only after you apply");
+    expect(wizard.ext.boardAlignment).toBeNull();
+  });
+
+  it("board alignment must be whole degrees -180..360", () => {
+    const s = createWizardState();
+    s.ext.boardAlignment = { roll: 0, pitch: 0, yaw: 270 };
+    expect(guards.calibration!.validate(s)).toEqual([]);
+    for (const bad of [{ roll: 0, pitch: 0, yaw: 361 }, { roll: -181, pitch: 0, yaw: 0 }, { roll: 0, pitch: 12.5, yaw: 0 }]) {
+      s.ext.boardAlignment = bad;
+      expect(guards.calibration!.validate(s).map((i) => i.key)).toEqual(["validation.alignmentInvalid"]);
+    }
   });
 
   it("mounted 90° yawed: nose down looks like a roll until the yaw 90 preset is chosen", async () => {
@@ -310,7 +413,7 @@ describe("plan adapter", () => {
 
   it("unplannedChoices lists explicit answers the plan does not write", () => {
     const s = createWizardState();
-    s.ext.airmode = "always";
+    s.ext.airmode = "ALWAYS";
     s.ext.beepers = { disabled: [] };
     expect(unplannedChoices(s.ext, { commands: ["feature AIRMODE", "save"], warnings: [], dialect: "4.5", cleared: [] } as never)).toEqual(["beepers"]);
     expect(unplannedChoices(s.ext, null)).toEqual([]);
@@ -333,6 +436,6 @@ describe("RTL", () => {
     expect(w!.get("small.mono").attributes("dir")).toBe("ltr");
     nav.currentId = "switches";
     await settle();
-    expect(w!.text()).toContain("דילוג, לא צריך את זה");
+    expect(w!.text()).toContain("אם כבר יש בלוח מתג Prearm, הוא נשאר");
   });
 });
