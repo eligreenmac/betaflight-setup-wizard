@@ -12,6 +12,7 @@ import BackupsPanel from "../../components/BackupsPanel.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import StageList from "../../components/StageList.vue";
 import { withOsd } from "../osd";
+import { toPlanModel } from "../modelExt";
 import { wizard } from "../state";
 
 defineProps<{ stepId: string }>();
@@ -51,7 +52,7 @@ async function apply(): Promise<void> {
       return;
     }
     wizard.ui.applyStatus = "verifying";
-    const v = await api.config.verify(withOsd(wizard.model, wizard.osd));
+    const v = await api.config.verify(withOsd(toPlanModel(wizard.model, wizard.ext), wizard.osd));
     wizard.ui.verify = v;
     wizard.ui.applyStatus = v.ok && v.mismatches.length === 0 ? "verified" : "mismatch";
   } catch (e) {

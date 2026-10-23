@@ -15,6 +15,8 @@
       "when": [{ "path": "gps.enabled", "equals": true }] },
     { "id": "esc",        "titleKey": "steps.esc.title",        "component": "Esc" },
     { "id": "switches",   "titleKey": "steps.switches.title",   "component": "Switches" },
+    { "id": "calibration","titleKey": "steps.calibration.title","component": "Calibration" },
+    { "id": "beepers",    "titleKey": "steps.beepers.title",    "component": "Beepers" },
     { "id": "osd",        "titleKey": "steps.osd.title",        "component": "Osd",
       "when": [{ "path": "vtx.kind", "notEquals": "NONE" }] },
     { "id": "review",     "titleKey": "steps.review.title",     "component": "Review" },

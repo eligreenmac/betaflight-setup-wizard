@@ -45,13 +45,17 @@ const BOARD_COMMANDS: CommandName[] = ["device_connect", "device_identify"];
  * Commands that write to the board, and the commands whose results they write.
  * Each must come from the same source as the board connection.
  */
-export const WRITE_DEPENDENCIES: Partial<Record<CommandName, CommandName[]>> = {
+export const WRITE_DEPENDENCIES: Partial<Record<string, string[]>> = {
   config_apply: ["config_plan", "config_read_ports"],
   config_rollback: ["config_backup"],
   config_restore: ["config_list_backups"],
   device_cli_exec: [],
   flasher_flash: ["flasher_fetch_firmware", "flasher_list_dfu_devices"],
   flasher_remove_read_protection: ["flasher_list_dfu_devices"],
+  // TODO(shared): pending device command (api/pending.ts). Calibration is stored on the board.
+  device_acc_calibrate: [],
+  // "Reboot board": never answered by the simulated board for a real one.
+  device_reboot: [],
 };
 
 export const isWriteCommand = (cmd: string): boolean => cmd in WRITE_DEPENDENCIES;
@@ -62,7 +66,7 @@ function boardSource(): Source | undefined {
 }
 
 /** Sources of everything a write would rely on (board + its data), known so far. */
-export function writeInputs(cmd: CommandName): { cmd: string; source: Source }[] {
+export function writeInputs(cmd: CommandName | string): { cmd: string; source: Source }[] {
   const out: { cmd: string; source: Source }[] = [];
   const b = boardSource();
   if (b) out.push({ cmd: "device_connect", source: b });
@@ -78,7 +82,7 @@ export function writeInputs(cmd: CommandName): { cmd: string; source: Source }[]
  * side, or null when everything known so far comes from one source. The UI calls it
  * before offering Apply; withFallback enforces it on every write.
  */
-export function writeBlock(cmd: CommandName): { simulated: string[]; real: string[] } | null {
+export function writeBlock(cmd: CommandName | string): { simulated: string[]; real: string[] } | null {
   if (demoState.forced) return null;
   const inputs = writeInputs(cmd);
   const simulated = inputs.filter((i) => i.source === "mock").map((i) => i.cmd);
@@ -87,6 +91,17 @@ export function writeBlock(cmd: CommandName): { simulated: string[]; real: strin
 }
 
 const mixed = (cmd: string, why: string) => uiError("MIXED_BACKEND", `${cmd} refused: ${why}`);
+
+/**
+ * The last answer to `cmd` was simulated while the board is real (outside forced demo).
+ * Answers based on such data must never be written to the board (wizard/modelExt.ts).
+ */
+export function sourceMismatch(cmd: string): boolean {
+  if (demoState.forced) return false;
+  const s = demoState.sources[cmd];
+  const b = boardSource();
+  return !!s && !!b && s !== b;
+}
 
 export const isDemoMode = (): boolean => demoState.forced || demoState.simulated.length > 0;
 

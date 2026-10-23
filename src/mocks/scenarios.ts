@@ -12,6 +12,21 @@
  * config_restore, config_elrs_uid, device_probe_board and the motor/RC commands
  * answer NOT_IMPLEMENTED.
  *
+ * Sensors / calibration / attitude (Device #63, api/pending.ts adapter): gyro, acc
+ * and baro present (baro disabled), no mag. `no-sensors`: no acc and no baro.
+ * `calib-fail`: the first accelerometer calibration fails. `unsaved-ram`: an earlier apply
+ * left unsaved changes in RAM, so device_acc_calibrate answers PENDING_UNSAVED_CHANGES
+ * {reason: "CLI_COMMAND"} (before any other check) until device_reboot; a reconnect never
+ * clears it. `unsaved-ram-reboot-fail`: the same, and the first device_reboot is not
+ * confirmed (PENDING_UNSAVED_CHANGES); pressing it again works. `device.rebootFailure =
+ * "lost"` (tests): the board does not come back (SERIAL). `device.connectUnsavedFails`
+ * (tests): device_connect answers PENDING_UNSAVED_CHANGES (its reboot of a board left dirty
+ * was not confirmed). `mounted-yaw90`: the board is
+ * mounted turned 90° to the right, so tilting the nose down shows as a roll until the
+ * user picks the "arrow points right" (yaw 90) alignment. The attitude stream follows
+ * `device.tilt` (tests) or, when null, tilts by itself: level, nose down, level, right
+ * side down, every 2 s.
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
@@ -20,10 +35,12 @@ import { createEmitter, type Emitter } from "../api/events";
 import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FirmwareCatalog, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
-import type { ModelWithOsd } from "../wizard/osd";
 import { BEEPER_NAMES, type OsdLayout, type OsdVideoSystem } from "../types/model";
-import { compareVersions } from "../wizard/version";
+import type { PendingCommandName } from "../api/pending";
+import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
+import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
+import { compareVersions } from "../wizard/version";
 
 export const SCENARIOS = [
   "happy",
@@ -41,6 +58,11 @@ export const SCENARIOS = [
   "flash-verify",
   "read-protected",
   "driver-replace",
+  "no-sensors",
+  "calib-fail",
+  "mounted-yaw90",
+  "unsaved-ram",
+  "unsaved-ram-reboot-fail",
   "osd-sd-only",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
@@ -85,6 +107,27 @@ interface MockDevice {
   armed: boolean;
   rcTimer: ReturnType<typeof setInterval> | null;
   backups: { backup: Backup; ports: FcSerialPort[] }[];
+  sensors: { gyro: { present: boolean }; acc: { present: boolean; enabled: boolean }; baro: { present: boolean; enabled: boolean }; mag: { present: boolean; enabled: boolean } };
+  accCalFailuresLeft: number;
+  /** An earlier apply left unsaved changes in RAM; cleared only by a confirmed device_reboot. */
+  unsavedRam: boolean;
+  /** The next N device_reboot calls fail, as `rebootFailure` says. */
+  rebootFailuresLeft: number;
+  /** unconfirmed = PENDING_UNSAVED_CHANGES (flag still set) / MSP; lost = SERIAL (board did not come back). */
+  rebootFailure: "unconfirmed" | "lost";
+  /** device_connect fails with PENDING_UNSAVED_CHANGES (its reboot of a dirty board was not confirmed). */
+  connectUnsavedFails: boolean;
+  reboots: number;
+  /** Successful device_acc_calibrate calls (tests). */
+  accCalibrations: number;
+  /** How the board is mounted on the frame (the truth the alignment check should find). */
+  mount: BoardAlignment;
+  /** align_board_* currently stored on the FC (reported by device_sensors). */
+  alignment: BoardAlignment;
+  accCalibrated: boolean;
+  /** Simulated frame tilt; null = automatic demo cycle. */
+  tilt: Euler | null;
+  attitudeTimer: ReturnType<typeof setInterval> | null;
 }
 
 /** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
@@ -131,6 +174,24 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     rcTimer: null,
     probed: false,
     backups: [],
+    sensors:
+      scenario === "no-sensors"
+        ? // Set to AUTO but nothing found.
+          { gyro: { present: true }, acc: { present: false, enabled: true }, baro: { present: false, enabled: true }, mag: { present: false, enabled: true } }
+        : // A disabled sensor is never initialised, so never present (#63 §4.3).
+          { gyro: { present: true }, acc: { present: true, enabled: true }, baro: { present: false, enabled: false }, mag: { present: false, enabled: true } },
+    accCalFailuresLeft: scenario === "calib-fail" ? 1 : 0,
+    unsavedRam: scenario === "unsaved-ram" || scenario === "unsaved-ram-reboot-fail",
+    rebootFailuresLeft: scenario === "unsaved-ram-reboot-fail" ? 1 : 0,
+    rebootFailure: "unconfirmed",
+    connectUnsavedFails: false,
+    reboots: 0,
+    accCalibrations: 0,
+    mount: scenario === "mounted-yaw90" ? { roll: 0, pitch: 0, yaw: 90 } : { roll: 0, pitch: 0, yaw: 0 },
+    alignment: { roll: 0, pitch: 0, yaw: 0 },
+    accCalibrated: false,
+    tilt: null,
+    attitudeTimer: null,
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
@@ -189,6 +250,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_connect: ({ path }) => {
       if (scenario === "port-busy") throw portBusy(path, "EXTERNAL", `${path}: Access is denied. (os error 5)`);
       if (path !== "COM5") throw err("SERIAL_ERROR", `${path}: no MSP response`);
+      // A plain reconnect does not clear unsaved RAM changes (only device_reboot does).
+      if (device.connectUnsavedFails)
+        throw { ...err("PENDING_UNSAVED_CHANGES", "the board was left with unsaved changes and its reboot could not be confirmed"), details: { reason: "CLI_COMMAND" } };
     },
     device_disconnect: () => undefined,
     device_identify: () => fcInfo(),
@@ -196,7 +260,21 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_reboot_to_bootloader: () => {
       device.inDfu = true;
     },
-    device_reboot: () => undefined,
+    // "Reboot board" (#68/#69): resolves once the reboot is confirmed and clears the unsaved
+    // flag. Not confirmed: PENDING_UNSAVED_CHANGES while the flag is set (else MSP); the board
+    // did not come back: SERIAL. Pressing it again is safe.
+    device_reboot: async () => {
+      await sleep(stepMs * 2);
+      if (device.rebootFailuresLeft > 0) {
+        device.rebootFailuresLeft--;
+        if (device.rebootFailure === "lost") throw err("SERIAL_ERROR", "COM5: the board did not come back after the reboot");
+        if (device.unsavedRam)
+          throw { ...err("PENDING_UNSAVED_CHANGES", "the reboot was not confirmed; the flight controller may still have unsaved changes (CLI command)"), details: { reason: "CLI_COMMAND" } };
+        throw err("MSP_BAD_RESPONSE", "MSP_REBOOT was not acknowledged");
+      }
+      device.reboots++;
+      device.unsavedRam = false;
+    },
     flasher_list_targets: () => [{ target: "SPEEDYBEEF405V4", manufacturer: "SPBE", mcu: "STM32F405" }],
     flasher_list_releases: () => [
       { release: "2025.12.0-RC1", prerelease: true },
@@ -346,6 +424,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       device.motorLog.push(`start ${motorIndex} ${throttle}`);
       motorFault();
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
+      if (device.attitudeTimer) throw portBusy("COM5", "APP", "attitude stream running");
       const lim = {
         maxThrottle: Math.min(limits?.maxThrottle ?? DEFAULT_MAX_TEST_THROTTLE, HARD_MAX_TEST_THROTTLE),
         watchdogMs: Math.min(2000, Math.max(100, limits?.watchdogMs ?? DEFAULT_MOTOR_WATCHDOG_MS)),
@@ -377,6 +456,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     device_rc_stream_start: ({ rateHz }) => {
       legacy("device_rc_stream_start");
       if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
+      if (device.attitudeTimer) throw portBusy("COM5", "APP", "attitude stream running");
       if (device.rcTimer) clearInterval(device.rcTimer);
       const hz = Math.min(50, Math.max(1, rateHz ?? 15));
       let seq = 0;
@@ -414,11 +494,81 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
+  // ---- Device #63 (api/pending.ts adapter): sensors, acc calibration, attitude.
+  const autoTilt = (ms: number): Euler => {
+    const phase = Math.floor(ms / 2000) % 4;
+    return phase === 1 ? { roll: 0, pitch: -30, yaw: 0 } : phase === 3 ? { roll: 30, pitch: 0, yaw: 0 } : { roll: 0, pitch: 0, yaw: 0 };
+  };
+  const pendingHandlers: Record<PendingCommandName, (args: never) => unknown> = {
+    device_sensors: () => {
+      legacy("device_sensors");
+      // SensorStatus (#63). Extra keys are allowed; the UI must ignore them.
+      const hw = (s: { present: boolean; enabled: boolean }, chip: string) => ({ ...s, configuredHardware: s.enabled ? "AUTO" : "NONE", detectedHardware: s.present ? chip : null });
+      const s = device.sensors;
+      return {
+        gyro: { present: s.gyro.present, enabled: true, configuredHardware: null, detectedHardware: "BMI270" },
+        acc: hw(s.acc, "BMI270"),
+        baro: hw(s.baro, "DPS310"),
+        mag: hw(s.mag, "QMC5883"),
+        accCalibrated: s.acc.present ? device.accCalibrated : null,
+        alignment: { boardRollDeg: device.alignment.roll, boardPitchDeg: device.alignment.pitch, boardYawDeg: device.alignment.yaw, gyroAlignment: "CW270" },
+        rangefinder: { present: false, enabled: false },
+      };
+    },
+    device_acc_calibrate: async () => {
+      legacy("device_acc_calibrate");
+      // Checked first (#68): calibration saves the whole RAM config to EEPROM.
+      if (device.unsavedRam)
+        throw { ...err("PENDING_UNSAVED_CHANGES", "the flight controller may have unsaved changes (CLI command); reboot the board first"), details: { reason: "CLI_COMMAND" } };
+      if (device.armed) throw err("BOARD_ARMED", "flight controller is armed");
+      const acc = device.sensors.acc;
+      if (!acc.present || !acc.enabled) throw { ...err("ACC_NOT_AVAILABLE", "no usable accelerometer"), details: { present: acc.present, enabled: acc.enabled } };
+      await sleep(stepMs * 3);
+      if (device.accCalFailuresLeft > 0) {
+        device.accCalFailuresLeft--;
+        throw { ...err("BOARD_MOVING", "the board is moving (23 deg/s > 8 deg/s); keep it level and still and calibrate again"), details: { maxRateDps: 23, limitDps: 8, during: true } };
+      }
+      device.accCalibrations++;
+      device.accCalibrated = true;
+      return { durationMs: stepMs * 3, completion: "CALIBRATING_FLAG", maxGyroRateDps: 0.6 };
+    },
+    device_get_attitude: () => {
+      legacy("device_get_attitude");
+      const a = reportedWithAlignment(device.tilt ?? autoTilt(Date.now()), device.mount, device.alignment);
+      return { seq: 0, timestampMs: 0, roll: a.roll, pitch: a.pitch === 0 ? 0 : -a.pitch, yaw: a.yaw };
+    },
+    device_attitude_stream_start: ({ rateHz }: { rateHz: number | null }) => {
+      legacy("device_attitude_stream_start");
+      if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
+      if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
+      if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      const hz = Math.min(30, Math.max(1, rateHz ?? 10));
+      let seq = 0;
+      device.attitudeTimer = setInterval(() => {
+        seq++;
+        const ms = Math.round((seq / hz) * 1000);
+        const a = reportedWithAlignment(device.tilt ?? autoTilt(ms), device.mount, device.alignment);
+        // MSP_ATTITUDE signs: pitch + = nose DOWN.
+        events.emit("device://attitude", { seq, timestampMs: ms, roll: a.roll, pitch: a.pitch === 0 ? 0 : -a.pitch, yaw: a.yaw });
+      }, 1000 / hz);
+    },
+    device_attitude_stream_stop: () => {
+      legacy("device_attitude_stream_stop");
+      if (device.attitudeTimer) {
+        clearInterval(device.attitudeTimer);
+        events.emit("device://attitude-stopped", { reason: "REQUESTED", error: null });
+      }
+      device.attitudeTimer = null;
+    },
+  };
+
   const inner = createMockBackend({ ...handlers, ...deviceHandlers });
   // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
-  const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_");
+  const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_") || cmd.startsWith("device_attitude_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
+    const p = pendingHandlers[cmd as unknown as PendingCommandName];
+    if (p) return p(args);
     return inner(cmd, args);
   }) as Backend;
 
@@ -435,7 +585,6 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
   VTX_MSP: "VTX_MSP",
 };
 
-/** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
 const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
 
 /**
@@ -468,6 +617,7 @@ export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
   };
 }
 
+/** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
 /**
  * Plausible default layouts (stand-in for config_osd_default_layout): PAL 30x16,
  * NTSC / AUTO 30x13 (AUTO fits either camera), HD 53x20. Includes an element the UI does
@@ -516,7 +666,7 @@ export function osdPosValue(x: number, y: number, visible: boolean): number {
   return (x & 0x1f) | (((x >> 5) & 1) << 10) | ((y & 0x1f) << 5) | (visible ? 0x7 << 11 : 0);
 }
 
-export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScript {
+export function generateCli(model: ExtendedDroneModel, ports: FcSerialPort[]): CliScript {
   const opts = { escTelemetry: model.esc.telemetryPort !== null };
   const commands: string[] = [];
   const warnings: string[] = [];
@@ -549,15 +699,36 @@ export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScri
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
   if (model.esc.telemetryPort) commands.push("feature ESC_SENSOR");
   // Like config::modes: stable names only, mapped to permanent box ids here (backend side).
-  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, "FLIP OVER AFTER CRASH": 35 };
+  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, HORIZON: 2, ALTHOLD: 3, POSHOLD: 11, BEEPER: 13, AIRMODE: 28, FLIPOVERAFTERCRASH: 35, PREARM: 36, GPSRESCUE: 46 };
   model.switches.forEach((s, i) => {
-    const id = boxIds[s.mode];
+    const id = boxIds[s.mode.toUpperCase().replace(/[^A-Z0-9]/g, "")];
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
+  // #65 fields (src/types/model.ts); absent / null = keep the board's value.
+  const fw = model.fc.firmwareVersion || "";
+  (model.removeModes ?? []).forEach((m, i) => {
+    // The demo FC has no ranges for these: reset a spare slot like the engine would (no-op otherwise).
+    const id = boxIds[m.replace(/[^A-Z0-9]/g, "")];
+    if (id !== undefined) commands.push(`aux ${model.switches.length + i} 0 0 900 900 0 0`);
+  });
+  if (model.airmode) commands.push(model.airmode === "ALWAYS" ? "feature AIRMODE" : "feature -AIRMODE");
+  for (const k of ["acc", "baro", "mag"] as const) {
+    const v = model.sensors?.[k];
+    if (typeof v === "boolean") commands.push(`set ${k}_hardware = ${v ? "AUTO" : "NONE"}`);
+  }
+  if (model.boardAlignment) for (const k of ["roll", "pitch", "yaw"] as const) commands.push(`set align_board_${k} = ${model.boardAlignment[k]}`);
+  if (model.beepers) {
+    const off = new Set<string>(model.beepers.disabled);
+    for (const n of mockFirmwareCatalog(fw).beepers) {
+      const cli = isV2025(fw) && n === "CRASH_FLIP" ? "CRASHFLIP" : n;
+      commands.push(off.has(n) ? `beeper -${cli}` : `beeper ${cli}`);
+    }
+    if (model.beepers.dshotBeaconDisabled)
+      for (const e of ["RX_LOST", "RX_SET"]) commands.push(model.beepers.dshotBeaconDisabled.includes(e as never) ? `beacon -${e}` : `beacon ${e}`);
+  }
   // #65 `osd` field (wizard/osd.ts); absent = keep the board's OSD.
   if (model.osd) {
-    const fw = model.fc.firmwareVersion;
     const vs = model.osd.videoSystem ?? "AUTO";
     commands.push("feature OSD");
     if (model.osd.videoSystem) commands.push(`set vcd_video_system = ${vs}`);

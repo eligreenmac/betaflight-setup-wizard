@@ -132,6 +132,32 @@ th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
 
 .backups { margin-block-end: 1rem; }
 
+/* Switches / Calibration / Beepers / OSD sections */
+.subcard { border: 1px solid var(--surface-2); border-radius: 0.6rem; padding-block: 0.75rem; padding-inline: 1rem; margin-block: 1rem; }
+.subcard h3 { margin-block: 0 0.5rem; font-size: 1.05rem; }
+.choice-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin-block: 0.5rem; }
+.choice-col { display: grid; gap: 0.5rem; margin-block: 0.5rem; }
+.choice-col label { display: flex; gap: 0.5rem; align-items: flex-start; }
+.hint--warn { color: var(--warn); }
+.sensor-list { list-style: none; padding: 0; display: grid; gap: 0.6rem; }
+.sensor-list li { display: grid; gap: 0.15rem; }
+.busy-row { display: flex; align-items: center; gap: 0.5rem; }
+.spinner { inline-size: 1rem; block-size: 1rem; border: 2px solid var(--surface-2); border-block-start-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+.attitude { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; }
+.attitude figure { margin: 0; text-align: center; }
+.attitude svg g { transition: transform 0.1s linear; }
+.attitude__horizon { stroke: var(--surface-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.attitude__frame { fill: var(--text, #222); }
+.attitude__nose { fill: var(--accent); }
+.attitude__prop { fill: var(--accent); opacity: 0.6; }
+.attitude__label { font-size: 9px; fill: currentColor; }
+.preset-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.5rem; }
+.preset-grid .btn[aria-pressed="true"] { outline: 2px solid var(--accent); }
+.beeper-group { margin-block: 0.75rem; }
+.beeper-group ul { list-style: none; padding: 0; display: grid; gap: 0.4rem; }
+.beeper-group li label { display: flex; gap: 0.5rem; align-items: flex-start; }
 /* OSD step */
 .osd-system { margin-block: 1rem; }
 .osd-choices { display: grid; gap: 0.5rem; margin-block: 0.75rem; }

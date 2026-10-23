@@ -14,6 +14,9 @@ import { UPDATE_STAGES } from "../src/wizard/flash";
 import { PORT_ROLES } from "../src/wizard/ports";
 import { SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "../src/wizard/receiver";
 import { MODE_KEYS, SWITCH_POSITIONS } from "../src/wizard/switches";
+import { BEEPER_GROUPS, BEEPERS } from "../src/wizard/beepers";
+import { EXT_FIELDS } from "../src/wizard/modelExt";
+import { ALIGNMENT_PRESETS } from "../src/wizard/orientation";
 
 function flat(o: object, p = ""): Record<string, string> {
   return Object.fromEntries(
@@ -114,6 +117,19 @@ describe("i18n", () => {
       ...["AUTO", "PAL", "NTSC", "HD"].flatMap((s) => [`osd.system.${s}`, `osd.system.${s}Hint`]),
       ...["AUTO", "HD"].map((s) => `osd.system.detected.${s}`),
       ...["analogGroup", "digitalGroup", "hdUnsupported", "hdBlocked", "analogOnDigital"].map((k) => `osd.system.${k}`),
+      // Switches / Calibration / Beepers
+      ...["always", "switch", "off", "keep"].flatMap((k) => [`switches.airmode.${k}`, `switches.airmode.${k}Hint`]),
+      ...["calibration.warnAngleNoAcc", "calibration.warnGpsNoAcc", "calibration.warnAltholdNoBaro"],
+      ...["acc", "baro", "mag"].map((k) => `calibration.sensors.${k}`),
+      ...["level", "noseDown", "noseUp", "rightDown", "leftDown"].map((d) => `calibration.orientation.direction.${d}`),
+      ...ALIGNMENT_PRESETS.map((p) => `calibration.orientation.presets.${p.id}`),
+      ...BEEPER_GROUPS.flatMap((g) => [`beepers.groups.${g}`, `beepers.groupHints.${g}`]),
+      ...BEEPERS.flatMap((b) => [`beepers.items.${b.name}`, `beepers.explain.${b.name}`]),
+      ...["RX_LOST", "RX_SET"].map((e) => `beepers.beacon.events.${e}`),
+      ...["add", "skip", "remove"].flatMap((c) => [`switches.prearm.${c}`, `switches.prearm.${c}Hint`]),
+      ...["stoppedDisconnected", "stoppedError", "failed", "busy"].map((k) => `calibration.orientation.${k}`),
+      ...["idle", "running", "done", "failed"].map((s) => `review.calibration.${s}`),
+      ...EXT_FIELDS.map((f) => `review.fields.${f}`),
     ];
     expect(need.filter((k) => !(k in EN))).toEqual([]);
   });

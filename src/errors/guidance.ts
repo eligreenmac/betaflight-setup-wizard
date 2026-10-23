@@ -11,6 +11,8 @@ export { isNotImplemented, toUiError, type UiError } from "./codes";
 export type GuidanceActionId =
   | "retry"
   | "reconnect"
+  | "rebootBoard"
+  | "goConnect"
   | "retryFlash"
   | "retryFullErase"
   | "installDriver"
@@ -46,6 +48,8 @@ export const HELP_LINKS = {
 const retry: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain", primary: true };
 const retry2: GuidanceAction = { id: "retry", labelKey: "actions.tryAgain" };
 const reconnect: GuidanceAction = { id: "reconnect", labelKey: "actions.reconnect", primary: true };
+const rebootBoard: GuidanceAction = { id: "rebootBoard", labelKey: "actions.rebootBoard", primary: true };
+const goConnect: GuidanceAction = { id: "goConnect", labelKey: "actions.goConnect", primary: true };
 const retryFlash: GuidanceAction = { id: "retryFlash", labelKey: "actions.retryFlash", primary: true };
 const installDriver: GuidanceAction = { id: "installDriver", labelKey: "actions.installDriver", primary: true };
 const goFirmware: GuidanceAction = { id: "goFirmware", labelKey: "actions.goFirmware", primary: true };
@@ -95,6 +99,14 @@ const TABLE: Record<ErrorCode, Entry> = {
   CONFIG_UNSUPPORTED: { steps: 2, actions: [{ id: "editComponents", labelKey: "actions.editComponents", primary: true }, reportIssue], showMessage: true },
   MIXED_BACKEND: { steps: 2, actions: [reportIssue] },
   UNKNOWN: { steps: 1, actions: [retry, reportIssue] },
+  ACC_NOT_AVAILABLE: { steps: 2, actions: [], warning: true },
+  BOARD_MOVING: { steps: 2, actions: [retry] },
+  ACC_CALIBRATION_FAILED: { steps: 2, actions: [retry] },
+  PENDING_UNSAVED_CHANGES: { steps: 2, actions: [rebootBoard, retry2] },
+  // "Reboot board" failures (Calibration step) and the connect-time reboot (Connect step).
+  REBOOT_NOT_CONFIRMED: { steps: 2, actions: [rebootBoard] },
+  REBOOT_BOARD_LOST: { steps: 2, actions: [goConnect] },
+  CONNECT_REBOOT_NOT_CONFIRMED: { steps: 2, actions: [retry] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */
@@ -109,11 +121,18 @@ export const STEP_COUNTS = Object.fromEntries(ALL_ERROR_CODES.map((c) => [c, TAB
 export const GUIDANCE_VARIANTS = {
   PORT_BUSY_APP: { code: "PORT_BUSY", steps: 2 },
   PORT_BUSY_EXTERNAL: { code: "PORT_BUSY", steps: 2 },
+  /** ACC_NOT_AVAILABLE {enabled: false}: turned off in the settings. */
+  ACC_NOT_AVAILABLE_OFF: { code: "ACC_NOT_AVAILABLE", steps: 2 },
+  /** BOARD_MOVING {during: true}: the FC already stored a bad result. */
+  BOARD_MOVING_DURING: { code: "BOARD_MOVING", steps: 2 },
 } as const satisfies Record<string, { code: ErrorCode; steps: number }>;
 export type GuidanceVariant = keyof typeof GUIDANCE_VARIANTS;
 
 function variantOf(err: UiError): GuidanceVariant | null {
   if (err.code === "PORT_BUSY" && isPortBusyDetails(err.details)) return `PORT_BUSY_${err.details.heldBy}`;
+  const d = err.details && typeof err.details === "object" ? (err.details as unknown as Record<string, unknown>) : null;
+  if (err.code === "ACC_NOT_AVAILABLE" && d?.enabled === false) return "ACC_NOT_AVAILABLE_OFF";
+  if (err.code === "BOARD_MOVING" && d?.during === true) return "BOARD_MOVING_DURING";
   return null;
 }
 

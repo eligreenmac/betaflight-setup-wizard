@@ -41,6 +41,12 @@ export async function walkToDone(w: VueWrapper, firmware: "keep" | "update", hoo
       if (w.find('[data-binding="button"]').exists() && !wizard.ui.elrsBinding) await w.get('[data-binding="button"]').setValue(true);
       await settle();
     }
+    if (id === "beepers" && wizard.ui.beeperMode === null) {
+      // Take the recommended beeps (exercises the "choose" path and the beeper CLI).
+      await w.get('[data-beepers="choose"]').setValue(true);
+      await settle();
+    }
+    // Calibration step: nothing required (calibration and the orientation check are optional).
     if (id === "osd" && wizard.osd.mode === null) {
       // Set the OSD up from the recommended layout.
       await w.get('[data-osd-mode="choose"]').setValue(true);

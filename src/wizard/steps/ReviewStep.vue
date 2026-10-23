@@ -10,6 +10,9 @@ import { goTo } from "../nav";
 import { fetchPlan } from "../plan";
 import { getRolePort, neededRoles } from "../ports";
 import { osdChoice, withOsd } from "../osd";
+import { ALIGNMENT_PRESETS, sameAlignment } from "../orientation";
+import { simulatedFields, toPlanModel, unplannedChoices } from "../modelExt";
+import { calibrationWarnings } from "../guards";
 import { modeKeyOf } from "../switches";
 import { wizard } from "../state";
 
@@ -28,7 +31,7 @@ async function load(): Promise<void> {
   wizard.ui.planUnavailable = false;
   plan.value = null;
   try {
-    const r = await fetchPlan(withOsd(wizard.model, wizard.osd), wizard.ports);
+    const r = await fetchPlan(withOsd(toPlanModel(wizard.model, wizard.ext), wizard.osd), wizard.ports);
     if (r.status === "ready") {
       plan.value = r.script;
       previewOnly.value = false;
@@ -60,8 +63,26 @@ const rows = computed(() => {
   const osd = osdChoice(wizard.osd, m.value.gps.enabled);
   if (m.value.vtx.kind !== "NONE")
     r.push([t("review.osd"), osd ? t("review.osdChosen", { n: osd.elements.filter((e) => e.enabled).length, system: t(`osd.system.${osd.videoSystem}`) }) : t("review.osdKeep")]);
+  const x = wizard.ext;
+  const skip = new Set(simulatedFields());
+  const keep = t("review.keep");
+  r.push([t("review.airmode"), x.airmode ? t(`switches.airmode.${x.airmode.toLowerCase()}`) : keep]);
+  if (x.removeModes.length)
+    r.push([t("review.removeModes"), x.removeModes.map((m) => { const k = modeKeyOf(m); return k ? t(`switches.modes.${k}`) : m; }).join(", ")]);
+  const sensorParts = x.sensors && !skip.has("sensors")
+    ? (["acc", "baro", "mag"] as const).filter((k) => x.sensors![k] !== null).map((k) => `${t(`calibration.sensors.${k}`)}: ${x.sensors![k] ? t("review.on") : t("review.off")}`)
+    : [];
+  r.push([t("review.sensors"), sensorParts.length ? sensorParts.join(" · ") : keep]);
+  const preset = x.boardAlignment && ALIGNMENT_PRESETS.find((p) => sameAlignment(x.boardAlignment, p.align));
+  r.push([t("review.alignment"), x.boardAlignment && !skip.has("boardAlignment") ? (preset ? t(`calibration.orientation.presets.${preset.id}`) : `${x.boardAlignment.roll}/${x.boardAlignment.pitch}/${x.boardAlignment.yaw}`) : keep]);
+  r.push([t("review.accCalibration"), t(`review.calibration.${wizard.ui.accCalibration}`)]);
+  r.push([t("review.beepers"), x.beepers ? (x.beepers.disabled.length ? t("review.beepersOff", { list: x.beepers.disabled.join(", ") }) : t("review.beepersAllOn")) : keep]);
+  if (x.beepers?.dshotBeaconDisabled)
+    r.push([t("review.beacon"), x.beepers.dshotBeaconDisabled.length ? t("review.beepersOff", { list: x.beepers.dshotBeaconDisabled.join(", ") }) : t("review.beepersAllOn")]);
   return r;
 });
+const unplanned = computed(() => (previewOnly.value ? [] : unplannedChoices(wizard.ext, plan.value)));
+const warnings = computed(() => calibrationWarnings(wizard));
 /** The OSD was set up, but this version's plan does not write it (engine without `osd`). */
 const osdUnplanned = computed(() => !previewOnly.value && !!plan.value && !!osdChoice(wizard.osd, m.value.gps.enabled) && !plan.value.commands.some((c) => /^set osd_\w+_pos\b/.test(c)));
 </script>
@@ -99,6 +120,13 @@ const osdUnplanned = computed(() => !previewOnly.value && !!plan.value && !!osdC
       <div v-if="osdUnplanned" class="callout callout--warn" data-test="osd-unplanned">
         <strong>{{ t("review.osdUnplannedTitle") }}</strong>
         <p>{{ t("review.osdUnplannedBody") }}</p>
+      </div>
+
+      <div v-for="w in warnings" :key="w.key" class="callout callout--warn" :data-warning="w.key">{{ t(w.key) }}</div>
+
+      <div v-if="unplanned.length" class="callout callout--warn" data-test="unplanned">
+        <strong>{{ t("review.unplannedTitle") }}</strong>
+        <p>{{ t("review.unplannedBody", { list: unplanned.map((f) => t(`review.fields.${f}`)).join(", ") }) }}</p>
       </div>
 
       <div v-if="plan.warnings.length" class="callout callout--warn">

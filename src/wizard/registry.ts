@@ -3,7 +3,9 @@
 
 import type { Component } from "vue";
 import ApplyStep from "./steps/ApplyStep.vue";
+import BeepersStep from "./steps/BeepersStep.vue";
 import BindingStep from "./steps/BindingStep.vue";
+import CalibrationStep from "./steps/CalibrationStep.vue";
 import ComponentsStep from "./steps/ComponentsStep.vue";
 import ConnectStep from "./steps/ConnectStep.vue";
 import DoneStep from "./steps/DoneStep.vue";
@@ -28,6 +30,8 @@ export const stepComponents: Record<string, Component> = {
   Gps: GpsStep,
   Esc: EscStep,
   Switches: SwitchesStep,
+  Calibration: CalibrationStep,
+  Beepers: BeepersStep,
   Osd: OsdStep,
   Review: ReviewStep,
   Apply: ApplyStep,

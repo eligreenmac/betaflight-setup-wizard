@@ -319,6 +319,30 @@ pub fn verify<C: Connection + ?Sized>(conn: &mut C, model: &DroneModel) -> AppRe
                     });
                 }
             }
+            Some(verb @ ("beeper" | "beacon")) => {
+                let f = t.next().unwrap_or_default();
+                let (name, want) = match f.strip_prefix('-') {
+                    Some(n) => (n, false),
+                    None => (f, true),
+                };
+                let list = if verb == "beeper" {
+                    &snap.beepers
+                } else {
+                    &snap.beacons
+                };
+                let have = list.as_ref().and_then(|l| {
+                    l.iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                        .map(|(_, on)| *on)
+                });
+                if have != Some(want) {
+                    mismatches.push(Mismatch {
+                        setting: format!("{verb} {name}"),
+                        expected: on(want),
+                        actual: have.map(on).unwrap_or_else(|| "missing".into()),
+                    });
+                }
+            }
             // The whole table is compared once, line by line as `vtxtable` prints it.
             Some("vtxtable") if !vtx_checked => {
                 vtx_checked = true;

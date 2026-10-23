@@ -17,6 +17,7 @@ use super::firmware::Dialect;
 use super::msp;
 use super::session;
 use super::vtx_table::VtxTableState;
+use crate::device::cli::{has_prompt_at_end, CliOptions};
 use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 use crate::model::CliScript;
@@ -37,6 +38,39 @@ struct SitlFc {
 
 fn io(e: std::io::Error) -> AppError {
     AppError::Cli(format!("SITL: {e}"))
+}
+
+/// Read one CLI response: up to a prompt (`# ` at the start of a line) followed by the
+/// app's quiet period (`CliOptions::quiet`, 100 ms) of silence, like `device::cli`'s
+/// reader. `dump all` has comment lines (`# feature` ...), so a TCP read can end in
+/// `\r\n# ` mid-dump; stopping there truncated the dump. Returns what arrived by `timeout`
+/// (or EOF).
+fn read_cli_response(s: &mut TcpStream, timeout: Duration) -> AppResult<Vec<u8>> {
+    let quiet = CliOptions::default().quiet;
+    s.set_read_timeout(Some(Duration::from_millis(20)))
+        .map_err(io)?;
+    let (mut buf, end) = (Vec::new(), Instant::now() + timeout);
+    let mut prompt_since: Option<Instant> = None;
+    let mut chunk = [0u8; 65536];
+    while Instant::now() < end {
+        if prompt_since.is_some_and(|t| t.elapsed() >= quiet) {
+            break;
+        }
+        match s.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                prompt_since = has_prompt_at_end(&buf).then(Instant::now);
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+    }
+    Ok(buf)
 }
 
 impl SitlFc {
@@ -68,8 +102,9 @@ impl SitlFc {
             .ok_or_else(|| AppError::Cli("SITL: not connected".into()))
     }
 
-    /// Read until `until` ends the buffer (or EOF / timeout).
-    fn read(&mut self, until: Option<&[u8]>, timeout: Duration) -> AppResult<Vec<u8>> {
+    /// Read whatever arrives within `timeout` (or until EOF). MSP frames and the bytes after
+    /// `exit` / `save`; CLI responses use [`read_cli_response`].
+    fn read(&mut self, timeout: Duration) -> AppResult<Vec<u8>> {
         let s = self.sock()?;
         s.set_read_timeout(Some(Duration::from_millis(100)))
             .map_err(io)?;
@@ -78,12 +113,7 @@ impl SitlFc {
         while Instant::now() < end {
             match s.read(&mut chunk) {
                 Ok(0) => break,
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    if until.is_some_and(|u| buf.ends_with(u)) {
-                        break;
-                    }
-                }
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
                 Err(e)
                     if matches!(
                         e.kind(),
@@ -131,7 +161,7 @@ impl Connection for SitlFc {
         let mut raw = Vec::new();
         let end = Instant::now() + Duration::from_secs(2);
         while Instant::now() < end {
-            raw.extend(self.read(None, Duration::from_millis(200))?);
+            raw.extend(self.read(Duration::from_millis(200))?);
             if raw.len() >= 6 && raw.len() >= 6 + raw[3] as usize {
                 break;
             }
@@ -151,9 +181,11 @@ impl Connection for SitlFc {
         }
         for _ in 0..40 {
             self.sock()?.write_all(b"#").map_err(io)?;
-            let r = self.read(Some(b"\r\n# "), Duration::from_millis(500))?;
+            let r = read_cli_response(self.sock()?, Duration::from_millis(500))?;
             if r.windows(12).any(|w| w == b"Entering CLI") {
-                self.read(Some(b"\r\n# "), Duration::from_millis(300))?;
+                if !has_prompt_at_end(&r) {
+                    read_cli_response(self.sock()?, Duration::from_millis(300))?;
+                }
                 self.in_cli = true;
                 return Ok(());
             }
@@ -165,7 +197,7 @@ impl Connection for SitlFc {
         self.sock()?
             .write_all(format!("{line}\n").as_bytes())
             .map_err(io)?;
-        let r = self.read(Some(b"\r\n# "), Duration::from_secs(10))?;
+        let r = read_cli_response(self.sock()?, Duration::from_secs(10))?;
         let mut s = String::from_utf8_lossy(&r).replace('\r', "");
         if let Some(t) = s.strip_suffix("\n# ") {
             s = t.to_string();
@@ -177,13 +209,13 @@ impl Connection for SitlFc {
         if !save && self.noreboot_exit {
             self.sock()?.write_all(b"exit noreboot\n").map_err(io)?;
             // "# leaving CLI mode, no reboot"; the port is back to MSP afterwards.
-            self.read(None, Duration::from_millis(700))?;
+            self.read(Duration::from_millis(700))?;
             self.in_cli = false;
             return Ok(());
         }
         let cmd: &[u8] = if save { b"save\n" } else { b"exit\n" };
         self.sock()?.write_all(cmd).map_err(io)?;
-        self.read(None, Duration::from_secs(3))?; // "Rebooting", then the process exits
+        self.read(Duration::from_secs(3))?; // "Rebooting", then the process exits
         self.in_cli = false;
         self.wait_for_exit()
     }
@@ -546,7 +578,152 @@ fn sitl_end_to_end_apply_error_and_rollback() {
     }
     let r = fc.cli_exec("set craft_name = -").unwrap();
     assert!(!r.contains("###ERROR"), "{r}");
+    // discard step 8 (unsaved) before step 9
+    fc.exit_cli(false).unwrap();
+    if dialect != Dialect::V4_4 {
+        fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+    }
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+
+    // 9. Batch 2 through plan -> apply -> verify on the real CLI: airmode, optional modes
+    //    and removeModes, sensors, board alignment. SITL has no beeper / beacon commands
+    //    (warnings) and no OSD (CONFIG error); serial / DShot / GPS are not part of this
+    //    step (SITL lacks them), so only the batch-2 lines of the plan are applied.
+    let mut m: crate::model::DroneModel = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/models/batch2-freestyle-hd.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    m.receiver.kind = crate::model::ReceiverKind::None;
+    m.vtx = crate::model::Vtx {
+        kind: crate::model::VtxKind::None,
+        protocol: None,
+        port: None,
+        digital_system: None,
+        region: None,
+        table: None,
+        band: None,
+        channel: None,
+        power: None,
+    };
+    m.esc.telemetry_port = None;
+    fc.enter_cli().unwrap();
+    // an old PREARM range (removeModes) and an unmanaged MAG range (kept)
+    for l in ["aux 10 36 4 1700 2100 0 0", "aux 11 5 5 1700 2100 0 0"] {
+        let r = fc.cli_exec(l).unwrap();
+        assert!(!r.contains("###ERROR"), "{l}: {r}");
+    }
+    let osd_err = session::plan(&mut fc, &m).unwrap_err();
+    assert_eq!(osd_err.code(), "CONFIG");
+    assert!(osd_err.to_string().contains("no OSD"), "{osd_err}");
+    m.osd = None;
+    let plan = session::plan(&mut fc, &m).unwrap();
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("no beeper command"))
+            && plan.warnings.iter().any(|w| w.contains("no DShot beacon")),
+        "{:?}",
+        plan.warnings
+    );
+    assert!(plan.warnings.iter().any(|w| w.contains("kept 1 aux")));
+    let batch2 = |c: &str| {
+        c.ends_with("AIRMODE")
+            || c.starts_with("aux ")
+            || c.starts_with("set acc_hardware")
+            || c.starts_with("set baro_hardware")
+            || c.starts_with("set mag_hardware")
+            || c.starts_with("set align_board_")
+            || c.starts_with("beeper")
+            || c.starts_with("beacon")
+    };
+    let cmds: Vec<&str> = plan
+        .commands
+        .iter()
+        .map(String::as_str)
+        .filter(|c| batch2(c))
+        .collect();
+    assert!(cmds.contains(&"feature -AIRMODE"), "{cmds:?}");
+    assert!(cmds.contains(&"aux 10 0 0 900 900 0 0"), "{cmds:?}");
+    assert!(cmds.contains(&"set align_board_yaw = 90"), "{cmds:?}");
+    let r = session::apply(&mut fc, &script(&cmds), &store, &uid, &mut |_| {}).unwrap();
+    assert!(r.saved && r.errors.is_empty(), "{r:?}");
+    fc.enter_cli().unwrap();
+    let v = session::verify(&mut fc, &m).unwrap();
+    let b2: Vec<_> = v
+        .mismatches
+        .iter()
+        .filter(|x| {
+            let k = x.setting.as_str();
+            k.starts_with("aux")
+                || k.contains("AIRMODE")
+                || k.contains("_hardware")
+                || k.contains("align_board")
+        })
+        .collect();
+    assert!(b2.is_empty(), "{b2:?}");
+    let dump = fc.cli_exec("dump all").unwrap();
+    let snap = super::snapshot::parse_dump(&dump);
+    assert_eq!(
+        snap.features.get("AIRMODE"),
+        Some(&false),
+        "dump ({} lines), feature lines: {:?}",
+        dump.lines().count(),
+        dump.lines()
+            .filter(|l| l.starts_with("feature"))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(snap.setting("align_board_yaw"), Some("90"));
+    assert_eq!(snap.setting("baro_hardware"), Some("NONE"));
+    let used: Vec<(u8, u8)> = snap
+        .aux
+        .iter()
+        .filter(|a| a.is_used())
+        .map(|a| (a.slot, a.mode_id))
+        .collect();
+    assert!(
+        used.contains(&(1, 28)) && used.contains(&(11, 5)),
+        "{used:?}"
+    );
+    assert!(!used.iter().any(|u| u.1 == 36), "{used:?}");
+    assert!(snap.beepers.is_none() && snap.beacons.is_none());
+    fc.exit_cli(false).unwrap();
+    if dialect != Dialect::V4_4 {
+        fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+    }
 
     drop(fc);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The CLI reader does not stop at a `# ` comment line that happens to end a TCP read
+/// (`dump all`'s `# feature`), only at a prompt followed by the quiet period.
+#[test]
+fn sitl_cli_reader_waits_out_comment_lines() {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut c, _) = listener.accept().unwrap();
+        c.write_all(b"dump all\r\n\r\n# version\r\n# ").unwrap();
+        std::thread::sleep(Duration::from_millis(40));
+        c.write_all(b"Betaflight\r\n\r\n# feature\r\n# ").unwrap();
+        std::thread::sleep(Duration::from_millis(60));
+        c.write_all(b"\r\nfeature -AIRMODE\r\n\r\n# ").unwrap();
+        // keep the connection open past the quiet period
+        std::thread::sleep(Duration::from_millis(400));
+    });
+    let mut s = TcpStream::connect(addr).unwrap();
+    let t0 = Instant::now();
+    let r = read_cli_response(&mut s, Duration::from_secs(2)).unwrap();
+    let text = String::from_utf8_lossy(&r);
+    assert!(text.ends_with("feature -AIRMODE\r\n\r\n# "), "{text:?}");
+    assert!(
+        t0.elapsed() < Duration::from_millis(400),
+        "{:?}",
+        t0.elapsed()
+    );
+    server.join().unwrap();
 }

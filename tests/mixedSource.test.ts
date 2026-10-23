@@ -177,3 +177,23 @@ describe("config_osd_default_layout (shared #66)", () => {
     expect([l.cols, l.rows]).toEqual([53, 20]);
   });
 });
+
+describe("config_firmware_catalog (shared #66)", () => {
+  it("uses the real command when the backend has it, and the demo mock while it is a stub", async () => {
+    const { loadCatalog, resetCatalog } = await import("../src/api/catalog");
+    resetCatalog();
+    const real = setup({ config_firmware_catalog: () => ({ beepers: ["RX_LOST"], beaconEvents: ["RX_SET"], osdElements: ["CRAFT_NAME"], modes: ["ARM"] }) });
+    expect(await loadCatalog("4.5.1")).toEqual({ beepers: ["RX_LOST"], beaconEvents: ["RX_SET"], osdElements: ["CRAFT_NAME"], modes: ["ARM"] });
+    expect(real.calls).toContain("config_firmware_catalog");
+    expect(demoState.sources.config_firmware_catalog).toBe("real");
+    uninstallMock();
+    resetDemoState();
+    resetCatalog();
+    setup({}); // Phase 0 stub -> demo fallback
+    const c = await loadCatalog("2025.12.0");
+    expect(demoState.sources.config_firmware_catalog).toBe("mock");
+    expect(c!.beepers).not.toContain("RC_SMOOTHING_INIT_FAIL");
+    expect(c!.modes).toContain("ALTHOLD");
+    resetCatalog();
+  });
+});
