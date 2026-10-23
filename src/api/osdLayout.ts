@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * Typed UI-side wrapper for Config's read-only `config_osd_default_layout`, which is in
- * shared PR #66 but not in this branch's CommandMap (src/api/commands.ts) yet. Calls go
- * through the same backend seam as `call()`, so the per-call demo fallback and the Demo
- * banner apply unchanged.
- *
- * TODO(shared): switch to api.config.osdDefaultLayout / OsdLayout from #66 when it lands,
- * then delete this file. Contract (#66, docs/ARCHITECTURE.md 2.1.1):
+ * Config's read-only `config_osd_default_layout` (shared #66, `api.config.osdDefaultLayout`,
+ * types in types/model.ts). While the Rust command is still a stub (NOT_IMPLEMENTED), the
+ * demo fallback (api/fallback.ts) answers it from the mock, like any other unimplemented
+ * command. Contract (#66, docs/ARCHITECTURE.md 2.1.1):
  *   config_osd_default_layout(videoSystem: "AUTO" | "PAL" | "NTSC" | "HD", firmwareVersion)
  *     -> OsdLayout { videoSystem, cols, rows, elements: [{ name, x, y, enabled }] }
  *   `name` is Betaflight's osd_items_e name without OSD_ (e.g. MAIN_BATT_VOLTAGE).
  *   Grids: PAL 30x16, NTSC 30x13, AUTO 30x13, HD 53x20 — but the UI never assumes a
  *   size: it draws whatever cols/rows come back. UNSUPPORTED_FIRMWARE for other lines.
  */
-import { call, type CommandName } from "./commands";
-import type { OsdLayout, OsdVideoSystem } from "../types/pendingModel";
+import { api } from "./commands";
+import type { OsdLayout, OsdVideoSystem } from "../types/model";
 
 export type { OsdLayout, OsdVideoSystem };
 export const OSD_VIDEO_SYSTEMS: OsdVideoSystem[] = ["AUTO", "PAL", "NTSC", "HD"];
-export const OSD_LAYOUT_COMMAND = "config_osd_default_layout";
 
 const int = (v: unknown, min: number, max: number): number | null =>
   typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null;
@@ -47,6 +43,6 @@ export function parseLayout(raw: unknown, requested: OsdVideoSystem): OsdLayout 
 
 export const osdApi = {
   defaultLayout: async (videoSystem: OsdVideoSystem, firmwareVersion: string): Promise<OsdLayout> =>
-    // The backend seam is untyped at runtime; CommandMap does not know this name yet.
-    parseLayout(await call(OSD_LAYOUT_COMMAND as unknown as CommandName, { videoSystem, firmwareVersion } as never), videoSystem),
+    // Parsed tolerantly: a newer / older backend never breaks the step.
+    parseLayout(await api.config.osdDefaultLayout(videoSystem, firmwareVersion), videoSystem),
 };

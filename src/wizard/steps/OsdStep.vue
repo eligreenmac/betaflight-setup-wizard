@@ -7,8 +7,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { catalogState, loadCatalog } from "../../api/catalog";
-import { osdApi } from "../../api/osdPending";
-import type { OsdVideoSystem } from "../../types/pendingModel";
+import { osdApi } from "../../api/osdLayout";
+import type { OsdVideoSystem } from "../../types/model";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
 import {

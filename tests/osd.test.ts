@@ -7,7 +7,7 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import App from "../src/App.vue";
 import { resetDemoState } from "../src/api/fallback";
-import { parseLayout } from "../src/api/osdPending";
+import { parseLayout } from "../src/api/osdLayout";
 import { i18n, setLocale } from "../src/i18n";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { generateCli, mockFirmwareCatalog, mockOsdLayout, osdPosValue, type Scenario } from "../src/mocks/scenarios";

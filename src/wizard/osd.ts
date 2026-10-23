@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * OSD step model. Positions and defaults come from Config
- * (config_osd_default_layout(videoSystem, firmwareVersion), api/osdPending.ts) and the
+ * (config_osd_default_layout(videoSystem, firmwareVersion), api/osdLayout.ts) and the
  * element list per firmware from config_firmware_catalog (api/catalog.ts); this file
  * only keeps what the UI adds: grouping, explanations (locale keys `osd.items.<NAME>`)
  * and preview samples, keyed by Betaflight's osd_items_e name without OSD_.
  *
- * Sent as the #65 `osd` field (types/pendingModel.ts, TODO(shared)):
+ * Sent as the #65 `osd` field (types/model.ts):
  *   osd: { videoSystem: AUTO | PAL | NTSC | HD, elements: [{ name, enabled, x?, y? }] } | null
  * null/absent = keep the board's OSD. Only elements the wizard offers are sent (elements
  * not listed keep the FC's state); x/y only when the user moved the element (otherwise
  * Config uses its default layout position for that video system).
  */
 import type { DroneModel, FcInfo, VtxKind } from "../types/model";
-import type { Osd, OsdLayout, OsdVideoSystem } from "../types/pendingModel";
+import type { Osd, OsdLayout, OsdVideoSystem } from "../types/model";
 
 export type OsdGroup = "recommended" | "optional";
 export interface OsdElementInfo {

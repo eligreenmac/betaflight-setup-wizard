@@ -17,12 +17,11 @@
 import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
-import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
+import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FirmwareCatalog, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { ModelWithOsd } from "../wizard/osd";
-import { CATALOG_COMMAND, type FirmwareCatalog } from "../api/catalog";
-import { BEEPER_NAMES, type OsdLayout, type OsdVideoSystem } from "../types/pendingModel";
+import { BEEPER_NAMES, type OsdLayout, type OsdVideoSystem } from "../types/model";
 import { compareVersions } from "../wizard/version";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
@@ -285,6 +284,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       // Not the real MD5-based derivation; just 6 deterministic bytes for the demo.
       return Array.from({ length: 6 }, (_, i) => [...phrase].reduce((h, c) => (h * 31 + c.charCodeAt(0) + i) & 0xff, 7));
     },
+    // Shared #66; pure (no board I/O), so mocking it is safe even next to a real board.
+    config_firmware_catalog: ({ firmwareVersion }) => mockFirmwareCatalog(firmwareVersion),
+    config_osd_default_layout: ({ videoSystem, firmwareVersion }) => {
+      legacy("config_osd_default_layout");
+      if (!["AUTO", "PAL", "NTSC", "HD"].includes(videoSystem)) throw err("CONFIG_UNSUPPORTED", `unknown video system ${String(videoSystem)}`);
+      return mockOsdLayout(videoSystem, firmwareVersion);
+    },
   };
 
   function legacy(cmd: string): void {
@@ -408,23 +414,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  // ---- pending Config contract (#66, api/osdPending.ts): the default OSD layout per video system and firmware line.
-  const pendingHandlers: Record<string, (args: never) => unknown> = {
-    config_osd_default_layout: ({ videoSystem, firmwareVersion }: { videoSystem: OsdVideoSystem; firmwareVersion: string }) => {
-      legacy("config_osd_default_layout");
-      if (!["AUTO", "PAL", "NTSC", "HD"].includes(videoSystem)) throw err("CONFIG_UNSUPPORTED", `unknown video system ${String(videoSystem)}`);
-      return mockOsdLayout(videoSystem, firmwareVersion);
-    },
-  };
-
   const inner = createMockBackend({ ...handlers, ...deviceHandlers });
   // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
   const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
-    const p = pendingHandlers[cmd];
-    if (p) return p(args);
-    if ((cmd as string) === CATALOG_COMMAND) return mockFirmwareCatalog((args as { firmwareVersion?: string }).firmwareVersion ?? "");
     return inner(cmd, args);
   }) as Backend;
 
@@ -459,7 +453,7 @@ export const MOCK_OSD_CLI: Record<string, string> = {
 };
 
 /**
- * Demo config_firmware_catalog(firmwareVersion) (#66 shape, api/catalog.ts).
+ * Demo config_firmware_catalog(firmwareVersion) (shared #66 FirmwareCatalog).
  * 2025.12 has no RC_SMOOTHING_INIT_FAIL, adds DEBUG2 / LIDAR_DIST and manages ALTHOLD / POSHOLD.
  * Unknown / empty version = the 4.5 lists.
  */

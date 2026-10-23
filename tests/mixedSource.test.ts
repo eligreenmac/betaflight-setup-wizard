@@ -161,3 +161,19 @@ describe("Apply step shows the block before anything is written", () => {
     });
   }
 });
+
+describe("config_osd_default_layout (shared #66)", () => {
+  it("uses the real command when the backend has it, and the demo mock while it is a stub", async () => {
+    const { osdApi } = await import("../src/api/osdLayout");
+    const real = setup({ config_osd_default_layout: () => ({ videoSystem: "PAL", cols: 30, rows: 16, elements: [{ name: "CRAFT_NAME", x: 3, y: 15, enabled: true }] }) });
+    expect(await osdApi.defaultLayout("PAL", "4.5.1")).toEqual({ videoSystem: "PAL", cols: 30, rows: 16, elements: [{ name: "CRAFT_NAME", x: 3, y: 15, enabled: true }] });
+    expect(real.calls).toContain("config_osd_default_layout");
+    expect(demoState.sources.config_osd_default_layout).toBe("real");
+    uninstallMock();
+    resetDemoState();
+    setup({}); // Phase 0 stub -> demo fallback
+    const l = await osdApi.defaultLayout("HD", "4.5.1");
+    expect(demoState.sources.config_osd_default_layout).toBe("mock");
+    expect([l.cols, l.rows]).toEqual([53, 20]);
+  });
+});
