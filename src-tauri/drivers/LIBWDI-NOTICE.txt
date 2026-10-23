@@ -14,7 +14,8 @@ built WITHOUT modification (WinUSB driver support only) from:
 The only build-time changes are configuration: the libusb-win32 and libusbK
 driver payloads are disabled in msvc/config.h so that only WinUSB is embedded,
 and ARM64 support (OPT_ARM, plus the installer_arm64 project reference in
-libwdi/.msvc/libwdi_static.vcxproj) is disabled so only x86/x64 are built.
+libwdi/.msvc/libwdi_static.vcxproj and its libwdi.sln build entries) is
+disabled so only x86/x64 are built.
 The exact build recipe is .github/actions/build-wdi-simple/action.yml in the
 Betaflight Setup Wizard repository:
   https://github.com/eligreenmac/betaflight-setup-wizard
