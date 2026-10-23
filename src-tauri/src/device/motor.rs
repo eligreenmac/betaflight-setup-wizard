@@ -817,6 +817,17 @@ pub(crate) mod fake {
         pub uid: Arc<Mutex<[u8; 12]>>,
         /// While set, writes on links from `serial()` block (see `MockSerial::wedge`).
         pub wedge: Arc<AtomicBool>,
+        /// A CLI session is active: input is echoed and parsed as CLI lines, MSP is ignored.
+        /// `exit` leaves it (and "reboots"); `save` is counted.
+        pub cli: Arc<AtomicBool>,
+        /// `exit` does not leave the CLI (a board that never recovers).
+        pub cli_sticky: bool,
+        /// Every byte written to the FC.
+        pub rx_log: Arc<Mutex<Vec<u8>>>,
+        /// CLI lines received while in CLI mode.
+        pub cli_lines: Arc<Mutex<Vec<String>>>,
+        /// On `exit`: unplug this "present" flag for ~30 ms (USB VCP re-enumerating).
+        pub unplug_on_exit: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     }
 
     impl Default for FakeFc {
@@ -830,6 +841,11 @@ pub(crate) mod fake {
                 motor_count: 4,
                 uid: Arc::new(Mutex::new([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])),
                 wedge: Arc::default(),
+                cli: Arc::default(),
+                cli_sticky: false,
+                rx_log: Arc::default(),
+                cli_lines: Arc::default(),
+                unplug_on_exit: Arc::default(),
             }
         }
     }
@@ -855,8 +871,42 @@ pub(crate) mod fake {
         pub fn serial(&self) -> MockSerial {
             let me = self.clone();
             let mut parser = MspParser::default();
+            let mut line = Vec::<u8>::new();
             let mut link = MockSerial::new(move |w| {
+                me.rx_log.lock().unwrap().extend_from_slice(w);
                 let mut out = Vec::new();
+                if me.cli.load(Ordering::SeqCst) {
+                    // Betaflight CLI: echo, run complete lines, never answer MSP.
+                    out.extend_from_slice(w);
+                    for &b in w {
+                        if b != b'\r' && b != b'\n' {
+                            line.push(b);
+                            continue;
+                        }
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let cmd = String::from_utf8_lossy(&line).trim().to_string();
+                        line.clear();
+                        me.cli_lines.lock().unwrap().push(cmd.clone());
+                        match cmd.as_str() {
+                            "exit" if !me.cli_sticky => {
+                                out.extend_from_slice(b"\r\nLeaving CLI mode...\r\nRebooting\r\n");
+                                me.cli.store(false, Ordering::SeqCst);
+                                if let Some(p) = me.unplug_on_exit.lock().unwrap().clone() {
+                                    p.store(false, Ordering::SeqCst);
+                                    std::thread::spawn(move || {
+                                        std::thread::sleep(std::time::Duration::from_millis(30));
+                                        p.store(true, Ordering::SeqCst);
+                                    });
+                                }
+                            }
+                            "exit" => out.extend_from_slice(b"\r\n# "),
+                            _ => out.extend_from_slice(b"\r\nUnknown command, try 'help'\r\n# "),
+                        }
+                    }
+                    return out;
+                }
                 for ev in parser.feed(w) {
                     let MspEvent::Frame(f) = ev else { continue };
                     let reply: Option<Vec<u8>> = match f.code {
