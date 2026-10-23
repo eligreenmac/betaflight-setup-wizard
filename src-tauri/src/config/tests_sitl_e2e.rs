@@ -1,0 +1,293 @@
+//! Opt-in end-to-end test against a running Betaflight SITL (C1 / #12).
+//!
+//! Set `BFSW_SITL_BIN` to a `betaflight_SITL.elf` (build one with
+//! `tests/sitl/build-sitl.sh <tag>`); without it the test is skipped. The SITL's UART1
+//! listens on TCP 5761 and serves both MSP and the CLI. `save`/`exit` make the process
+//! exit (its "reboot"); `Reconnect` starts it again in the same directory, so
+//! `eeprom.bin` persists like flash.
+
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use super::backup::BackupStore;
+use super::msp;
+use super::session::{self, Reconnect};
+use crate::device::Connection;
+use crate::error::{AppError, AppResult};
+use crate::model::CliScript;
+
+const PORT: u16 = 5761;
+
+struct SitlFc {
+    bin: PathBuf,
+    dir: PathBuf,
+    child: Option<Child>,
+    sock: Option<TcpStream>,
+    in_cli: bool,
+}
+
+fn io(e: std::io::Error) -> AppError {
+    AppError::Cli(format!("SITL: {e}"))
+}
+
+impl SitlFc {
+    fn start(bin: PathBuf, dir: PathBuf) -> AppResult<SitlFc> {
+        let mut fc = SitlFc {
+            bin,
+            dir,
+            child: None,
+            sock: None,
+            in_cli: false,
+        };
+        fc.reconnect()?;
+        Ok(fc)
+    }
+
+    fn stop(&mut self) {
+        self.sock = None;
+        if let Some(mut c) = self.child.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+
+    fn sock(&mut self) -> AppResult<&mut TcpStream> {
+        self.sock
+            .as_mut()
+            .ok_or_else(|| AppError::Cli("SITL: not connected".into()))
+    }
+
+    /// Read until `until` ends the buffer (or EOF / timeout).
+    fn read(&mut self, until: Option<&[u8]>, timeout: Duration) -> AppResult<Vec<u8>> {
+        let s = self.sock()?;
+        s.set_read_timeout(Some(Duration::from_millis(100)))
+            .map_err(io)?;
+        let (mut buf, end) = (Vec::new(), Instant::now() + timeout);
+        let mut chunk = [0u8; 65536];
+        while Instant::now() < end {
+            match s.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if until.is_some_and(|u| buf.ends_with(u)) {
+                        break;
+                    }
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+        }
+        Ok(buf)
+    }
+}
+
+impl Drop for SitlFc {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+impl Connection for SitlFc {
+    fn msp_request(&mut self, code: u16, payload: &[u8]) -> AppResult<Vec<u8>> {
+        let (code8, n) = (code as u8, payload.len() as u8);
+        let mut frame = vec![b'$', b'M', b'<', n, code8];
+        frame.extend_from_slice(payload);
+        frame.push(payload.iter().fold(n ^ code8, |c, b| c ^ b));
+        self.sock()?.write_all(&frame).map_err(io)?;
+        let mut raw = Vec::new();
+        let end = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < end {
+            raw.extend(self.read(None, Duration::from_millis(200))?);
+            if raw.len() >= 6 && raw.len() >= 6 + raw[3] as usize {
+                break;
+            }
+        }
+        if raw.len() < 6 || &raw[..3] != b"$M>" || raw[4] != code8 {
+            return Err(AppError::Cli(format!("MSP {code}: bad reply {raw:02x?}")));
+        }
+        Ok(raw[5..5 + raw[3] as usize].to_vec())
+    }
+
+    fn enter_cli(&mut self) -> AppResult<()> {
+        if self.in_cli {
+            return Ok(());
+        }
+        for _ in 0..40 {
+            self.sock()?.write_all(b"#").map_err(io)?;
+            let r = self.read(Some(b"\r\n# "), Duration::from_millis(500))?;
+            if r.windows(12).any(|w| w == b"Entering CLI") {
+                self.read(Some(b"\r\n# "), Duration::from_millis(300))?;
+                self.in_cli = true;
+                return Ok(());
+            }
+        }
+        Err(AppError::Cli("SITL: no CLI prompt".into()))
+    }
+
+    fn cli_exec(&mut self, line: &str) -> AppResult<String> {
+        self.sock()?
+            .write_all(format!("{line}\n").as_bytes())
+            .map_err(io)?;
+        let r = self.read(Some(b"\r\n# "), Duration::from_secs(10))?;
+        let mut s = String::from_utf8_lossy(&r).replace('\r', "");
+        if let Some(t) = s.strip_suffix("\n# ") {
+            s = t.to_string();
+        }
+        Ok(s)
+    }
+
+    fn exit_cli(&mut self, save: bool) -> AppResult<()> {
+        let cmd: &[u8] = if save { b"save\n" } else { b"exit\n" };
+        self.sock()?.write_all(cmd).map_err(io)?;
+        self.read(None, Duration::from_secs(3))?; // "Rebooting", then the process exits
+        self.in_cli = false;
+        if let Some(c) = self.child.as_mut() {
+            let end = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < end && c.try_wait().map_err(io)?.is_none() {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        self.stop();
+        Ok(())
+    }
+}
+
+impl Reconnect for SitlFc {
+    /// Restart the process and wait until it answers MSP. A fresh SITL occasionally
+    /// accepts the TCP connection before its serial layer is up; retry the start then.
+    fn reconnect(&mut self) -> AppResult<()> {
+        let mut last = AppError::Cli(format!("SITL did not open TCP {PORT}"));
+        for _ in 0..3 {
+            self.stop();
+            let log = std::fs::File::create(self.dir.join("sitl.log")).map_err(io)?;
+            self.child = Some(
+                Command::new(&self.bin)
+                    .current_dir(&self.dir)
+                    .stdout(log)
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(io)?,
+            );
+            for _ in 0..100 {
+                if let Ok(s) = TcpStream::connect(("127.0.0.1", PORT)) {
+                    self.sock = Some(s);
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if self.sock.is_none() {
+                continue;
+            }
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(300));
+                match self.msp_request(msp::MSP_API_VERSION, &[]) {
+                    Ok(_) => return Ok(()),
+                    Err(e) => last = e,
+                }
+            }
+        }
+        Err(last)
+    }
+}
+
+fn get(fc: &mut SitlFc, name: &str) -> String {
+    fc.enter_cli().unwrap();
+    let r = fc.cli_exec(&format!("get {name}")).unwrap();
+    let v = r
+        .lines()
+        .find_map(|l| l.strip_prefix(&format!("{name} = ")))
+        .unwrap_or_else(|| panic!("get {name}: {r}"))
+        .trim()
+        .to_string();
+    fc.exit_cli(false).unwrap();
+    fc.reconnect().unwrap();
+    v
+}
+
+#[test]
+fn sitl_end_to_end_apply_error_and_rollback() {
+    let Some(bin) = std::env::var_os("BFSW_SITL_BIN").map(PathBuf::from) else {
+        eprintln!("BFSW_SITL_BIN not set; skipping the SITL end-to-end test");
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("bfsw-sitl-e2e-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = BackupStore::new(dir.join("backups"));
+    let mut fc = SitlFc::start(bin, dir.clone()).unwrap();
+
+    // Identification over MSP (UART1 serves MSP until '#').
+    let q = |fc: &mut SitlFc, c| fc.msp_request(c, &[]).unwrap();
+    let (api, var, ver, board, uid) = (
+        q(&mut fc, msp::MSP_API_VERSION),
+        q(&mut fc, msp::MSP_FC_VARIANT),
+        q(&mut fc, msp::MSP_FC_VERSION),
+        q(&mut fc, msp::MSP_BOARD_INFO),
+        q(&mut fc, msp::MSP_UID),
+    );
+    let info = msp::fc_info(&api, &var, &ver, &board, Some(&uid)).unwrap();
+    assert_eq!(info.fc_variant, "BTFL");
+    let uid = info.uid.clone().unwrap();
+
+    fc.enter_cli().unwrap();
+    let (vi, dialect) = session::read_version(&mut fc).unwrap();
+    assert_eq!(vi.version, info.firmware_version);
+    let original = {
+        let r = fc.cli_exec("get serialrx_provider").unwrap();
+        r.lines()
+            .find_map(|l| l.strip_prefix("serialrx_provider = "))
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    let target = if original == "SBUS" { "CRSF" } else { "SBUS" };
+    let script = |cmds: &[&str]| CliScript {
+        commands: cmds.iter().map(|c| c.to_string()).collect(),
+        warnings: Vec::new(),
+        dialect: dialect.as_str().into(),
+        cleared: Vec::new(),
+    };
+
+    // 1. Successful apply: saved, rebooted (process restarted), value persisted.
+    let ok = script(&[
+        &format!("set serialrx_provider = {target}"),
+        "set craft_name = BFSW",
+    ]);
+    let r = session::apply(&mut fc, &ok, &store, &uid, &mut |_| {}).unwrap();
+    assert!(r.saved && r.errors.is_empty(), "{r:?}");
+    let first_backup = r.backup.clone().unwrap();
+    assert_eq!(get(&mut fc, "serialrx_provider"), target);
+    assert_eq!(get(&mut fc, "craft_name"), "BFSW");
+
+    // 2. A rejected command aborts the batch, `exit` discards it, nothing is saved.
+    fc.enter_cli().unwrap();
+    let bad = script(&[
+        &format!("set serialrx_provider = {original}"),
+        "set foo = 1",
+    ]);
+    let r = session::apply(&mut fc, &bad, &store, &uid, &mut |_| {}).unwrap();
+    assert!(!r.saved);
+    assert!(r.errors[0].response.contains("INVALID NAME"), "{r:?}");
+    assert_eq!(
+        get(&mut fc, "serialrx_provider"),
+        target,
+        "failed batch must not persist"
+    );
+
+    // 3. Rollback to the backup taken before step 1 restores the original value.
+    fc.enter_cli().unwrap();
+    let r = session::rollback(&mut fc, &first_backup, &store, &uid, &mut |_| {}).unwrap();
+    assert!(r.saved && r.errors.is_empty(), "{r:?}");
+    assert_eq!(get(&mut fc, "serialrx_provider"), original);
+    assert_eq!(get(&mut fc, "craft_name"), "-");
+
+    drop(fc);
+    let _ = std::fs::remove_dir_all(&dir);
+}
