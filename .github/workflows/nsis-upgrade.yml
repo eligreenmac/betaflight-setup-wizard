@@ -1,0 +1,117 @@
+name: nsis-upgrade
+
+# Installs NSIS builds 0.1.0-1, then 0.1.0-2 over it, then 0.1.0 over that, all
+# silently (/S, per-user default install mode). After each step it asserts:
+# exactly one install entry, the new DisplayVersion, and that the installed app exe
+# is byte-identical to the one inside that installer (and differs from the previous
+# one).
+# Versions come from `tauri build --config` overrides; no files are changed.
+# Three NSIS builds (two incremental): runs on PRs only when packaging config
+# changes, on release tags, and on demand.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+    paths:
+      - src-tauri/tauri.conf.json
+      - src-tauri/Cargo.toml
+      - src-tauri/windows/**
+      - src-tauri/nsis/**
+      - package.json
+      - .github/workflows/nsis-upgrade.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upgrade:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - name: Build NSIS installers 0.1.0-1, 0.1.0-2, 0.1.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/installers"
+          foreach ($v in '0.1.0-1', '0.1.0-2', '0.1.0') {
+            $cfg = "$env:RUNNER_TEMP/version-$v.json"
+            @{ version = $v } | ConvertTo-Json | Set-Content -Encoding utf8NoBOM $cfg
+            npm run tauri build -- --bundles nsis --config $cfg
+            if ($LASTEXITCODE -ne 0) { throw "tauri build $v failed" }
+            $setup = @(Get-ChildItem "src-tauri/target/release/bundle/nsis/*_${v}_x64-setup.exe")
+            if ($setup.Count -ne 1) { throw "expected one NSIS installer for $v, found $($setup.Count)" }
+            Copy-Item $setup[0].FullName "$out/setup-$v.exe"
+          }
+          Get-ChildItem $out | Format-Table Name, Length
+      - name: Silent install 0.1.0-1, upgrade to 0.1.0-2, then to 0.1.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = "$env:RUNNER_TEMP/installers"
+          $product = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).productName
+          $roots = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                   'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+                   'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+
+          function Get-Entries {
+            @(foreach ($r in $roots) {
+              if (Test-Path $r) {
+                Get-ChildItem $r | Get-ItemProperty | Where-Object { $_.DisplayName -eq $product }
+              }
+            })
+          }
+          function Install([string]$v) {
+            $p = Start-Process -FilePath "$dir/setup-$v.exe" -ArgumentList '/S' -Wait -PassThru
+            Write-Host "setup-$v.exe /S -> exit $($p.ExitCode)"
+            $p.ExitCode
+          }
+          function Get-ExpectedExeHash([string]$v, [string]$name) {
+            $x = "$env:RUNNER_TEMP/extract-$v"
+            7z x "$dir/setup-$v.exe" "-o$x" -y | Out-Null
+            $f = @(Get-ChildItem -Recurse -File $x | Where-Object { $_.Name -eq $name })
+            if ($f.Count -ne 1) { throw "found $($f.Count) '$name' in setup-$v.exe" }
+            (Get-FileHash $f[0].FullName).Hash
+          }
+          function Assert-Installed([string]$v) {
+            $e = Get-Entries
+            if ($e.Count -ne 1) { throw "after $v`: expected 1 install entry, found $($e.Count): $($e.PSPath -join '; ')" }
+            $e = $e[0]
+            if ($e.DisplayVersion -ne $v) { throw "after $v`: DisplayVersion is '$($e.DisplayVersion)'" }
+            $exe = Join-Path $e.InstallLocation.Trim('"') $e.MainBinaryName
+            if (-not (Test-Path $exe)) { throw "after $v`: $exe missing" }
+            $hash = (Get-FileHash $exe).Hash
+            $want = Get-ExpectedExeHash $v $e.MainBinaryName
+            if ($hash -ne $want) { throw "after $v`: installed exe ($hash) is not the one in setup-$v.exe ($want)" }
+            Write-Host "OK $v`: $($e.PSChildName) DisplayVersion=$($e.DisplayVersion) exe=$exe sha256=$hash ProductVersion=$((Get-Item $exe).VersionInfo.ProductVersion)"
+            $hash
+          }
+
+          if ((Get-Entries).Count -ne 0) { throw 'runner already has an install entry' }
+
+          if ((Install '0.1.0-1') -ne 0) { throw 'install 0.1.0-1 failed' }
+          $h1 = Assert-Installed '0.1.0-1'
+
+          if ((Install '0.1.0-2') -ne 0) { throw 'upgrade to 0.1.0-2 failed' }
+          $h2 = Assert-Installed '0.1.0-2'
+          if ($h2 -eq $h1) { throw 'app exe was not replaced by 0.1.0-2' }
+
+          if ((Install '0.1.0') -ne 0) { throw 'upgrade to 0.1.0 failed' }
+          $h3 = Assert-Installed '0.1.0'
+          if ($h3 -eq $h2) { throw 'app exe was not replaced by 0.1.0' }
+
+          Write-Host 'NSIS preview-to-preview upgrade OK'
