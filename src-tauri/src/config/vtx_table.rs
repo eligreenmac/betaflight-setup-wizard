@@ -12,8 +12,8 @@ pub const BAND_NAME_LENGTH: usize = 8;
 pub const POWER_LABEL_LENGTH: usize = 3;
 /// VTX_SETTINGS_MAX_FREQUENCY_MHZ
 pub const MAX_FREQUENCY_MHZ: u16 = 5999;
-/// `vtx_power` is 1-based but its CLI range is 0..VTX_TABLE_MAX_POWER_LEVELS-1.
-pub const MAX_CLI_POWER_INDEX: u8 = (MAX_POWER_LEVELS - 1) as u8;
+// `vtx_power` is 1-based but its CLI range is 0..VTX_TABLE_MAX_POWER_LEVELS-1:
+// model::VTX_POWER_MAX (checked against these constants in model's tests).
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Band {
