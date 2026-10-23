@@ -50,6 +50,8 @@ export const WRITE_DEPENDENCIES: Partial<Record<string, string[]>> = {
   config_apply: ["config_plan", "config_read_ports"],
   config_rollback: ["config_backup"],
   config_restore: ["config_list_backups"],
+  // TODO(shared #92): wizard/restore.ts. Restores the backup this update took.
+  config_restore_after_flash: ["config_backup"],
   device_cli_exec: [],
   // flasher_required_options: never flash a real board with options a simulated backend chose.
   flasher_flash: ["flasher_fetch_firmware", "flasher_list_dfu_devices", "flasher_required_options"],
