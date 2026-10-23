@@ -166,6 +166,10 @@ interface MockDevice {
   attitudeTimer: ReturnType<typeof setInterval> | null;
   /** rateHz of every device_attitude_stream_start call, as requested (tests). */
   attitudeRates: (number | null)[];
+  /** The next N commands that need the port to themselves get PORT_BUSY {heldBy: "APP"} anyway (tests). */
+  portBusyOnce: number;
+  /** Commands refused with PORT_BUSY because the attitude stream held the port (tests). */
+  portBusyRefused: string[];
   /** Build options the last flash added (its request's requiredOptions). */
   addedOptions: string[];
   /** Build options the last flash left out (droppedOptions). */
@@ -243,6 +247,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     tilt: null,
     attitudeTimer: null,
     attitudeRates: [],
+    portBusyOnce: 0,
+    portBusyRefused: [],
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
@@ -691,6 +697,19 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_") || cmd.startsWith("device_attitude_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
+    // Device #94: while the attitude stream runs, only identify / sensors / get_attitude share
+    // the port; these get PORT_BUSY until the stream is stopped.
+    if (NEEDS_PORT_ALONE.includes(cmd)) {
+      if (device.attitudeTimer) {
+        device.portBusyRefused.push(cmd);
+        throw portBusy("COM5", "APP", "attitude stream running");
+      }
+      if (device.portBusyOnce > 0) {
+        device.portBusyOnce--;
+        device.portBusyRefused.push(cmd);
+        throw portBusy("COM5", "APP", "port in use");
+      }
+    }
     const p = pendingHandlers[cmd as unknown as PendingCommandName];
     if (p) return p(args);
     return inner(cmd, args);
@@ -698,6 +717,22 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
 
   return { backend, events, device };
 }
+
+/** Commands that need the port to themselves (refused with PORT_BUSY while the attitude stream runs, Device #94). */
+const NEEDS_PORT_ALONE: readonly string[] = [
+  "device_acc_calibrate",
+  "device_reboot",
+  "device_reboot_to_bootloader",
+  "device_probe_board",
+  "device_cli_exec",
+  "config_read_ports",
+  "config_backup",
+  "config_plan",
+  "config_apply",
+  "config_verify",
+  "config_rollback",
+  "config_restore",
+];
 
 /** Scenarios whose firmware has no MSP DisplayPort: config_plan refuses an HD OSD (osd-hd-plan-error: the board reports "unknown"). */
 const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error", "osd-hd-reflash", "reflash-after-apply"];

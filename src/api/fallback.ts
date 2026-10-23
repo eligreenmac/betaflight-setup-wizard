@@ -24,6 +24,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { reactive } from "vue";
 import { isNotImplemented, uiError } from "../errors/codes";
+import { withLinkGate } from "./attitudeLink";
 import { setBackend, type Backend, type CommandName } from "./commands";
 import { setEventSource, type EventSource } from "./events";
 
@@ -185,6 +186,6 @@ const tauriTargets = (): FallbackTargets => ({
 
 /** Wire real-with-mock-fallback into every backend seam (app runtime). */
 export function installFallback(mock: FallbackTargets, real: FallbackTargets = tauriTargets()): void {
-  setBackend(withFallback(real.backend, mock.backend));
+  setBackend(withLinkGate(withFallback(real.backend, mock.backend)));
   setEventSource(mergeEventSources(real.events, mock.events));
 }
