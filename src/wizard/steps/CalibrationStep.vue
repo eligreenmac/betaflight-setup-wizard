@@ -8,10 +8,12 @@
 // preview undoes it using device_sensors `alignment` (0/0/0 if not reported).
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { stopAttitudeStream } from "../../api/attitudeLink";
 import { api } from "../../api/commands";
 import { onEvent, type Unlisten } from "../../api/events";
 import { sourceMismatch } from "../../api/fallback";
 import { ATTITUDE_START_COMMAND, attitudeToEuler, PENDING_EVENTS, pendingApi, SENSORS_COMMAND, type Attitude, type AttitudeStopped } from "../../api/pending";
+import Attitude3D from "../../components/Attitude3D.vue";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, uiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
@@ -19,6 +21,7 @@ import { accModeSwitches, calibrationBlock, calibrationWarnings, mayHaveUnsavedC
 import type { BoardAlignment } from "../modelExt";
 import { motorTest } from "../motorTest";
 import { goTo } from "../nav";
+import { ATTITUDE_RATE_HZ, relativeYaw, webglAvailable } from "../attitude3d";
 import { ALIGNMENT_PRESETS, alignedAttitude, sameAlignment, tiltDirection, type Euler } from "../orientation";
 import { markDirty, wizard } from "../state";
 import { modeKeyOf } from "../switches";
@@ -86,20 +89,17 @@ const calError = ref<UiError | null>(null);
 async function calibrate(): Promise<void> {
   // Calibration saves to EEPROM together with any pending RAM change: Device refuses with
   // PENDING_UNSAVED_CHANGES then (handled below). Never between config_plan and config_apply.
-  if (wizard.ui.accCalibration === "running" || block.value !== null || rebooting.value) return;
+  if (wizard.ui.accCalibration === "running" || block.value !== null || rebooting.value || linkBusy.value) return;
   calError.value = null;
   wizard.ui.accCalibration = "running";
-  const wasLive = live.value === "on";
-  // The calibration needs the board to itself: pause the live view meanwhile.
-  if (wasLive) await stopAttitude();
   try {
-    await pendingApi.accCalibrate();
+    // The calibration needs the board to itself: the live view pauses meanwhile.
+    await withPortFree(() => pendingApi.accCalibrate());
     wizard.ui.accCalibration = "done";
   } catch (e) {
     calError.value = toUiError(e);
     wizard.ui.accCalibration = "failed";
   }
-  if (wasLive) await startAttitude();
 }
 
 /**
@@ -112,15 +112,12 @@ async function calibrate(): Promise<void> {
 const LOST: string[] = ["SERIAL_ERROR", "DISCONNECTED", "USB_ERROR", "TIMEOUT"];
 const rebooting = ref(false);
 async function rebootBoard(): Promise<void> {
-  if (rebooting.value || wizard.ui.accCalibration === "running") return;
+  if (rebooting.value || wizard.ui.accCalibration === "running" || linkBusy.value) return;
   rebooting.value = true;
-  const wasLive = live.value === "on";
-  // The reboot drops the port for a moment: pause the live view meanwhile.
-  if (wasLive) await stopAttitude();
-  let ok = false;
   try {
-    await api.device.reboot();
-    ok = true;
+    // The reboot needs the port to itself and drops it for a moment: the live view pauses
+    // meanwhile and comes back only if the board did (not after a lost board).
+    await withPortFree(() => api.device.reboot(), false);
     calError.value = null;
     wizard.ui.accCalibration = "idle";
     await loadSensors();
@@ -132,11 +129,11 @@ async function rebootBoard(): Promise<void> {
   } finally {
     rebooting.value = false;
   }
-  if (wasLive && ok) await startAttitude();
 }
 /** The board did not come back: forget the connection and go back to Connect. */
 async function goConnect(): Promise<void> {
-  if (live.value === "on") await stopAttitude();
+  alive = false; // leaving: never restart the live view
+  await stopAttitude();
   try {
     await api.device.disconnect();
   } catch {
@@ -159,17 +156,37 @@ const liveError = ref<UiError | null>(null);
 /** Why the live view stopped on its own (DISCONNECTED / ERROR), for the retry message. */
 const stopReason = ref<string | null>(null);
 const reported = ref<Euler | null>(null);
+/** 3D quad (three.js, lazy) when WebGL works; the 2D side / rear drawings otherwise (and in jsdom). */
+const use3d = ref(webglAvailable());
+/** Heading that counts as "facing away from you" in the 3D view (first sample, or "Face forward again"). */
+const yawRef = ref<number | null>(null);
+/** The stream was stopped because the window was hidden; restart it when visible again. */
+let pausedHidden = false;
 let offs: Unlisten[] = [];
+/** False once the step is being left: nothing restarts the stream after that. */
+let alive = true;
+/** A command that needs the port to itself is running (the live view is paused for it). */
+const linkBusy = ref(false);
+/** The stream start in flight, so a stop never overtakes it (the stream would keep running). */
+let starting: Promise<void> | null = null;
 const attitudeSimulated = computed(() => sourceMismatch(ATTITUDE_START_COMMAND));
 // Keep (null) = the alignment the FC already has.
 const current = computed<BoardAlignment>(() => wizard.ui.sensors?.alignment ?? { roll: 0, pitch: 0, yaw: 0 });
 const preview = computed<BoardAlignment>(() => wizard.ext.boardAlignment ?? current.value);
 // The FC applies its current alignment before reporting; undo it for the preview (0/0/0 if unknown).
-const shown = computed(() => (reported.value ? alignedAttitude(reported.value, preview.value, current.value) : null));
+// The heading is shown relative to yawRef (an earth-frame turn: roll / pitch and the tilt checks are unchanged).
+const shown = computed(() => (reported.value ? alignedAttitude(relativeYaw(reported.value, yawRef.value ?? 0), preview.value, current.value) : null));
 const currentIsPreset = computed(() => ALIGNMENT_PRESETS.some((p) => sameAlignment(current.value, p.align)));
 const direction = computed(() => (shown.value ? tiltDirection(shown.value) : null));
 
 async function startAttitude(): Promise<void> {
+  if (!alive || linkBusy.value) return;
+  const p = doStartAttitude();
+  starting = p;
+  await p;
+  if (starting === p) starting = null;
+}
+async function doStartAttitude(): Promise<void> {
   live.value = "starting";
   liveError.value = null;
   stopReason.value = null;
@@ -177,7 +194,8 @@ async function startAttitude(): Promise<void> {
   await api.device.rcStreamStop().catch(() => undefined);
   await motorTest.stop("navigation");
   try {
-    await pendingApi.attitudeStreamStart(10);
+    // 30 Hz for a smooth live view, only while this step is on screen (stopped on leave / hidden window).
+    await pendingApi.attitudeStreamStart(ATTITUDE_RATE_HZ);
     live.value = "on";
   } catch (e) {
     const ue = toUiError(e);
@@ -185,10 +203,65 @@ async function startAttitude(): Promise<void> {
     live.value = ue.code === "PORT_BUSY" ? "busy" : ue.code === "NOT_IMPLEMENTED" ? "unavailable" : "error";
   }
 }
+/** Stop the live view and wait until the board connection is really free (attitudeLink.ts). */
 async function stopAttitude(): Promise<void> {
+  if (starting) await starting;
   if (live.value !== "on" && live.value !== "starting") return;
   live.value = "off";
-  await pendingApi.attitudeStreamStop().catch(() => undefined);
+  await stopAttitudeStream();
+}
+
+/**
+ * Run a command that needs the board connection to itself (Device #94: while the attitude
+ * stream runs, everything but identify / sensors / get_attitude gets PORT_BUSY): stop the live
+ * view first and wait for it, run the command, then restart the live view if it was on and the
+ * step is still on screen (after a failed command only if `resumeOnFail`; not after a reboot
+ * that failed, the board may be gone). If the port is still
+ * busy (the stream had not let go yet, an RC stream or a motor test), everything this app runs
+ * on the port is stopped and the command is tried once more; a second PORT_BUSY is shown.
+ */
+async function withPortFree<T>(run: () => Promise<T>, resumeOnFail = true): Promise<T> {
+  linkBusy.value = true;
+  const wasLive = live.value === "on" || live.value === "starting" || pausedHidden;
+  pausedHidden = false;
+  let ok = false;
+  try {
+    await stopAttitude();
+    let v: T;
+    try {
+      v = await run();
+    } catch (e) {
+      if (toUiError(e).code !== "PORT_BUSY") throw e;
+      await stopAttitudeStream();
+      await api.device.rcStreamStop().catch(() => undefined);
+      await motorTest.stop("navigation");
+      v = await run();
+    }
+    ok = true;
+    return v;
+  } finally {
+    linkBusy.value = false;
+    if (wasLive && alive && (ok || resumeOnFail)) {
+      if (document.visibilityState === "hidden") pausedHidden = true;
+      else void startAttitude();
+    }
+  }
+}
+
+function resetHeading(): void {
+  if (reported.value) yawRef.value = reported.value.yaw;
+}
+function onVisibility(): void {
+  if (linkBusy.value) return; // withPortFree restarts the live view itself
+  if (document.visibilityState === "hidden") {
+    if (live.value === "on" || live.value === "starting") {
+      pausedHidden = true;
+      void stopAttitude();
+    }
+  } else if (pausedHidden) {
+    pausedHidden = false;
+    void startAttitude();
+  }
 }
 
 function answer(ok: boolean): void {
@@ -217,7 +290,14 @@ onMounted(async () => {
     live.value = "unavailable";
     return;
   }
-  offs.push(await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => (reported.value = attitudeToEuler(a))));
+  offs.push(
+    await onEvent(PENDING_EVENTS.attitude, (a: Attitude) => {
+      const e = attitudeToEuler(a);
+      if (yawRef.value === null) yawRef.value = e.yaw;
+      reported.value = e;
+    }),
+  );
+  document.addEventListener("visibilitychange", onVisibility);
   offs.push(
     await onEvent(PENDING_EVENTS.attitudeStopped, (s: AttitudeStopped) => {
       if (s.reason === "REQUESTED" || live.value !== "on") return;
@@ -231,6 +311,9 @@ onMounted(async () => {
   await startAttitude();
 });
 onBeforeUnmount(() => {
+  alive = false;
+  document.removeEventListener("visibilitychange", onVisibility);
+  pausedHidden = false;
   offs.forEach((o) => o());
   offs = [];
   void stopAttitude();
@@ -314,7 +397,7 @@ onBeforeUnmount(() => {
           type="button"
           class="btn btn--primary"
           data-test="calibrate"
-          :disabled="wizard.ui.accCalibration === 'running' || !accOn || block !== null || rebooting"
+          :disabled="wizard.ui.accCalibration === 'running' || !accOn || block !== null || rebooting || linkBusy"
           @click="calibrate"
         >
           {{ wizard.ui.accCalibration === "failed" ? t("calibration.acc.retry") : t("calibration.acc.calibrate") }}
@@ -361,37 +444,45 @@ onBeforeUnmount(() => {
                   : t("calibration.orientation.failed")
           }}
         </div>
-        <button type="button" class="btn btn--small" data-test="attitude-retry" @click="startAttitude">{{ t("actions.tryAgain") }}</button>
+        <button type="button" class="btn btn--small" data-test="attitude-retry" :disabled="linkBusy" @click="startAttitude">{{ t("actions.tryAgain") }}</button>
       </template>
       <template v-else>
+        <p v-if="linkBusy" class="hint" role="status" data-test="attitude-paused">{{ t("calibration.orientation.paused") }}</p>
         <p>{{ t("calibration.orientation.instructions") }}</p>
-        <div class="attitude" dir="ltr" data-test="attitude-view" :data-direction="direction ?? ''">
-          <figure>
-            <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.sideView')">
-              <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
-              <g :transform="`rotate(${sideAngle})`">
-                <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
-                <polygon points="40,-10 54,0 40,10" class="attitude__nose" />
-                <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
-                <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
-              </g>
-            </svg>
-            <figcaption>{{ t("calibration.orientation.sideView") }}</figcaption>
-          </figure>
-          <figure>
-            <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.rearView')">
-              <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
-              <g :transform="`rotate(${rearAngle})`">
-                <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
-                <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
-                <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
-                <text x="44" y="22" class="attitude__label">R</text>
-                <text x="-50" y="22" class="attitude__label">L</text>
-              </g>
-            </svg>
-            <figcaption>{{ t("calibration.orientation.rearView") }}</figcaption>
-          </figure>
+        <div class="attitude" dir="ltr" data-test="attitude-view" :data-view="use3d ? '3d' : '2d'" :data-direction="direction ?? ''">
+          <Attitude3D v-if="use3d" :attitude="shown" :label="t('calibration.orientation.view3d')" @fallback="use3d = false" />
+          <template v-else>
+            <figure>
+              <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.sideView')">
+                <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
+                <g :transform="`rotate(${sideAngle})`">
+                  <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
+                  <polygon points="40,-10 54,0 40,10" class="attitude__nose" />
+                  <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
+                  <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
+                </g>
+              </svg>
+              <figcaption>{{ t("calibration.orientation.sideView") }}</figcaption>
+            </figure>
+            <figure>
+              <svg viewBox="-60 -40 120 80" width="180" height="120" role="img" :aria-label="t('calibration.orientation.rearView')">
+                <line x1="-58" y1="0" x2="58" y2="0" class="attitude__horizon" />
+                <g :transform="`rotate(${rearAngle})`">
+                  <rect x="-40" y="-4" width="80" height="8" rx="3" class="attitude__frame" />
+                  <rect x="-46" y="-12" width="14" height="4" class="attitude__prop" />
+                  <rect x="32" y="-12" width="14" height="4" class="attitude__prop" />
+                  <text x="44" y="22" class="attitude__label">R</text>
+                  <text x="-50" y="22" class="attitude__label">L</text>
+                </g>
+              </svg>
+              <figcaption>{{ t("calibration.orientation.rearView") }}</figcaption>
+            </figure>
+          </template>
         </div>
+        <p v-if="use3d" class="hint attitude3d__heading">
+          {{ t("calibration.orientation.resetHeadingHint") }}
+          <button type="button" class="btn btn--small" data-test="attitude-reset-heading" :disabled="!reported" @click="resetHeading">{{ t("calibration.orientation.resetHeading") }}</button>
+        </p>
         <p class="hint" role="status">
           {{ live === "starting" || !direction ? t("calibration.orientation.waiting") : t(`calibration.orientation.direction.${direction}`) }}
           <span v-if="upsideDown"> {{ t("calibration.orientation.upsideDown") }}</span>

@@ -65,7 +65,7 @@ import type { PendingCommandName } from "../api/pending";
 import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
-import { compareVersions } from "../wizard/version";
+import { versionAtLeast } from "../wizard/version";
 
 export const SCENARIOS = [
   "happy",
@@ -164,6 +164,12 @@ interface MockDevice {
   /** Simulated frame tilt; null = automatic demo cycle. */
   tilt: Euler | null;
   attitudeTimer: ReturnType<typeof setInterval> | null;
+  /** rateHz of every device_attitude_stream_start call, as requested (tests). */
+  attitudeRates: (number | null)[];
+  /** The next N commands that need the port to themselves get PORT_BUSY {heldBy: "APP"} anyway (tests). */
+  portBusyOnce: number;
+  /** Commands refused with PORT_BUSY because the attitude stream held the port (tests). */
+  portBusyRefused: string[];
   /** Build options the last flash added (its request's requiredOptions). */
   addedOptions: string[];
   /** Build options the last flash left out (droppedOptions). */
@@ -240,6 +246,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     accCalibrated: false,
     tilt: null,
     attitudeTimer: null,
+    attitudeRates: [],
+    portBusyOnce: 0,
+    portBusyRefused: [],
   };
   const snapshot = (): Backup => {
     const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
@@ -514,7 +523,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       fcVariant: "BTFL",
       firmwareVersion: device.firmwareVersion,
       // 2026.6.2 SITL capture (Device #82 fixtures): MSP API 1.48.
-      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : compareVersions(device.firmwareVersion, "2026.6.0") >= 0 ? "1.48" : "1.46",
+      apiVersion: device.firmwareVersion.startsWith("4.3") ? "1.44" : versionAtLeast(device.firmwareVersion, "2026.6.0") ? "1.48" : "1.46",
       boardName: "SPEEDYBEEF405V4",
       manufacturerId: "SPBE",
       mcu: "STM32F405",
@@ -661,6 +670,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       if (device.motorsSpinning.size > 0) throw portBusy("COM5", "APP", "motor test running");
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
       if (device.attitudeTimer) clearInterval(device.attitudeTimer);
+      device.attitudeRates.push(rateHz);
+      // Device clamps to 1..30 today (the cap is being raised to 50).
       const hz = Math.min(30, Math.max(1, rateHz ?? 10));
       let seq = 0;
       device.attitudeTimer = setInterval(() => {
@@ -686,6 +697,19 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_") || cmd.startsWith("device_attitude_stream_");
   const backend: Backend = (async (cmd: CommandName, args: never) => {
     await sleep(fast(cmd) ? latency / 2 : latency);
+    // Device #94: while the attitude stream runs, only identify / sensors / get_attitude share
+    // the port; these get PORT_BUSY until the stream is stopped.
+    if (NEEDS_PORT_ALONE.includes(cmd)) {
+      if (device.attitudeTimer) {
+        device.portBusyRefused.push(cmd);
+        throw portBusy("COM5", "APP", "attitude stream running");
+      }
+      if (device.portBusyOnce > 0) {
+        device.portBusyOnce--;
+        device.portBusyRefused.push(cmd);
+        throw portBusy("COM5", "APP", "port in use");
+      }
+    }
     const p = pendingHandlers[cmd as unknown as PendingCommandName];
     if (p) return p(args);
     return inner(cmd, args);
@@ -693,6 +717,22 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
 
   return { backend, events, device };
 }
+
+/** Commands that need the port to themselves (refused with PORT_BUSY while the attitude stream runs, Device #94). */
+const NEEDS_PORT_ALONE: readonly string[] = [
+  "device_acc_calibrate",
+  "device_reboot",
+  "device_reboot_to_bootloader",
+  "device_probe_board",
+  "device_cli_exec",
+  "config_read_ports",
+  "config_backup",
+  "config_plan",
+  "config_apply",
+  "config_verify",
+  "config_rollback",
+  "config_restore",
+];
 
 /** Scenarios whose firmware has no MSP DisplayPort: config_plan refuses an HD OSD (osd-hd-plan-error: the board reports "unknown"). */
 const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error", "osd-hd-reflash", "reflash-after-apply"];
@@ -736,7 +776,7 @@ function mockLinesLabel(): string {
   return xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`;
 }
 
-const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
+const isV2025 = (fw: string | null | undefined) => !!fw && versionAtLeast(fw, "2025.12.0");
 
 /**
  * OSD element names (osd_items_e without OSD_) with their `osd_<cli>_pos` stem. A subset
@@ -780,7 +820,7 @@ export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
   return {
     beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
     beaconEvents: ["RX_LOST", "RX_SET"],
-    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !MOCK_OSD_SINCE[n] || compareVersions(fw, MOCK_OSD_SINCE[n]) >= 0),
+    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !MOCK_OSD_SINCE[n] || versionAtLeast(fw, MOCK_OSD_SINCE[n])),
     modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
   };
 }

@@ -19,7 +19,7 @@ export function inRange(value: number, rangeMin: number, rangeMax: number): bool
 /** DroneModel.switches[].auxChannel is 0-based (AUX1 = 0). AUX1 is RC channel 5, i.e. index 4. */
 export const auxToChannelIndex = (aux: number): number => aux + 4;
 
-import { compareVersions } from "./version";
+import { versionAtLeast } from "./version";
 
 const squash = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, "");
 
@@ -83,7 +83,7 @@ const DISPLAY_NAMES: Record<ModeKey, { legacy: string; current: string }> = {
 };
 
 export function usesNewModeNames(firmwareVersion: string | null | undefined): boolean {
-  return !!firmwareVersion && compareVersions(firmwareVersion, MODE_RENAME_SINCE) >= 0;
+  return !!firmwareVersion && versionAtLeast(firmwareVersion, MODE_RENAME_SINCE);
 }
 
 /** Stable name of `key` (what the model stores). */
@@ -105,7 +105,7 @@ export function displayBoxName(key: ModeKey, firmwareVersion: string | null | un
 export function modeAvailable(key: ModeKey, firmwareVersion: string | null | undefined, catalogModes?: string[] | null): boolean {
   if (catalogModes && catalogModes.length) return catalogModes.some((m) => squash(m) === squash(MODES[key]));
   const min = MODE_MIN_FIRMWARE[key];
-  return !min || !firmwareVersion || compareVersions(firmwareVersion, min) >= 0;
+  return !min || !firmwareVersion || versionAtLeast(firmwareVersion, min);
 }
 
 /** Older spellings accepted when reading a model (e.g. saved by an earlier build). */
