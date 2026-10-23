@@ -140,3 +140,51 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 `.github/workflows/build.yml`: windows-latest (helper build, `npm ci/test/build`,
 `cargo test`, `tauri build` NSIS+MSI, installer check, artifacts) and ubuntu
 (`cargo fmt/check/test`). All actions run on Node 24.
+
+## 4. Release pipeline (issue #28)
+
+`.github/workflows/release.yml`
+
+1. Bump `version` in `src-tauri/tauri.conf.json`, `package.json` + `package-lock.json`
+   (`npm version <v> --no-git-tag-version`) and `src-tauri/Cargo.toml` (+ `Cargo.lock`)
+   on `main`. `.github/scripts/check-release-version.mjs` fails the release if they
+   differ.
+2. A maintainer pushes tag `v<version>` (must equal that version; the workflow fails
+   otherwise).
+3. windows-latest builds the helper, runs tests, `tauri build` (NSIS + MSI), checks the
+   helper is in the installer, packs `libwdi-<ref>-source.zip`, writes
+   `SHA256SUMS.txt` (spaces in file names become `_` so names match the assets).
+4. A second job (only for tags, `contents: write`) creates a **draft** release with
+   those files, or re-uploads to the draft if it already exists. It refuses to touch
+   an already published release. **Publishing is manual.**
+
+PRs that change `release.yml` or the helper action, and manual runs, execute only the
+build job (dry run with an artifact).
+
+### Versions (MSI rules)
+
+Windows Installer versions are `major.minor.build[.rev]` (major/minor <= 255, build
+<= 65535). Tauri's WiX bundler maps SemVer `X.Y.Z-N` to `X.Y.Z.N` and rejects any
+non-numeric or > 65535 pre-release (e.g. `-beta.1`) or `+build` metadata. So:
+
+- Release: `X.Y.Z` (tag `vX.Y.Z`).
+- Preview: `X.Y.Z-N` (tag `vX.Y.Z-N`), e.g. the first preview `0.1.0-1` → MSI
+  `0.1.0.1`. The draft is marked as a GitHub **pre-release**. The workflow checks the
+  built MSI's `ProductVersion`.
+- Windows Installer ignores the 4th field when it compares versions, and Tauri's MSI
+  uses `MajorUpgrade AllowSameVersionUpgrades="yes"`, so `0.1.0-1` → `0.1.0-2` →
+  `0.1.0` install over each other as upgrades. In SemVer `0.1.0-1` < `0.1.0`, so the
+  final release still sorts after its previews. The NSIS `VIProductVersion` is
+  `X.Y.Z.0` (Tauri only maps `+build` there); the NSIS display version stays `X.Y.Z-N`.
+
+### Not enabled yet (later phases)
+
+- **Code signing** (phase 3). Plan: Azure Trusted Signing (cheapest, no HSM token)
+  or an OV/EV certificate. Hooks are marked `TODO(code signing)` in `release.yml`:
+  sign `bfsw-wdi-simple.exe` right after it is built (it is what the UAC prompt
+  shows), then let Tauri sign the app/NSIS/MSI via `bundle.windows.signCommand`
+  with secrets. Until then SmartScreen and UAC show "unknown publisher".
+- **Auto-update**: `bundle.createUpdaterArtifacts` is off and no updater plugin is
+  configured; enabling it requires generating the Tauri updater key pair, storing
+  `TAURI_SIGNING_PRIVATE_KEY` (+ password) as repo secrets and keeping an offline
+  backup (losing it breaks updates for every installed copy).
