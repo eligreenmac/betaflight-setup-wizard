@@ -9,6 +9,7 @@ import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
 import { MAX_AUX, MODES, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { hasOnboardElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
 /** A validation problem; `key` is an i18n key under `validation.*`. */
@@ -89,6 +90,7 @@ export const guards: Record<string, StepGuard> = {
       const issues: Issue[] = [];
       if (s.ports.length === 0) issues.push({ key: "validation.noConfig" });
       if (s.model.receiver.kind === "NONE") issues.push({ key: "validation.receiverRequired" });
+      if (s.model.receiver.kind === "SPI" && !hasOnboardElrs(s.fc)) issues.push({ key: "validation.noOnboardReceiver" });
       if (s.model.vtx.kind !== "NONE" && !s.model.vtx.protocol) issues.push({ key: "validation.vtxProtocolRequired" });
       return issues;
     },
@@ -98,7 +100,8 @@ export const guards: Record<string, StepGuard> = {
     validate: (s) => {
       const r = s.model.receiver;
       const issues: Issue[] = [];
-      if (!r.protocol) issues.push({ key: "validation.rxProtocolRequired" });
+      const allowed = r.kind === "SPI" ? SPI_RX_PROTOCOLS : SERIAL_RX_PROTOCOLS;
+      if (!r.protocol || !allowed.includes(r.protocol)) issues.push({ key: "validation.rxProtocolRequired" });
       return [...issues, ...portIssues(s, "receiver")];
     },
   },

@@ -7,16 +7,20 @@ import { reactive } from "vue";
 import {
   emptyDroneModel,
   type ApplyResult,
+  type Backup,
   type CliScript,
   type DroneModel,
   type FcInfo,
   type FcSerialPort,
   type ReceiverKind,
+  type RxProtocol,
+  type VtxProtocol,
   type VtxKind,
 } from "../types/model";
 import type { VerifyOutcome } from "../api/upcoming";
 import { clearUnneededRolePorts, prefillFromBoard, type RoleOptions } from "./ports";
-import { MODES, SWITCH_POSITIONS } from "./switches";
+import { MODES, renameModesForFirmware, SWITCH_POSITIONS } from "./switches";
+import { defaultTelemetry } from "./receiver";
 
 export type FirmwareDecision = "keep" | "update" | null;
 export type ApplyStatus = "idle" | "generating" | "applying" | "verifying" | "verified" | "mismatch" | "failed";
@@ -38,6 +42,8 @@ export interface UiState extends RoleOptions {
   applyStatus: ApplyStatus;
   applyResult: ApplyResult | null;
   verify: VerifyOutcome | null;
+  /** Backups created in this session (fallback list when config_list_backups is missing). */
+  sessionBackups: Backup[];
 }
 
 export interface WizardState {
@@ -62,6 +68,7 @@ function emptyUi(): UiState {
     applyStatus: "idle",
     applyResult: null,
     verify: null,
+    sessionBackups: [],
   };
 }
 
@@ -98,6 +105,7 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
   s.ports = ports;
   s.connectedPath = path;
   s.model.fc = { boardName: fc.boardName, firmwareVersion: fc.firmwareVersion, apiVersion: fc.apiVersion };
+  renameModesForFirmware(s.model.switches, fc.firmwareVersion);
   if (changed) {
     // Port names from another board mean nothing here.
     s.model.receiver.port = null;
@@ -115,8 +123,22 @@ export function setReceiverKind(s: WizardState, kind: ReceiverKind): void {
   if (s.model.receiver.kind !== kind) {
     s.model.receiver.kind = kind;
     s.model.receiver.protocol = kind === "SERIAL" ? "CRSF" : kind === "SPI" ? "EXPRESSLRS" : null;
-    s.model.receiver.telemetry = kind === "SERIAL" || kind === "SPI";
+    s.model.receiver.telemetry = s.model.receiver.protocol ? defaultTelemetry(s.model.receiver.protocol) : false;
   }
+  afterComponentsChange(s);
+}
+
+export function setReceiverProtocol(s: WizardState, protocol: RxProtocol): void {
+  if (s.model.receiver.protocol !== protocol) {
+    s.model.receiver.protocol = protocol;
+    s.model.receiver.telemetry = defaultTelemetry(protocol);
+  }
+  markDirty(s);
+}
+
+export function setVtxProtocol(s: WizardState, protocol: VtxProtocol): void {
+  s.model.vtx.protocol = protocol;
+  // A different protocol needs different functions: re-run prefill for the new mask.
   afterComponentsChange(s);
 }
 

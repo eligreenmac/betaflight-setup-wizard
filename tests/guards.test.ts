@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { ALL_STEPS, visibleSteps } from "../src/wizard/engine";
 import { canGoTo, guards } from "../src/wizard/guards";
 import { FN } from "../src/wizard/ports";
-import { createWizardState, setBoard, setGpsEnabled, setReceiverKind, setVtxKind, type WizardState } from "../src/wizard/state";
+import { createWizardState, setBoard, setGpsEnabled, setReceiverKind, setReceiverProtocol, setVtxKind, type WizardState } from "../src/wizard/state";
+import { asksTelemetry, hasOnboardElrs } from "../src/wizard/receiver";
 import { MODES } from "../src/wizard/switches";
 import type { FcInfo, FcSerialPort } from "../src/types/model";
 
@@ -127,5 +128,30 @@ describe("guards map", () => {
     s.model.receiver.port = "UART4";
     setBoard(s, { ...fc(), boardName: "MATEKH743" }, [], "COM6");
     expect(s.model.receiver.port).toBeNull();
+  });
+
+  it("onboard SPI ExpressLRS only when the board reports it", () => {
+    const s = ready();
+    expect(hasOnboardElrs(s.fc)).toBe(false);
+    setReceiverKind(s, "SPI");
+    expect(keys(s, "components")).toContain("validation.noOnboardReceiver");
+    setBoard(s, { ...fc(), buildOptions: ["USE_RX_EXPRESSLRS"] }, PORTS, "COM5");
+    expect(hasOnboardElrs(s.fc)).toBe(true);
+    expect(keys(s, "components")).toEqual([]);
+    expect(s.model.receiver.protocol).toBe("EXPRESSLRS");
+    expect(keys(s, "receiver")).toEqual([]); // no UART needed
+  });
+
+  it("asks about telemetry for CRSF and FPort only, defaulting to yes", () => {
+    const s = ready();
+    setReceiverKind(s, "SERIAL");
+    expect(s.model.receiver.protocol).toBe("CRSF");
+    expect(s.model.receiver.telemetry).toBe(true);
+    setReceiverProtocol(s, "SBUS");
+    expect(asksTelemetry("SBUS")).toBe(false);
+    expect(s.model.receiver.telemetry).toBe(false);
+    setReceiverProtocol(s, "FPORT");
+    expect(asksTelemetry("FPORT")).toBe(true);
+    expect(s.model.receiver.telemetry).toBe(true);
   });
 });
