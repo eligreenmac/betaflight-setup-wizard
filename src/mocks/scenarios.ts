@@ -168,6 +168,15 @@ interface MockDevice {
   attitudeRates: (number | null)[];
   /** The next N commands that need the port to themselves get PORT_BUSY {heldBy: "APP"} anyway (tests). */
   portBusyOnce: number;
+  /**
+   * The next N device_attitude_stream_stop calls answer PORT_BUSY (a shared call holds the
+   * port, Device #94); Infinity = always (tests). With `stopBusyStopsAnyway` the stream does
+   * stop (and attitude-stopped is sent) even though the call answers PORT_BUSY.
+   */
+  stopBusyLeft: number;
+  stopBusyStopsAnyway: boolean;
+  /** Every device_attitude_stream_stop call (tests). */
+  attitudeStopCalls: number;
   /** Commands refused with PORT_BUSY because the attitude stream held the port (tests). */
   portBusyRefused: string[];
   /** Build options the last flash added (its request's requiredOptions). */
@@ -248,6 +257,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     attitudeTimer: null,
     attitudeRates: [],
     portBusyOnce: 0,
+    stopBusyLeft: 0,
+    stopBusyStopsAnyway: false,
+    attitudeStopCalls: 0,
     portBusyRefused: [],
   };
   const snapshot = (): Backup => {
@@ -684,6 +696,16 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     },
     device_attitude_stream_stop: () => {
       legacy("device_attitude_stream_stop");
+      device.attitudeStopCalls++;
+      if (device.stopBusyLeft > 0) {
+        device.stopBusyLeft--;
+        if (device.stopBusyStopsAnyway && device.attitudeTimer) {
+          clearInterval(device.attitudeTimer);
+          device.attitudeTimer = null;
+          events.emit("device://attitude-stopped", { reason: "REQUESTED", error: null });
+        }
+        throw portBusy("COM5", "APP", "a shared call holds the port");
+      }
       if (device.attitudeTimer) {
         clearInterval(device.attitudeTimer);
         events.emit("device://attitude-stopped", { reason: "REQUESTED", error: null });

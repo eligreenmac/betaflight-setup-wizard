@@ -1066,6 +1066,12 @@
       "step1": "Check the USB cable and that the board is powered.",
       "step2": "Go to Connect and connect again. If calibrating still says there are unsaved changes, press Reboot board."
     },
+    "LIVE_VIEW_BUSY": {
+      "title": "The board is busy",
+      "body": "The board was still busy with the live view, so nothing was started. Wait a moment, then try again.",
+      "step1": "Wait a few seconds.",
+      "step2": "Select Try again."
+    },
     "CONNECT_REBOOT_NOT_CONFIRMED": {
       "title": "We couldn't confirm the board restarted",
       "body": "This board still had unsaved changes, so it is restarted when you connect, but we couldn't confirm the restart. Try connecting again. If it keeps failing, check the USB cable and that the board is powered.",

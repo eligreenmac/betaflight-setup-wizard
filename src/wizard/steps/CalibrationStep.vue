@@ -94,6 +94,7 @@ async function calibrate(): Promise<void> {
   wizard.ui.accCalibration = "running";
   try {
     // The calibration needs the board to itself: the live view pauses meanwhile.
+    lastLink = "calibrate";
     await withPortFree(() => pendingApi.accCalibrate());
     wizard.ui.accCalibration = "done";
   } catch (e) {
@@ -117,12 +118,14 @@ async function rebootBoard(): Promise<void> {
   try {
     // The reboot needs the port to itself and drops it for a moment: the live view pauses
     // meanwhile and comes back only if the board did (not after a lost board).
+    lastLink = "reboot";
     await withPortFree(() => api.device.reboot(), false);
     calError.value = null;
     wizard.ui.accCalibration = "idle";
     await loadSensors();
   } catch (e) {
     const ue = toUiError(e);
+    // LIVE_VIEW_BUSY (the live view did not stop, nothing was sent) is shown as it is.
     const code = LOST.includes(ue.code) ? "REBOOT_BOARD_LOST" : ue.code === "PENDING_UNSAVED_CHANGES" || ue.code === "MSP_BAD_RESPONSE" ? "REBOOT_NOT_CONFIRMED" : null;
     calError.value = code ? uiError(code, `device_reboot: ${ue.code}: ${ue.message}`) : ue;
     wizard.ui.accCalibration = "failed";
@@ -133,7 +136,7 @@ async function rebootBoard(): Promise<void> {
 /** The board did not come back: forget the connection and go back to Connect. */
 async function goConnect(): Promise<void> {
   alive = false; // leaving: never restart the live view
-  await stopAttitude();
+  await stopAttitude().catch(() => undefined); // disconnecting ends the stream anyway
   try {
     await api.device.disconnect();
   } catch {
@@ -147,6 +150,8 @@ async function goConnect(): Promise<void> {
 function onCalAction(id: GuidanceActionId): void {
   if (id === "rebootBoard") void rebootBoard();
   else if (id === "goConnect" || id === "reconnect") void goConnect();
+  // "Try again" after LIVE_VIEW_BUSY repeats what was pressed (Calibrate or Reboot board).
+  else if (id === "retry" && calError.value?.code === "LIVE_VIEW_BUSY" && lastLink === "reboot") void rebootBoard();
   else void calibrate();
 }
 
@@ -169,6 +174,8 @@ let alive = true;
 const linkBusy = ref(false);
 /** The stream start in flight, so a stop never overtakes it (the stream would keep running). */
 let starting: Promise<void> | null = null;
+/** The last link command pressed, for "Try again" after LIVE_VIEW_BUSY. */
+let lastLink: "calibrate" | "reboot" = "calibrate";
 const attitudeSimulated = computed(() => sourceMismatch(ATTITUDE_START_COMMAND));
 // Keep (null) = the alignment the FC already has.
 const current = computed<BoardAlignment>(() => wizard.ui.sensors?.alignment ?? { roll: 0, pitch: 0, yaw: 0 });
@@ -203,12 +210,21 @@ async function doStartAttitude(): Promise<void> {
     live.value = ue.code === "PORT_BUSY" ? "busy" : ue.code === "NOT_IMPLEMENTED" ? "unavailable" : "error";
   }
 }
-/** Stop the live view and wait until the board connection is really free (attitudeLink.ts). */
+/**
+ * Stop the live view and wait until it has really stopped (attitudeLink.ts). Rejects with
+ * LIVE_VIEW_BUSY when the board kept answering PORT_BUSY to the stop: the stream is then
+ * still running, so the live view stays on.
+ */
 async function stopAttitude(): Promise<void> {
   if (starting) await starting;
   if (live.value !== "on" && live.value !== "starting") return;
   live.value = "off";
-  await stopAttitudeStream();
+  try {
+    await stopAttitudeStream();
+  } catch (e) {
+    live.value = "on";
+    throw e;
+  }
 }
 
 /**
@@ -219,20 +235,33 @@ async function stopAttitude(): Promise<void> {
  * that failed, the board may be gone). If the port is still
  * busy (the stream had not let go yet, an RC stream or a motor test), everything this app runs
  * on the port is stopped and the command is tried once more; a second PORT_BUSY is shown.
+ * If the live view cannot be stopped (LIVE_VIEW_BUSY), the command is NOT sent and the error
+ * is shown; the live view carries on.
  */
 async function withPortFree<T>(run: () => Promise<T>, resumeOnFail = true): Promise<T> {
   linkBusy.value = true;
   const wasLive = live.value === "on" || live.value === "starting" || pausedHidden;
   pausedHidden = false;
   let ok = false;
+  let notSent = false;
   try {
-    await stopAttitude();
+    try {
+      await stopAttitude();
+    } catch (e) {
+      notSent = true;
+      throw e;
+    }
     let v: T;
     try {
       v = await run();
     } catch (e) {
       if (toUiError(e).code !== "PORT_BUSY") throw e;
-      await stopAttitudeStream();
+      try {
+        await stopAttitudeStream();
+      } catch (e2) {
+        notSent = true;
+        throw e2;
+      }
       await api.device.rcStreamStop().catch(() => undefined);
       await motorTest.stop("navigation");
       v = await run();
@@ -241,7 +270,7 @@ async function withPortFree<T>(run: () => Promise<T>, resumeOnFail = true): Prom
     return v;
   } finally {
     linkBusy.value = false;
-    if (wasLive && alive && (ok || resumeOnFail)) {
+    if (wasLive && alive && (ok || resumeOnFail || notSent) && live.value !== "on") {
       if (document.visibilityState === "hidden") pausedHidden = true;
       else void startAttitude();
     }
@@ -256,7 +285,7 @@ function onVisibility(): void {
   if (document.visibilityState === "hidden") {
     if (live.value === "on" || live.value === "starting") {
       pausedHidden = true;
-      void stopAttitude();
+      void stopAttitude().catch(() => undefined);
     }
   } else if (pausedHidden) {
     pausedHidden = false;
@@ -316,7 +345,7 @@ onBeforeUnmount(() => {
   pausedHidden = false;
   offs.forEach((o) => o());
   offs = [];
-  void stopAttitude();
+  void stopAttitude().catch(() => undefined);
 });
 </script>
 
