@@ -173,6 +173,20 @@ pub fn evaluate(raw: &[RawUsbDevice]) -> DriverStatus {
                 r.problem
             ));
         }
+        // Installing WinUSB rebinds the device: warn when it currently uses
+        // another (working or not) driver such as ST's STTub30 / DfuSe.
+        let replaces_driver = kind == UsbDeviceKind::Dfu
+            && action == DriverAction::InstallDfuDriver
+            && bound
+            && !is_service(&r.service, "WinUSB");
+        if replaces_driver {
+            notes.push(format!(
+                "{name} ({:04X}:{:04X}): installing WinUSB replaces driver {}",
+                r.vid,
+                r.pid,
+                r.service.as_deref().unwrap_or_default()
+            ));
+        }
         devices.push(UsbDriverInfo {
             vid: r.vid,
             pid: r.pid,
@@ -186,6 +200,7 @@ pub fn evaluate(raw: &[RawUsbDevice]) -> DriverStatus {
                 DriverAction::VendorDownload => guidance_index.map(|g| g as u32),
                 _ => None,
             },
+            replaces_driver,
         });
     }
     let dfu_winusb = devices
@@ -347,6 +362,10 @@ mod tests {
         assert!(s.vcp);
         assert_eq!(s.devices[0].action, DriverAction::InstallDfuDriver);
         assert_eq!(s.devices[0].kind, UsbDeviceKind::Dfu);
+        assert!(
+            !s.devices[0].replaces_driver,
+            "nothing bound -> nothing replaced"
+        );
         assert_eq!(
             dfu_ids_needing_install(&s),
             vec![(0x0483, 0xDF11, "STM32 DFU".into())]
@@ -360,16 +379,44 @@ mod tests {
             dev(r"USB\VID_0483&PID_DF11\2", Some("STTub30"), 0),
         ]);
         assert!(s.devices[0].driver_ok);
+        assert!(!s.devices[0].replaces_driver);
         assert_eq!(s.devices[1].action, DriverAction::InstallDfuDriver);
+        assert!(s.devices[1].replaces_driver);
+        assert_eq!(s.devices[1].service.as_deref(), Some("STTub30"));
+        assert!(s
+            .notes
+            .iter()
+            .any(|n| n.contains("replaces driver STTub30")));
         assert!(!s.dfu_winusb);
         // already-bound AT32 is not reinstalled
         assert_eq!(dfu_ids_needing_install(&s).len(), 1);
     }
 
     #[test]
+    fn replaced_driver_flag_only_for_dfu_installs() {
+        let s = evaluate(&[
+            // libusb0 with a problem code is still a driver that gets replaced
+            dev(r"USB\VID_0483&PID_DF11\1", Some("libusb0"), 10),
+            // bridges / VCPs never set it
+            dev(r"USB\VID_10C4&PID_EA60\2", Some("usbser"), 10),
+            dev(r"USB\VID_0483&PID_5740\3", Some("usbser"), 0),
+        ]);
+        assert!(s.devices[0].replaces_driver);
+        assert!(s.devices.iter().skip(1).all(|d| !d.replaces_driver));
+        let json = serde_json::to_value(&s.devices[0]).expect("json");
+        assert_eq!(json["replacesDriver"], serde_json::Value::Bool(true));
+        // older payloads without the field still deserialize (serde default)
+        let mut old = json.clone();
+        old.as_object_mut().expect("obj").remove("replacesDriver");
+        let back: UsbDriverInfo = serde_json::from_value(old).expect("deserialize");
+        assert!(!back.replaces_driver);
+    }
+
+    #[test]
     fn winusb_with_problem_asks_for_replug() {
         let s = evaluate(&[dev(r"USB\VID_0483&PID_DF11\1", Some("WinUSB"), 43)]);
         assert_eq!(s.devices[0].action, DriverAction::Replug);
+        assert!(!s.devices[0].replaces_driver);
         assert!(dfu_ids_needing_install(&s).is_empty());
     }
 
