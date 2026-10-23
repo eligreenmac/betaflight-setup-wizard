@@ -77,9 +77,17 @@ export interface DroneModel {
     kind: ReceiverKind;
     protocol: RxProtocol | null;
     port: string | null;
+    /** CRSF/FPORT/SPI EXPRESSLRS: true -> `feature TELEMETRY` (default true). */
     telemetry: boolean;
     inverted: boolean;
     halfDuplex: boolean;
+    /**
+     * SPI EXPRESSLRS only: 6-byte UID (from `api.config.elrsUid(phrase)`); null = keep current UID.
+     * Never put the binding phrase in the model, local storage or logs: hash it, then drop it.
+     */
+    elrsUid?: number[] | null;
+    /** SPI EXPRESSLRS only; must match the board's chip (SX1280: ISM2400/CE2400). */
+    elrsDomain?: ElrsDomain | null;
   };
   vtx: {
     kind: VtxKind;
@@ -101,10 +109,34 @@ export interface DroneModel {
 }
 
 // ---- config engine
-export interface CliScript { commands: string[]; warnings: string[]; dialect: string }
-export interface Backup { path: string; boardName: string; firmwareVersion: string; createdAt: string }
+export type ElrsDomain = "AU433" | "AU915" | "EU433" | "EU868" | "IN866" | "FCC915" | "ISM2400" | "CE2400";
+export type SerialFunction = "RX_SERIAL" | "GPS" | "ESC_SENSOR" | "VTX_SMARTAUDIO" | "VTX_TRAMP" | "VTX_MSP" | "MSP";
+export interface ClearedPort {
+  port: string;
+  functions: SerialFunction[];
+  functionMaskBefore: number;
+  functionMaskAfter: number;
+}
+export interface CliScript { commands: string[]; warnings: string[]; dialect: string; cleared: ClearedPort[] }
+export interface Backup {
+  id: string;
+  path: string;
+  boardUid: string;
+  boardName: string;
+  firmwareVersion: string;
+  createdAt: string;
+}
 export interface CliError { command: string; response: string }
-export interface ApplyResult { applied: number; errors: CliError[]; saved: boolean }
+export interface ApplyResult {
+  applied: number;
+  errors: CliError[];
+  saved: boolean;
+  backup: Backup | null;
+  reconnected: boolean;
+}
+export type ConfigStage = "BACKUP" | "SENDING" | "SAVING" | "REBOOTING" | "RECONNECTED";
+/** Payload of event `config://progress`. */
+export interface ConfigProgress { stage: ConfigStage; fraction: number; message: string | null }
 export interface Mismatch { setting: string; expected: string; actual: string }
 export interface VerifyReport { ok: boolean; mismatches: Mismatch[] }
 
@@ -153,7 +185,7 @@ export function emptyDroneModel(): DroneModel {
   return {
     schemaVersion: DRONE_MODEL_SCHEMA_VERSION,
     fc: { boardName: "", firmwareVersion: "", apiVersion: "" },
-    receiver: { kind: "NONE", protocol: null, port: null, telemetry: false, inverted: false, halfDuplex: false },
+    receiver: { kind: "NONE", protocol: null, port: null, telemetry: true, inverted: false, halfDuplex: false },
     vtx: { kind: "NONE", protocol: null, port: null, digitalSystem: null, region: null },
     gps: { enabled: false, port: null, provider: null },
     esc: { protocol: "DSHOT600", bidirectionalDshot: false, motorPoles: 14, telemetryPort: null, propsOut: false },
