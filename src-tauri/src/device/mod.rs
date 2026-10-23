@@ -11,12 +11,15 @@ pub mod cli;
 #[cfg(test)]
 mod cli_state_tests;
 pub mod commands;
+#[cfg(test)]
+mod dirty_ram_tests;
 pub mod error;
 pub mod manager;
 #[cfg(test)]
 pub(crate) mod mock;
 pub mod motor;
 pub mod msp;
+pub mod ram_state;
 pub mod rc;
 pub mod rx_spi;
 pub mod sensors;
