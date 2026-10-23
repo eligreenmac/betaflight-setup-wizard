@@ -97,12 +97,20 @@ pub struct BuildInfo {
 }
 
 impl BuildInfo {
-    /// Build API defines for the known ids, in firmware order.
+    /// Build API defines for the known ids, in firmware order. Unknown ids (newer firmware
+    /// than the table) are dropped with a log line; they are never passed on as raw numbers,
+    /// so a cloud build never receives them.
     pub fn option_names(&self) -> Vec<String> {
-        self.option_ids
-            .iter()
-            .flatten()
-            .filter_map(|id| option_name(*id))
+        let ids = self.option_ids.iter().flatten();
+        let unknown: Vec<u16> = ids
+            .clone()
+            .copied()
+            .filter(|id| option_name(*id).is_none())
+            .collect();
+        if !unknown.is_empty() {
+            log::info!("MSP_BUILD_INFO: dropping unknown build option ids {unknown:?}");
+        }
+        ids.filter_map(|id| option_name(*id))
             .map(str::to_string)
             .collect()
     }
@@ -237,6 +245,11 @@ mod tests {
                 ]
             );
         }
+        // Unknown ids are dropped, never sent on as numbers.
+        let names = parse_build_info(&with_ids(&[40000, 65535]), V2025)
+            .unwrap()
+            .option_names();
+        assert!(names.is_empty(), "{names:?}");
         // Trailing odd byte and a 0 id stop the list.
         let mut p = with_ids(&[8231]);
         p.push(0x7f);

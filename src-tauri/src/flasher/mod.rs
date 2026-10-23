@@ -18,6 +18,7 @@ pub mod dfu;
 pub mod error;
 pub mod hex;
 pub mod layout;
+pub mod options;
 pub mod service;
 pub mod usb;
 

@@ -518,3 +518,39 @@ fn exit_with_a_port_drop_but_no_rebooting_line_is_not_a_confirmed_reboot() {
         }
     }
 }
+
+#[test]
+fn flash_after_a_dirty_reboot_to_dfu_does_not_reboot_the_new_firmware() {
+    // Wizard re-flash: dirty RAM, reboot to DFU, flash, reconnect. The flash reset the MCU,
+    // so connect must not reboot the freshly flashed board (or fail if that reboot is not
+    // confirmed).
+    let r = rig(Port::Usb, 46);
+    r.failed_apply_without_reboot("dfu-flash");
+    r.m.reboot_to_bootloader().unwrap();
+    let reboots = r.msp_reboots();
+    r.m.forget_ram_state_after_flash(); // flasher_flash succeeded
+    r.present.store(true, Ordering::SeqCst);
+    r.m.connect(PORT).unwrap();
+    assert_eq!(r.msp_reboots(), reboots, "no reboot on connect");
+    assert_eq!(r.pending(), None);
+    r.assert_calibrates();
+
+    // Rebooted to DFU but never flashed (user cancelled, flash failed): the mark stays.
+    let r = rig(Port::Usb, 46);
+    r.failed_apply_without_reboot("dfu-no-flash");
+    r.m.reboot_to_bootloader().unwrap();
+    let reboots = r.msp_reboots();
+    r.present.store(true, Ordering::SeqCst);
+    r.m.connect(PORT).unwrap();
+    assert_eq!(r.msp_reboots(), reboots + 1, "rebooted once on connect");
+    assert_eq!(r.pending(), None);
+
+    // Closed dirty without a DFU reboot: a flash elsewhere does not clear it.
+    let r = rig(Port::Uart, 46);
+    r.failed_apply_without_reboot("plain-disconnect");
+    r.m.disconnect().unwrap();
+    r.m.forget_ram_state_after_flash();
+    let reboots = r.msp_reboots();
+    r.m.connect(PORT).unwrap();
+    assert_eq!(r.msp_reboots(), reboots + 1);
+}
