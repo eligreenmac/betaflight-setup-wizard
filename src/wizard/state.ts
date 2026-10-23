@@ -25,6 +25,7 @@ import { defaultTelemetry } from "./receiver";
 import { emptyOsdState, type OsdState } from "./osd";
 import { emptyExt, type ModelExt } from "./modelExt";
 import type { SensorsInfo } from "../api/pending";
+import type { ReflashRequest } from "./reflash";
 
 export type FirmwareDecision = "keep" | "update" | null;
 /** CRSF on a UART can be ExpressLRS or TBS Crossfire; only ExpressLRS has a binding phrase. */
@@ -73,6 +74,12 @@ export interface UiState extends RoleOptions {
   accCalibration: CalibrationStatus;
   /** Orientation check answer: true = the picture moved the same way. */
   orientationOk: boolean | null;
+  /** config_apply was started in this session: no mid-wizard firmware update any more (wizard/reflash.ts). */
+  configApplied: boolean;
+  /** Mid-wizard "Update the firmware to add this": where to come back to and what to add. */
+  reflash: ReflashRequest | null;
+  /** Receiver options missing from the board's build, for this kind/protocol (null = unknown). */
+  rxMissing: { kind: ReceiverKind; protocol: RxProtocol | null; missing: string[] } | null;
 }
 
 export interface WizardState {
@@ -111,6 +118,9 @@ function emptyUi(): UiState {
     sensors: null,
     accCalibration: "idle",
     orientationOk: null,
+    configApplied: false,
+    reflash: null,
+    rxMissing: null,
   };
 }
 
@@ -146,6 +156,8 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
   // A plan's "no HD OSD" was for the firmware then on the board; after any (re)identify
   // (e.g. flashed with the HD OSD option) ask the board again.
   s.osd.hdRejected = false;
+  // The receiver check was against the old build.
+  s.ui.rxMissing = null;
   s.fc = fc;
   s.ports = ports;
   s.connectedPath = path;

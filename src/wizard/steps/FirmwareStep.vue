@@ -16,11 +16,14 @@ import { isNotImplemented, toUiError, type UiError } from "../../errors/codes";
 import type { GuidanceActionId } from "../../errors/guidance";
 import type { FirmwareRelease, FlashProgress } from "../../types/model";
 import { runFirmwareUpdate, UPDATE_STAGES, type UpdateStage } from "../flash";
+import { goTo, steps } from "../nav";
+import { optionLabel } from "../optionNames";
+import { finishReflash, requirementsFor } from "../reflash";
 import { setBoard, wizard } from "../state";
 import { compareVersions, isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "../version";
 
 defineProps<{ stepId: string }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const releases = ref<FirmwareRelease[]>([]);
 const releasesError = ref<UiError | null>(null);
@@ -33,6 +36,12 @@ const showPre = ref(false);
 /** DFU device of the last attempt (flasher_remove_read_protection needs its serial). */
 const dfuSerial = ref<string | null>(null);
 const backupThisRun = ref(false);
+/** Options the board's old firmware had that this release doesn't (shown after a flash). */
+const dropped = ref<string[]>([]);
+/** Mid-wizard update ("Update the firmware to add this"), from the OSD or Receiver step. */
+const reflash = computed(() => wizard.ui.reflash);
+/** Shown after a mid-wizard update that left options out: go back by hand. */
+const returnTo = ref<string | null>(null);
 const readProtected = computed(() => error.value?.code === "READ_PROTECTED");
 
 const fc = computed(() => wizard.fc);
@@ -56,14 +65,25 @@ async function loadReleases(): Promise<void> {
   }
 }
 
+function cancelReflash(): void {
+  const back = finishReflash(wizard, false);
+  if (back) goTo(back);
+}
+
+function stepTitle(id: string): string {
+  return t(steps.value.find((s) => s.id === id)?.titleKey ?? id);
+}
+
 function keep(): void {
   wizard.ui.firmwareDecision = "keep";
 }
 
-async function update(fullErase = false): Promise<void> {
+async function update(fullErase = false, withRequirements = true): Promise<void> {
   if (!fc.value || !chosen.value) return;
+  const requirements = withRequirements ? requirementsFor(wizard) : null;
   phase.value = "running";
   error.value = null;
+  dropped.value = [];
   wizard.ui.firmwareDecision = "update";
   try {
     const r = await runFirmwareUpdate(
@@ -79,12 +99,25 @@ async function update(fullErase = false): Promise<void> {
         },
       },
       undefined,
-      { fullErase },
+      // The receiver/OSD answers so far (+ what a mid-wizard update adds): the backend
+      // turns them into build options (flasher_required_options) before anything is touched.
+      { fullErase, requirements },
     );
     setBoard(wizard, r.fc, r.ports, r.path);
     wizard.ui.flashed = true;
+    dropped.value = r.droppedOptions;
     phase.value = "done";
+    if (wizard.ui.reflash) {
+      const back = finishReflash(wizard);
+      // Nothing left out: straight back to the step the user came from, answers intact.
+      // Otherwise stay so the list above is read first.
+      if (back && (dropped.value.length || !goTo(back))) returnTo.value = back;
+    }
   } catch (e) {
+    // A backend without flasher_required_options (before Device #74): a normal update keeps
+    // the board's own options. Only before anything was touched, never for a mid-wizard update
+    // (that one exists to add an option).
+    if (requirements && !wizard.ui.reflash && stage.value === "download" && isNotImplemented(e)) return update(fullErase, false);
     error.value = toUiError(e);
     phase.value = "error";
   }
@@ -117,6 +150,14 @@ async function onAction(id: GuidanceActionId): Promise<void> {
   if (id === "installDriver" && !(await installDriver(false))) return;
   if (id === "retryFullErase") return update(true);
   if (id === "retry" && !releases.value.length) return loadReleases();
+  if (id === "pickRelease") {
+    // REQUIRED_OPTION_UNSUPPORTED: nothing was touched; choose another release.
+    error.value = null;
+    phase.value = "idle";
+    if (releases.value.some((r) => r.release === chosen.value && r.prerelease)) showPre.value = true;
+    document.getElementById("release")?.focus();
+    return;
+  }
   return update();
 }
 
@@ -141,6 +182,15 @@ onMounted(loadReleases);
     </div>
     <div v-else-if="upToDate && phase !== 'done'" class="callout callout--ok">{{ t("firmware.upToDate") }}</div>
 
+    <div v-if="reflash" class="callout callout--info" data-test="reflash-banner">
+      <p>{{ t("reflash.banner", { step: stepTitle(reflash.returnTo) }) }}</p>
+      <ul>
+        <li v-if="reflash.requirements.osd?.videoSystem === 'HD'">{{ t("reflash.addsHd") }}</li>
+        <li v-if="reflash.requirements.receiver?.protocol">{{ t("reflash.addsReceiver", { protocol: t(`receiver.protocols.${reflash.requirements.receiver.protocol}`) }) }}</li>
+      </ul>
+      <button v-if="phase !== 'running'" type="button" class="btn btn--small" data-test="reflash-abort" @click="cancelReflash">{{ t("reflash.cancelUpdate") }}</button>
+    </div>
+
     <template v-if="phase === 'idle' || phase === 'error'">
       <div v-if="releases.length" class="field">
         <label for="release">{{ t("firmware.release") }}</label>
@@ -159,7 +209,7 @@ onMounted(loadReleases);
         <button type="button" class="btn btn--primary" :disabled="!chosen" data-test="update" @click="update()">
           {{ t("firmware.updateTo", { version: chosen || "?" }) }}
         </button>
-        <button v-if="supported" type="button" class="btn" :aria-pressed="wizard.ui.firmwareDecision === 'keep'" data-test="keep" @click="keep">
+        <button v-if="supported && !reflash" type="button" class="btn" :aria-pressed="wizard.ui.firmwareDecision === 'keep'" data-test="keep" @click="keep">
           {{ t("firmware.keep") }}
         </button>
       </div>
@@ -171,6 +221,16 @@ onMounted(loadReleases);
       <StageList :labels="UPDATE_STAGES.map((s) => `firmware.stages.${s}`)" :current="stageIndex" :failed="phase === 'error'" :fraction="stage === 'flash' ? progress?.fraction : null" />
       <p v-if="stage === 'flash' && progress" class="hint">{{ t(`firmware.flashStage.${progress.stage}`) }}</p>
       <div v-if="phase === 'done'" class="callout callout--ok">{{ t("firmware.done", { version: fc.firmwareVersion }) }}</div>
+      <div v-if="phase === 'done' && dropped.length" class="callout callout--warn" data-test="fw-dropped">
+        <p>{{ t("firmware.droppedIntro") }}</p>
+        <ul>
+          <li v-for="o in dropped" :key="o"><bdi>{{ optionLabel(o, t, te) }}</bdi></li>
+        </ul>
+        <p>{{ t("firmware.droppedAfter") }}</p>
+      </div>
+      <div v-if="phase === 'done' && returnTo" class="btn-row">
+        <button type="button" class="btn btn--primary" data-test="reflash-return" @click="goTo(returnTo)">{{ t("reflash.backTo", { step: stepTitle(returnTo) }) }}</button>
+      </div>
     </template>
 
     <!-- Read protection: never removed without the explicit confirmation in this panel. -->

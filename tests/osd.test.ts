@@ -4,7 +4,8 @@
 // config_osd_default_layout (`enabled`), any grid size, the preview (ticked elements only,
 // 4:3 / 16:9), clamping, what is sent (offered elements; x/y only when moved), he/en and RTL.
 import { mount, type VueWrapper } from "@vue/test-utils";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { api } from "../src/api/commands";
 import App from "../src/App.vue";
 import { resetDemoState } from "../src/api/fallback";
 import { parseLayout } from "../src/api/osdLayout";
@@ -200,7 +201,7 @@ describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
     expect(w!.find('[data-test="osd-hd-unknown"]').exists()).toBe(false);
   });
 
-  it("unsupported + detected HD VTX: a clear warning and a choice (flash / keep current / analog)", async () => {
+  it("unsupported + detected HD VTX: a clear warning and a choice (update firmware / keep current / analog)", async () => {
     await open(DJI, "osd-hd-unsupported");
     expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBeNull();
     const box = w!.get('[data-test="osd-hd-blocked"]');
@@ -219,10 +220,14 @@ describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
     await w!.get('[data-osd-system="AUTO"]').setValue(true);
     await settle();
     expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBe("AUTO");
-    // Or flash firmware with the HD OSD.
-    await w!.get('[data-test="osd-hd-flash"]').trigger("click");
+    // Or update the firmware to add the HD OSD (confirmed first; see firmwareOptions.test.ts).
+    await w!.get('[data-test="reflash-offer"]').trigger("click");
+    await settle();
+    expect(w!.get('[data-test="reflash-confirm"]').text()).toContain(en.reflash.confirmBody);
+    await w!.get('[data-test="reflash-go"]').trigger("click");
     await settle();
     expect(nav.currentId).toBe("firmware");
+    expect(wizard.ui.reflash).toEqual({ returnTo: "osd", requirements: { osd: { videoSystem: "HD" } } });
   });
 
   it("firmware without HD OSD: HD disabled with an explanation; a detected HD VTX is asked instead", async () => {
@@ -278,6 +283,27 @@ describe("Review: config_plan refuses the HD OSD", () => {
     nav.currentId = "review";
     await settle();
     expect(w!.find('[data-error-code="OSD_HD_UNSUPPORTED"]').exists()).toBe(false);
+  });
+
+  it("detected by #78's details.reason, whatever the message says; the message match is only a fallback", async () => {
+    const plan = vi.spyOn(api.config, "plan").mockRejectedValue({ code: "CONFIG", message: "osd: something else", details: { reason: "OSD_HD_NO_DISPLAYPORT" } });
+    await toReview();
+    expect(w!.find('[data-error-code="OSD_HD_UNSUPPORTED"]').exists()).toBe(true);
+    // Another CONFIG error (no reason, other message) stays a CONFIG error.
+    plan.mockRejectedValue({ code: "CONFIG", message: "no onboard SPI receiver" });
+    nav.currentId = "osd";
+    await settle();
+    nav.currentId = "review";
+    await settle();
+    expect(w!.find('[data-error-code="OSD_HD_UNSUPPORTED"]').exists()).toBe(false);
+    // Pre-#78 backend: no details, the message still matches.
+    plan.mockRejectedValue({ code: "CONFIG", message: RUST });
+    nav.currentId = "osd";
+    await settle();
+    nav.currentId = "review";
+    await settle();
+    expect(w!.find('[data-error-code="OSD_HD_UNSUPPORTED"]').exists()).toBe(true);
+    plan.mockRestore();
   });
 
   it("in Hebrew", async () => {

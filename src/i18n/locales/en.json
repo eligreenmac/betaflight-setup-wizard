@@ -153,7 +153,9 @@
       "REBOOTING": "Restarting…",
       "DONE": "Done",
       "FAILED": "Failed"
-    }
+    },
+    "droppedIntro": "This firmware version doesn't include some features of the board's old firmware:",
+    "droppedAfter": "These features were left out. Settings that use them won't work with this firmware."
   },
   "readProtect": {
     "title": "This board is locked (read protection)",
@@ -228,7 +230,11 @@
       "FRSKY_D": "FrSky D",
       "FRSKY_X": "FrSky X",
       "FRSKY_X_LBT": "FrSky X LBT"
-    }
+    },
+    "optionMissing": "The firmware on this board doesn't include {protocol} receivers (missing: {options}).",
+    "optionMissingChoices": "Pick the protocol your receiver really uses, or update the firmware to add this one.",
+    "optionMissingApplied": "You can't continue with {protocol}: the firmware on this board doesn't include it, and the firmware can't be updated now because settings were already written to the board in this session. Pick the protocol your receiver really uses. To use {protocol}, finish the wizard, update the firmware, then run the wizard again.",
+    "optionMissingNoUpdate": "You can't continue with {protocol}: the firmware on this board doesn't include it, and the firmware can't be updated from the wizard right now (for example, because part of the data here is simulated). Pick the protocol your receiver really uses. To use {protocol}, update the firmware first, then run the wizard again."
   },
   "binding": {
     "familyQuestion": "Which radio system is this receiver?",
@@ -745,7 +751,8 @@
     "editComponents": "Change components",
     "rebootBoard": "Reboot board",
     "goConnect": "Go to Connect",
-    "backToOsd": "Back to OSD settings"
+    "backToOsd": "Back to OSD settings",
+    "pickRelease": "Pick another version"
   },
   "validation": {
     "noBoard": "Connect a flight controller first.",
@@ -788,7 +795,10 @@
     "osdSystem": "Choose your video system.",
     "osdChoose": "Choose whether to set up the OSD or keep the current one.",
     "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD.",
-    "osdHdUnsupported": "The firmware on this board can't show the OSD in digital goggles. Pick an analog option, keep the board's current OSD, or flash firmware with the \"OSD (HD)\" option."
+    "osdHdUnsupported": "The firmware on this board can't show the OSD in digital goggles. Pick an analog option, keep the board's current OSD, or flash firmware with the \"OSD (HD)\" option.",
+    "rxOptionMissing": "The firmware on this board doesn't include this receiver protocol. Pick another one or update the firmware.",
+    "rxOptionMissingApplied": "{protocol} isn't in the firmware on this board, and the firmware can't be updated after settings were written. Pick another protocol to continue.",
+    "rxOptionMissingNoUpdate": "{protocol} isn't in the firmware on this board, and the firmware can't be updated right now. Pick another protocol to continue."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -1056,7 +1066,18 @@
       "title": "The firmware on this board can't show the OSD in digital goggles",
       "body": "You chose the digital HD OSD, but the firmware on this board was built without it, so the setup plan couldn't be made. Nothing was changed on the board.",
       "step1": "Select Back to OSD settings, then pick an analog option or keep the board's current OSD.",
-      "step2": "To use the OSD in digital goggles, flash firmware built with the \"OSD (HD)\" option, then come back to Review."
+      "step2": "To use the OSD in digital goggles, go back to OSD settings and select Update the firmware to add this, or flash firmware built with the \"OSD (HD)\" option, then come back to Review."
+    },
+    "BUILD_OPTIONS_UNAVAILABLE": {
+      "title": "Couldn't reach the Betaflight build server",
+      "body": "We need the list of features for Betaflight {release} to build the firmware, but the build server didn't answer. Nothing was changed on the board.",
+      "step1": "Check that this computer is connected to the internet.",
+      "step2": "Select Try again."
+    },
+    "REQUIRED_OPTION_UNSUPPORTED": {
+      "title": "This firmware version can't include what you chose",
+      "body": "Betaflight {release} can't be built with: {options}. Nothing was changed on the board.",
+      "step1": "Pick another firmware version in the list above, then try again."
     }
   },
   "driverReplace": {
@@ -1089,11 +1110,11 @@
       "PALHint": "Only if your camera is set to PAL. It gives a few more lines of text.",
       "NTSC": "Analog, NTSC",
       "NTSCHint": "Only if your camera is set to NTSC.",
-      "hdUnsupported": "Not available: the firmware on this board can't show the OSD in digital goggles. To fix it, flash firmware built with the \"OSD (HD)\" option.",
+      "hdUnsupported": "Not available: the firmware on this board can't show the OSD in digital goggles. You can update the firmware to add it (the \"OSD (HD)\" option).",
       "hdBlocked": "Your video transmitter is digital HD, but the firmware on this board can't show the OSD in digital goggles (it was built without the HD OSD).",
       "analogOnDigital": "Your video transmitter is digital, but the OSD is set to analog. The text may not show in your goggles. Pick Digital HD unless you're sure.",
       "hdRejected": "The setup plan found that the firmware on this board can't show the OSD in digital goggles (it was built without the HD OSD).",
-      "hdChoices": "You can flash firmware built with the \"OSD (HD)\" option, keep the OSD that is on the board now, or pick an analog option below if your goggles show analog video.",
+      "hdChoices": "You can update the firmware to add the HD OSD (the \"OSD (HD)\" option), keep the OSD that is on the board now, or pick an analog option below if your goggles show analog video.",
       "keepCurrent": "Keep the board's current OSD",
       "kept": "The board's current OSD stays as it is. Nothing about the OSD will be changed.",
       "hdUnknown": "We couldn't confirm that the firmware on this board can show the OSD in digital goggles. You can still pick HD. If the Review step says it's missing, flash firmware built with the \"OSD (HD)\" option."
@@ -1197,5 +1218,48 @@
     },
     "moveLabel": "{item}: drag, or use the arrow keys to move",
     "previewHint": "Preview with sample values ({cols} × {rows} grid). Drag an item, or select it and use the arrow keys."
+  },
+  "reflash": {
+    "offer": "Update the firmware to add this",
+    "confirmTitle": "Update the firmware on this board?",
+    "confirmBody": "The board will restart into update mode and the new firmware will be written. First, a backup of its current settings is saved.",
+    "confirmKeep": "Your answers in this wizard are kept, and afterwards you come back to this step.",
+    "confirmYes": "Yes, update the firmware",
+    "cancel": "Cancel",
+    "blockedApplied": "Updating the firmware isn't available any more: settings were already written to the board in this session. To add this, finish here, update the firmware, then run the wizard again.",
+    "blockedMixed": "Updating the firmware isn't available: part of the data here is simulated and the board is real.",
+    "banner": "Updating the firmware to add what you chose on the {step} step. Pick a version and select Update; afterwards you go back to {step}.",
+    "addsHd": "The OSD in digital (HD) goggles",
+    "addsReceiver": "Your receiver ({protocol})",
+    "cancelUpdate": "Don't update, go back",
+    "backTo": "Back to {step}"
+  },
+  "buildOptions": {
+    "USE_OSD_HD": "HD OSD for digital goggles",
+    "USE_OSD_SD": "Analog OSD",
+    "USE_OSD": "OSD",
+    "USE_SERIALRX_CRSF": "CRSF receivers (ExpressLRS, Crossfire)",
+    "USE_SERIALRX_SBUS": "SBUS receivers",
+    "USE_SERIALRX_GHST": "GHST receivers (ImmersionRC Ghost)",
+    "USE_SERIALRX_IBUS": "IBUS receivers (FlySky)",
+    "USE_SERIALRX_FPORT": "FPort receivers (FrSky)",
+    "USE_SERIALRX_SPEKTRUM": "Spektrum receivers",
+    "USE_SERIALRX_SRXL2": "SRXL2 receivers (Spektrum)",
+    "USE_SERIALRX_SUMD": "SUMD receivers (Graupner)",
+    "USE_RX_EXPRESSLRS": "Built-in ExpressLRS receiver",
+    "USE_GPS": "GPS",
+    "USE_MAG": "Compass (magnetometer)",
+    "USE_BARO": "Barometer",
+    "USE_LED_STRIP": "LED strip",
+    "USE_LED_STRIP_64": "Long LED strips (up to 64 LEDs)",
+    "USE_WING": "Fixed-wing (plane) support",
+    "USE_ALTITUDE_HOLD": "Altitude hold",
+    "USE_POSITION_HOLD": "Position hold",
+    "USE_SERVOS": "Servos",
+    "USE_VTX": "Video transmitter control",
+    "USE_SOFTSERIAL": "Soft serial ports",
+    "USE_TELEMETRY_SMARTPORT": "SmartPort telemetry (FrSky)",
+    "USE_DSHOT": "DShot motor protocol",
+    "USE_DSHOT_BITBANG": "DShot bitbang"
   }
 }

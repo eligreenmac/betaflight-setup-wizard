@@ -15,7 +15,8 @@ import {
   analogOnDigital, ANALOG_SYSTEMS, clampPos, effectiveSystem, hdSupport, layoutKey, offeredElements, OSD_GROUPS, previewPos,
   recommendedEnabled, systemFromVtx, type OsdElementInfo,
 } from "../osd";
-import { goTo } from "../nav";
+import ReflashOffer from "../../components/ReflashOffer.vue";
+import type { FirmwareRequirements } from "../../types/model";
 import { markDirty, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
@@ -29,6 +30,8 @@ const system = computed(() => effectiveSystem(wizard.model, wizard.osd, wizard.f
 const hdBlocked = computed(() => detected.value === "HD" && hd.value === false);
 /** HD chosen, but support could not be confirmed. */
 const hdUnknown = computed(() => system.value === "HD" && hd.value === null);
+/** What "Update the firmware to add this" asks for: the HD OSD. */
+const HD_REQ: FirmwareRequirements = { osd: { videoSystem: "HD" } };
 const changing = ref(false);
 const showChoices = computed(() => changing.value || !!wizard.osd.askedSystem || !system.value);
 const mismatch = computed(() => analogOnDigital(wizard.model, system.value));
@@ -162,8 +165,8 @@ onMounted(loadLayout);
         <div v-if="hdBlocked" class="callout callout--warn" role="alert" data-test="osd-hd-blocked">
           <p>{{ t(wizard.osd.hdRejected ? "osd.system.hdRejected" : "osd.system.hdBlocked") }}</p>
           <p>{{ t("osd.system.hdChoices") }}</p>
+          <ReflashOffer return-to="osd" :requirements="HD_REQ" />
           <div class="btn-row">
-            <button type="button" class="btn btn--small" data-test="osd-hd-flash" @click="goTo('firmware')">{{ t("actions.goFirmware") }}</button>
             <button type="button" class="btn btn--small" data-test="osd-hd-keep" :aria-pressed="wizard.osd.mode === 'keep' && !system" @click="keepCurrent">{{ t("osd.system.keepCurrent") }}</button>
           </div>
           <p v-if="wizard.osd.mode === 'keep' && !system" class="hint" data-test="osd-kept">{{ t("osd.system.kept") }}</p>
@@ -186,6 +189,10 @@ onMounted(loadLayout);
               <small class="hint" style="display: block" :data-test="hd === false ? 'osd-hd-unsupported' : undefined">{{ t(hd === false ? "osd.system.hdUnsupported" : "osd.system.HDHint") }}</small>
             </span>
           </label>
+        </div>
+        <!-- HD wanted but not in this build (and not already offered above). -->
+        <div v-if="hd === false && !hdBlocked" class="osd-hd-reflash" data-test="osd-hd-reflash">
+          <ReflashOffer return-to="osd" :requirements="HD_REQ" />
         </div>
       </template>
       <p v-if="hdUnknown" class="callout callout--info" role="note" data-test="osd-hd-unknown">{{ t("osd.system.hdUnknown") }}</p>

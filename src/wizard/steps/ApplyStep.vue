@@ -42,6 +42,8 @@ async function apply(): Promise<void> {
     fraction.value = p.fraction;
   });
   try {
+    // From here on no mid-wizard firmware update (wizard/reflash.ts, Chief of Staff rule).
+    wizard.ui.configApplied = true;
     // Exactly the config_plan script from Review (never a config_generate preview).
     const res = await api.config.apply(wizard.ui.script);
     wizard.ui.applyResult = res;
