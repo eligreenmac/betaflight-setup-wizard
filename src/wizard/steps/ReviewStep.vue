@@ -59,7 +59,7 @@ const rows = computed(() => {
   r.push([t("review.switches"), m.value.switches.map((s) => `${modeKeyOf(s.mode) ? t(`switches.modes.${modeKeyOf(s.mode)}`) : s.mode} AUX${s.auxChannel + 1}`).join(", ")]);
   const osd = osdChoice(wizard.osd, m.value.gps.enabled);
   if (m.value.vtx.kind !== "NONE")
-    r.push([t("review.osd"), osd ? t("review.osdChosen", { n: osd.elements.filter((e) => e.enabled).length, system: t(`osd.system.${osd.system}`) }) : t("review.osdKeep")]);
+    r.push([t("review.osd"), osd ? t("review.osdChosen", { n: osd.elements.filter((e) => e.enabled).length, system: t(`osd.system.${osd.videoSystem}`) }) : t("review.osdKeep")]);
   return r;
 });
 /** The OSD was set up, but this version's plan does not write it (engine without `osd`). */

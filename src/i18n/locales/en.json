@@ -536,7 +536,8 @@
     "phraseNotSet": "Enter the binding phrase and press “Use this phrase”, or bind with the button.",
     "osdSystem": "Choose your video system.",
     "osdChoose": "Choose whether to set up the OSD or keep the current one.",
-    "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD."
+    "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD.",
+    "osdHdUnsupported": "This board's firmware can't show an HD OSD. Pick an analog option, flash firmware with the \"OSD (HD)\" option, or keep the current OSD."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
@@ -762,15 +763,24 @@
     "system": {
       "title": "Your video system",
       "detected": {
-        "ANALOG": "Your video transmitter is analog, so the screen is 4:3.",
+        "AUTO": "Your video transmitter is analog, so the screen is 4:3. The OSD is set to Auto: it matches your camera (PAL or NTSC) by itself.",
         "HD": "Your video transmitter is digital HD (DJI, Walksnail or HDZero), so the screen is widescreen 16:9."
       },
       "change": "Not right? Change it",
       "ask": "We couldn't tell which video system you have. Which one do you use?",
-      "ANALOG": "Analog",
-      "ANALOGHint": "Classic FPV video with some fuzz and static. Most cheaper goggles.",
       "HD": "Digital HD",
-      "HDHint": "DJI O3/O4, Walksnail Avatar or HDZero: a sharp, widescreen picture."
+      "HDHint": "DJI O3/O4, Walksnail Avatar or HDZero: a sharp, widescreen picture.",
+      "analogGroup": "Analog (4:3)",
+      "digitalGroup": "Digital (16:9)",
+      "AUTO": "Analog, Auto (recommended)",
+      "AUTOHint": "Matches your camera by itself, PAL or NTSC. Pick this if you're not sure.",
+      "PAL": "Analog, PAL",
+      "PALHint": "Only if your camera is set to PAL. It gives a few more lines of text.",
+      "NTSC": "Analog, NTSC",
+      "NTSCHint": "Only if your camera is set to NTSC.",
+      "hdUnsupported": "Not available: this board's firmware was built without the HD OSD. To use it, flash firmware with the \"OSD (HD)\" option.",
+      "hdBlocked": "Your video transmitter is digital HD, but this board's firmware was built without the HD OSD. Flash firmware with the \"OSD (HD)\" option, or pick another option below.",
+      "analogOnDigital": "Your video transmitter is digital, but the OSD is set to analog. The text may not show in your goggles. Pick Digital HD unless you're sure."
     },
     "choose": "Set up the OSD now",
     "chooseHint": "Start from a recommended layout and adjust it.",
@@ -784,87 +794,87 @@
       "optional": "Optional"
     },
     "items": {
-      "avg_cell_voltage": {
+      "AVG_CELL_VOLTAGE": {
         "label": "Battery voltage per cell",
         "hint": "The best way to know when to land: land at about 3.5 V per cell."
       },
-      "vbat": {
+      "MAIN_BATT_VOLTAGE": {
         "label": "Total battery voltage",
         "hint": "The whole pack's voltage. Per-cell voltage is easier to read."
       },
-      "mah_drawn": {
+      "MAH_DRAWN": {
         "label": "Battery used (mAh)",
         "hint": "How much of the battery you've used so far."
       },
-      "tim_2": {
+      "ITEM_TIMER_2": {
         "label": "Flight timer",
         "hint": "How long you've been flying on this battery."
       },
-      "link_quality": {
+      "LINK_QUALITY": {
         "label": "Radio link quality",
         "hint": "How well the drone hears your radio. Turn back if it drops."
       },
-      "warnings": {
+      "WARNINGS": {
         "label": "Warnings",
         "hint": "Short alerts such as low battery or a lost radio signal."
       },
-      "craft_name": {
+      "CRAFT_NAME": {
         "label": "Drone name",
         "hint": "The name you gave this drone."
       },
-      "gps_sats": {
+      "GPS_SATS": {
         "label": "GPS satellites",
         "hint": "How many satellites the GPS sees. Wait for enough before you take off."
       },
-      "home_dir": {
+      "HOME_DIR": {
         "label": "Arrow to home",
         "hint": "Points back to where you took off."
       },
-      "home_dist": {
+      "HOME_DIST": {
         "label": "Distance to home",
         "hint": "How far you are from where you took off."
       },
-      "rssi": {
+      "RSSI_VALUE": {
         "label": "Signal strength (%)",
         "hint": "The radio signal as a percentage. Link quality is usually more useful."
       },
-      "rssi_dbm": {
+      "RSSI_DBM_VALUE": {
         "label": "Signal strength (dBm)",
         "hint": "The radio signal in dBm, for ELRS and Crossfire."
       },
-      "throttle": {
+      "THROTTLE_POS": {
         "label": "Throttle",
         "hint": "How much throttle you're giving, in percent."
       },
-      "current": {
+      "CURRENT_DRAW": {
         "label": "Current draw",
         "hint": "How many amps the motors are pulling right now."
       },
-      "flymode": {
+      "FLYMODE": {
         "label": "Flight mode",
         "hint": "The current flight mode, such as ACRO or ANGLE."
       },
-      "altitude": {
+      "ALTITUDE": {
         "label": "Altitude",
         "hint": "Height above the takeoff point."
       },
-      "gps_speed": {
+      "GPS_SPEED": {
         "label": "Speed",
         "hint": "Ground speed from the GPS."
       },
-      "crosshairs": {
+      "CROSSHAIRS": {
         "label": "Crosshair",
         "hint": "A small mark in the middle of the screen."
       },
-      "tim_1": {
+      "ITEM_TIMER_1": {
         "label": "Total on-time",
         "hint": "How long the drone has been powered on."
       },
-      "disarmed": {
+      "DISARMED": {
         "label": "DISARMED label",
         "hint": "Shows DISARMED in the middle while the motors are off."
       },
-      "esc_tmp": {
+      "ESC_TMP": {
         "label": "ESC temperature",
         "hint": "How hot the ESC is. Needs ESC telemetry."
       }

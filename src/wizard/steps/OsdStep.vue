@@ -6,49 +6,64 @@
 // grid) or moved with the arrow keys.
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { osdApi, type OsdSystem } from "../../api/osdPending";
+import { catalogState, loadCatalog } from "../../api/catalog";
+import { osdApi } from "../../api/osdPending";
+import type { OsdVideoSystem } from "../../types/pendingModel";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import { toUiError, type UiError } from "../../errors/codes";
-import { clampPos, effectiveSystem, offeredElements, OSD_GROUPS, previewPos, recommendedEnabled, systemFromVtx, type OsdElementInfo } from "../osd";
+import {
+  analogOnDigital, ANALOG_SYSTEMS, clampPos, effectiveSystem, hdOsdSupport, layoutKey, offeredElements, OSD_GROUPS, previewPos,
+  recommendedEnabled, systemFromVtx, type OsdElementInfo,
+} from "../osd";
 import { markDirty, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
 const { t } = useI18n();
 
 const detected = computed(() => systemFromVtx(wizard.model.vtx));
-const system = computed(() => effectiveSystem(wizard.model, wizard.osd));
+const hd = computed(() => hdOsdSupport(wizard.fc));
+const system = computed(() => effectiveSystem(wizard.model, wizard.osd, wizard.fc));
+/** Detected HD, but this firmware has no HD OSD: explain and ask. */
+const hdBlocked = computed(() => detected.value === "HD" && hd.value === false);
 const changing = ref(false);
+const showChoices = computed(() => changing.value || !!wizard.osd.askedSystem || !system.value);
+const mismatch = computed(() => analogOnDigital(wizard.model, system.value));
+const firmware = computed(() => wizard.model.fc.firmwareVersion || wizard.fc?.firmwareVersion || "");
 const loading = ref(false);
 const error = ref<UiError | null>(null);
 const gps = computed(() => wizard.model.gps.enabled);
-const offered = computed(() => offeredElements(wizard.osd.layout, gps.value));
+const offered = computed(() => offeredElements(wizard.osd.layout, gps.value, wizard.osd.catalog));
 const groups = computed(() => OSD_GROUPS.map((g) => ({ g, items: offered.value.filter((e) => e.group === g) })).filter((x) => x.items.length));
-const grid = computed(() => wizard.osd.layout?.grid ?? null);
+const grid = computed(() => (wizard.osd.layout ? { cols: wizard.osd.layout.cols, rows: wizard.osd.layout.rows } : null));
 const shown = computed(() => offered.value.filter((e) => wizard.osd.enabled[e.name]));
 const isRecommended = computed(() => {
   if (!wizard.osd.layout) return true;
-  const rec = recommendedEnabled(wizard.osd.layout, gps.value);
+  const rec = recommendedEnabled(wizard.osd.layout, gps.value, wizard.osd.catalog);
   return Object.keys(rec).every((k) => !!wizard.osd.enabled[k] === rec[k]) && Object.keys(wizard.osd.moved).length === 0;
 });
 
-function setSystem(s: OsdSystem): void {
+function setSystem(s: OsdVideoSystem): void {
+  if (s === "HD" && hd.value === false) return;
   wizard.osd.askedSystem = s;
-  changing.value = false;
   markDirty();
 }
 
 async function loadLayout(): Promise<void> {
   const s = system.value;
-  if (!s || (wizard.osd.layout && wizard.osd.layoutSystem === s)) return;
+  const fw = firmware.value;
+  if (!s || (wizard.osd.layout && wizard.osd.layoutKey === layoutKey(s, fw))) return;
   loading.value = true;
   error.value = null;
   try {
-    const layout = await osdApi.defaultLayout(s);
-    if (system.value !== s) return;
+    // The firmware's element list; unknown (no catalog) = no filter.
+    const catalog = await loadCatalog(fw).catch(() => null);
+    const layout = await osdApi.defaultLayout(s, fw);
+    if (system.value !== s || firmware.value !== fw) return;
+    wizard.osd.catalog = catalog?.osdElements ?? catalogState.catalog?.osdElements ?? [];
     wizard.osd.layout = layout;
-    wizard.osd.layoutSystem = s;
-    // A new system means a new layout: start again from its recommendation.
-    wizard.osd.enabled = recommendedEnabled(layout, gps.value);
+    wizard.osd.layoutKey = layoutKey(s, fw);
+    // A new video system means a new grid: start again from its recommendation.
+    wizard.osd.enabled = recommendedEnabled(layout, gps.value, wizard.osd.catalog);
     wizard.osd.moved = {};
   } catch (e) {
     error.value = toUiError(e);
@@ -67,7 +82,7 @@ function toggle(name: string, on: boolean): void {
 }
 function reset(): void {
   if (!wizard.osd.layout) return;
-  wizard.osd.enabled = recommendedEnabled(wizard.osd.layout, gps.value);
+  wizard.osd.enabled = recommendedEnabled(wizard.osd.layout, gps.value, wizard.osd.catalog);
   wizard.osd.moved = {};
   markDirty();
 }
@@ -116,9 +131,9 @@ function style(e: OsdElementInfo): Record<string, string> {
   const g = grid.value!;
   return { left: `${(p.x / g.cols) * 100}%`, top: `${(p.y / g.rows) * 100}%`, width: `${(e.sample.length / g.cols) * 100}%`, height: `${(1 / g.rows) * 100}%` };
 }
-const sample = (e: OsdElementInfo) => (e.name === "craft_name" ? (wizard.model.extras?.craftName || e.sample).toUpperCase() : e.sample);
+const sample = (e: OsdElementInfo) => (e.name === "CRAFT_NAME" ? (wizard.model.extras?.craftName || e.sample).toUpperCase() : e.sample);
 
-watch(system, () => void loadLayout());
+watch([system, firmware], () => void loadLayout());
 onMounted(loadLayout);
 </script>
 
@@ -131,22 +146,35 @@ onMounted(loadLayout);
     <!-- Video system -->
     <section class="osd-system" data-section="osd-system">
       <h3>{{ t("osd.system.title") }}</h3>
-      <p v-if="detected && !changing && !wizard.osd.askedSystem" data-test="osd-detected">
-        {{ t(`osd.system.detected.${detected}`) }}
+      <p v-if="!showChoices && system" data-test="osd-detected">
+        {{ t(`osd.system.detected.${system}`) }}
         <button type="button" class="btn btn--small btn--link" data-test="osd-change-system" @click="changing = true">{{ t("osd.system.change") }}</button>
       </p>
       <template v-else>
-        <p v-if="!detected">{{ t("osd.system.ask") }}</p>
+        <p v-if="hdBlocked" class="callout callout--warn" data-test="osd-hd-blocked">{{ t("osd.system.hdBlocked") }}</p>
+        <p v-else-if="!detected">{{ t("osd.system.ask") }}</p>
         <div class="osd-choices" role="radiogroup" :aria-label="t('osd.system.title')">
-          <label v-for="s in ['ANALOG', 'HD'] as const" :key="s">
+          <p class="hint osd-choices__group">{{ t("osd.system.analogGroup") }}</p>
+          <label v-for="s in ANALOG_SYSTEMS" :key="s">
             <input type="radio" name="osd-system" :data-osd-system="s" :checked="system === s" @change="setSystem(s)" />
             <span>
               <strong>{{ t(`osd.system.${s}`) }}</strong>
               <small class="hint" style="display: block">{{ t(`osd.system.${s}Hint`) }}</small>
             </span>
           </label>
+          <p class="hint osd-choices__group">{{ t("osd.system.digitalGroup") }}</p>
+          <label :class="{ 'is-disabled': hd === false }">
+            <input type="radio" name="osd-system" data-osd-system="HD" :checked="system === 'HD'" :disabled="hd === false" @change="setSystem('HD')" />
+            <span>
+              <strong>{{ t("osd.system.HD") }}</strong>
+              <small class="hint" style="display: block" :data-test="hd === false ? 'osd-hd-unsupported' : undefined">{{ t(hd === false ? "osd.system.hdUnsupported" : "osd.system.HDHint") }}</small>
+            </span>
+          </label>
         </div>
       </template>
+      <div v-if="mismatch" class="callout callout--warn" role="note" data-test="osd-analog-on-digital">
+        {{ t("osd.system.analogOnDigital") }}
+      </div>
     </section>
 
     <template v-if="system">
@@ -199,7 +227,7 @@ onMounted(loadLayout);
           <figure class="osd-preview-wrap">
             <div
               ref="canvas"
-              :class="['osd-preview', wizard.osd.layoutSystem === 'HD' ? 'osd-preview--hd' : 'osd-preview--analog']"
+              :class="['osd-preview', wizard.osd.layout.videoSystem === 'HD' ? 'osd-preview--hd' : 'osd-preview--analog']"
               dir="ltr"
               data-test="osd-preview"
               :data-cols="grid.cols"

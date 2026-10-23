@@ -136,6 +136,8 @@ th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
 .osd-system { margin-block: 1rem; }
 .osd-choices { display: grid; gap: 0.5rem; margin-block: 0.75rem; }
 .osd-choices label, .osd-group li label { display: flex; gap: 0.5rem; align-items: flex-start; }
+.osd-choices__group { margin: 0.25rem 0 0; font-weight: 600; }
+.osd-choices label.is-disabled { opacity: 0.6; }
 .osd-layout { display: grid; gap: 1rem; grid-template-columns: minmax(16rem, 1fr) minmax(18rem, 1.4fr); align-items: start; }
 @media (max-width: 760px) { .osd-layout { grid-template-columns: 1fr; } }
 .osd-group ul { list-style: none; padding: 0; display: grid; gap: 0.4rem; }

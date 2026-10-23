@@ -135,7 +135,8 @@ export function setBoard(s: WizardState, fc: FcInfo, ports: FcSerialPort[], path
     s.ui.motorDirectionOk = false;
     // The OSD grid depends on the board: reload the layout for the new one.
     s.osd.layout = null;
-    s.osd.layoutSystem = null;
+    s.osd.layoutKey = null;
+    s.osd.catalog = [];
     s.osd.moved = {};
   }
   prefillFromBoard(s.ports, s.model, s.ui);

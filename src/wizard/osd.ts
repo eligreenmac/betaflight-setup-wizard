@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
- * OSD step model. Positions and defaults come from the backend
- * (config_osd_default_layout, api/osdPending.ts); this file only keeps what the UI
- * adds: grouping, explanations (locale keys `osd.items.<name>`) and preview samples,
- * keyed by the firmware's `osd_<name>_pos` stem.
+ * OSD step model. Positions and defaults come from Config
+ * (config_osd_default_layout(videoSystem, firmwareVersion), api/osdPending.ts) and the
+ * element list per firmware from config_firmware_catalog (api/catalog.ts); this file
+ * only keeps what the UI adds: grouping, explanations (locale keys `osd.items.<NAME>`)
+ * and preview samples, keyed by Betaflight's osd_items_e name without OSD_.
  *
- * TODO(shared): proposed DroneModel field (Config Engine Dev), not in src/types/model.ts yet:
- *   osd: { system: "ANALOG" | "HD", elements: [{ name, enabled, x?, y? }] } | null
- * null = keep the board's OSD. Only elements the user accepted (shown and kept) or
- * touched are sent; x/y only when the user moved the element (otherwise the engine
- * uses the default layout position for that system).
+ * Sent as the #65 `osd` field (types/pendingModel.ts, TODO(shared)):
+ *   osd: { videoSystem: AUTO | PAL | NTSC | HD, elements: [{ name, enabled, x?, y? }] } | null
+ * null/absent = keep the board's OSD. Only elements the wizard offers are sent (elements
+ * not listed keep the FC's state); x/y only when the user moved the element (otherwise
+ * Config uses its default layout position for that video system).
  */
-import type { DroneModel, VtxKind } from "../types/model";
-import type { OsdLayout, OsdSystem } from "../api/osdPending";
+import type { DroneModel, FcInfo, VtxKind } from "../types/model";
+import type { Osd, OsdLayout, OsdVideoSystem } from "../types/pendingModel";
 
 export type OsdGroup = "recommended" | "optional";
 export interface OsdElementInfo {
@@ -24,58 +25,96 @@ export interface OsdElementInfo {
   gps?: boolean;
 }
 
-/** Elements the wizard offers, in display order. Anything else from the layout is not shown (and not sent). */
+/** Elements the wizard offers, in display order. Anything else in the layout is not shown (and not sent). */
 export const OSD_ELEMENTS: OsdElementInfo[] = [
-  { name: "avg_cell_voltage", group: "recommended", sample: "4.12V" },
-  { name: "vbat", group: "recommended", sample: "16.5V" },
-  { name: "mah_drawn", group: "recommended", sample: "450MAH" },
-  { name: "tim_2", group: "recommended", sample: "02:15" },
-  { name: "link_quality", group: "recommended", sample: "LQ 100" },
-  { name: "warnings", group: "recommended", sample: "LOW BATTERY" },
-  { name: "craft_name", group: "recommended", sample: "MY QUAD" },
-  { name: "gps_sats", group: "recommended", sample: "SAT 12", gps: true },
-  { name: "home_dir", group: "recommended", sample: "^", gps: true },
-  { name: "home_dist", group: "recommended", sample: "120M", gps: true },
-  { name: "rssi", group: "optional", sample: "RSSI 99" },
-  { name: "rssi_dbm", group: "optional", sample: "-70DBM" },
-  { name: "throttle", group: "optional", sample: "THR 35" },
-  { name: "current", group: "optional", sample: "12.3A" },
-  { name: "flymode", group: "optional", sample: "ACRO" },
-  { name: "altitude", group: "optional", sample: "35M" },
-  { name: "gps_speed", group: "optional", sample: "42KM/H", gps: true },
-  { name: "crosshairs", group: "optional", sample: "-+-" },
-  { name: "tim_1", group: "optional", sample: "05:40" },
-  { name: "disarmed", group: "optional", sample: "DISARMED" },
-  { name: "esc_tmp", group: "optional", sample: "E 45C" },
+  { name: "AVG_CELL_VOLTAGE", group: "recommended", sample: "4.12V" },
+  { name: "MAIN_BATT_VOLTAGE", group: "recommended", sample: "16.5V" },
+  { name: "MAH_DRAWN", group: "recommended", sample: "450MAH" },
+  { name: "ITEM_TIMER_2", group: "recommended", sample: "02:15" },
+  { name: "LINK_QUALITY", group: "recommended", sample: "LQ 100" },
+  { name: "WARNINGS", group: "recommended", sample: "LOW BATTERY" },
+  { name: "CRAFT_NAME", group: "recommended", sample: "MY QUAD" },
+  { name: "GPS_SATS", group: "recommended", sample: "SAT 12", gps: true },
+  { name: "HOME_DIR", group: "recommended", sample: "^", gps: true },
+  { name: "HOME_DIST", group: "recommended", sample: "120M", gps: true },
+  { name: "RSSI_VALUE", group: "optional", sample: "RSSI 99" },
+  { name: "RSSI_DBM_VALUE", group: "optional", sample: "-70DBM" },
+  { name: "THROTTLE_POS", group: "optional", sample: "THR 35" },
+  { name: "CURRENT_DRAW", group: "optional", sample: "12.3A" },
+  { name: "FLYMODE", group: "optional", sample: "ACRO" },
+  { name: "ALTITUDE", group: "optional", sample: "35M" },
+  { name: "GPS_SPEED", group: "optional", sample: "42KM/H", gps: true },
+  { name: "CROSSHAIRS", group: "optional", sample: "-+-" },
+  { name: "ITEM_TIMER_1", group: "optional", sample: "05:40" },
+  { name: "DISARMED", group: "optional", sample: "DISARMED" },
+  { name: "ESC_TMP", group: "optional", sample: "E 45C" },
 ];
 export const OSD_GROUPS: OsdGroup[] = ["recommended", "optional"];
+export const ANALOG_SYSTEMS: OsdVideoSystem[] = ["AUTO", "PAL", "NTSC"];
+export const isAnalog = (s: OsdVideoSystem | null): boolean => !!s && s !== "HD";
 
 /** HD video systems that draw the OSD through MSP DisplayPort. */
 const HD_SYSTEMS = new Set(["DJI", "WALKSNAIL", "HDZERO"]);
 
-/** Video system from the VTX chosen in the wizard; null = unknown, ask the user. */
-export function systemFromVtx(vtx: { kind: VtxKind; protocol?: string | null; digitalSystem?: string | null }): OsdSystem | null {
-  if (vtx.kind === "ANALOG") return "ANALOG";
+/**
+ * Video system from the VTX chosen in the wizard; null = unknown, ask the user.
+ * Analog defaults to AUTO (the board follows the camera, PAL or NTSC).
+ */
+export function systemFromVtx(vtx: { kind: VtxKind; protocol?: string | null; digitalSystem?: string | null }): OsdVideoSystem | null {
+  if (vtx.kind === "ANALOG") return "AUTO";
   if (vtx.kind === "DIGITAL" && (HD_SYSTEMS.has(vtx.digitalSystem ?? "") || vtx.protocol === "MSP")) return "HD";
   return null;
 }
 
-/** The system to use: the user's answer wins over the detection (they can correct it). */
-export function effectiveSystem(model: DroneModel, s: OsdState): OsdSystem | null {
-  return s.askedSystem ?? systemFromVtx(model.vtx);
+/** Build options that mean the firmware has an HD (MSP DisplayPort) OSD. */
+const HD_OSD_OPTIONS = ["USE_OSD_HD", "USE_MSP_DISPLAYPORT", "OSD_HD", "MSP_DISPLAYPORT"];
+/** Build options that show the OSD was chosen at build time (so a missing HD option is meaningful). */
+const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
+
+/**
+ * Does this board's firmware support an HD OSD (MSP DisplayPort)?
+ * true = the build options say so; false = the build options list OSD options but not
+ * the HD one (e.g. a cloud build with "OSD (SD)" only); null = unknown (no FC, or the
+ * build options don't tell), which allows HD.
+ * TODO(shared): no probe field for DisplayPort support exists yet; this reads fc.buildOptions.
+ */
+export function hdOsdSupport(fc: Pick<FcInfo, "buildOptions"> | null): boolean | null {
+  const opts = (fc?.buildOptions ?? []).map((o) => o.toUpperCase());
+  if (opts.some((o) => HD_OSD_OPTIONS.includes(o))) return true;
+  if (opts.some((o) => OSD_OPTIONS.includes(o))) return false;
+  return null;
 }
 
-/** Elements offered for this layout and model (in the layout, GPS ones only with a GPS). */
-export function offeredElements(layout: OsdLayout | null, gps: boolean): OsdElementInfo[] {
+/**
+ * The system to use: the user's answer wins over the detection (they can correct it).
+ * A detected HD that this firmware can't do is not used: the user is asked instead.
+ */
+export function effectiveSystem(model: DroneModel, s: OsdState, fc: Pick<FcInfo, "buildOptions"> | null = null): OsdVideoSystem | null {
+  if (s.askedSystem) return s.askedSystem;
+  const d = systemFromVtx(model.vtx);
+  return d === "HD" && hdOsdSupport(fc) === false ? null : d;
+}
+
+/** Digital VTX with an analog OSD: allowed (some setups do it on purpose), but probably wrong. */
+export function analogOnDigital(model: DroneModel, system: OsdVideoSystem | null): boolean {
+  return model.vtx.kind === "DIGITAL" && isAnalog(system);
+}
+
+/**
+ * Elements offered for this layout and model: in the layout, in the firmware's catalog
+ * (when known), and GPS ones only with a GPS.
+ */
+export function offeredElements(layout: OsdLayout | null, gps: boolean, catalog: string[] = []): OsdElementInfo[] {
   if (!layout) return [];
   const names = new Set(layout.elements.map((e) => e.name));
-  return OSD_ELEMENTS.filter((e) => names.has(e.name) && (gps || !e.gps));
+  const inCatalog = catalog.length ? new Set(catalog.map((c) => c.toUpperCase())) : null;
+  return OSD_ELEMENTS.filter((e) => names.has(e.name) && (!inCatalog || inCatalog.has(e.name)) && (gps || !e.gps));
 }
 
-/** Recommended on/off = the backend's enabledByDefault for this system. */
-export function recommendedEnabled(layout: OsdLayout, gps: boolean): Record<string, boolean> {
+/** Recommended on/off = the layout's `enabled` for this video system. */
+export function recommendedEnabled(layout: OsdLayout, gps: boolean, catalog: string[] = []): Record<string, boolean> {
   const out: Record<string, boolean> = {};
-  for (const e of offeredElements(layout, gps)) out[e.name] = layout.elements.find((l) => l.name === e.name)!.enabledByDefault;
+  for (const e of offeredElements(layout, gps, catalog)) out[e.name] = layout.elements.find((l) => l.name === e.name)!.enabled;
   return out;
 }
 
@@ -89,41 +128,40 @@ export function clampPos(x: number, y: number, grid: { cols: number; rows: numbe
 }
 
 export interface OsdState {
-  /** The user's answer when the VTX does not tell (null = not asked / not answered). */
-  askedSystem: OsdSystem | null;
+  /** The user's choice (null = not chosen: the detected system is used). */
+  askedSystem: OsdVideoSystem | null;
   /** keep = leave the board's OSD; choose = set it up here. */
   mode: "keep" | "choose" | null;
   layout: OsdLayout | null;
-  /** System the layout was loaded for. */
-  layoutSystem: OsdSystem | null;
+  /** System and firmware the layout was loaded for ("HD@4.5.2"). */
+  layoutKey: string | null;
+  /** The firmware's OSD element names (catalog); [] = unknown, no filter. */
+  catalog: string[];
   enabled: Record<string, boolean>;
   /** Positions the user moved (grid cells). */
   moved: Record<string, { x: number; y: number }>;
 }
-export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, layout: null, layoutSystem: null, enabled: {}, moved: {} });
+export const emptyOsdState = (): OsdState => ({ askedSystem: null, mode: null, layout: null, layoutKey: null, catalog: [], enabled: {}, moved: {} });
+export const layoutKey = (system: OsdVideoSystem, firmwareVersion: string): string => `${system}@${firmwareVersion}`;
 
-export interface OsdChoice {
-  system: OsdSystem;
-  elements: { name: string; enabled: boolean; x?: number; y?: number }[];
-}
-
-/** The `osd` field to send, or null (= keep). */
-export function osdChoice(s: OsdState, gps: boolean): OsdChoice | null {
-  if (s.mode !== "choose" || !s.layout || !s.layoutSystem) return null;
-  const elements = offeredElements(s.layout, gps).map((e) => {
-    const out: OsdChoice["elements"][number] = { name: e.name, enabled: s.enabled[e.name] ?? false };
+/** The #65 `osd` field to send, or null (= keep). */
+export function osdChoice(s: OsdState, gps: boolean): Osd | null {
+  if (s.mode !== "choose" || !s.layout) return null;
+  const grid = { cols: s.layout.cols, rows: s.layout.rows };
+  const elements = offeredElements(s.layout, gps, s.catalog).map((e) => {
+    const out: Osd["elements"][number] = { name: e.name, enabled: s.enabled[e.name] ?? false };
     const m = s.moved[e.name];
-    if (m) Object.assign(out, clampPos(m.x, m.y, s.layout!.grid, e.sample.length));
+    if (m) Object.assign(out, clampPos(m.x, m.y, grid, e.sample.length));
     return out;
   });
-  return { system: s.layoutSystem, elements };
+  return { videoSystem: s.layout.videoSystem, elements };
 }
 
-export type ModelWithOsd = DroneModel & { osd?: OsdChoice };
+export type ModelWithOsd = DroneModel & { osd?: Osd | null };
 
 /** Model for config_plan / config_verify: the shared model plus `osd` when chosen. */
-export function withOsd(model: DroneModel, s: OsdState): ModelWithOsd {
-  const out: ModelWithOsd = JSON.parse(JSON.stringify(model));
+export function withOsd<M extends DroneModel>(model: M, s: OsdState): M & { osd?: Osd | null } {
+  const out: M & { osd?: Osd | null } = JSON.parse(JSON.stringify(model));
   const c = osdChoice(s, model.gps.enabled);
   if (c) out.osd = c;
   return out;

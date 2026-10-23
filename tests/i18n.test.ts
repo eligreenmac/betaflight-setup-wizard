@@ -111,7 +111,9 @@ describe("i18n", () => {
       ...["done", "active", "failed"].map((s) => `stageState.${s}`),
       ...OSD_ELEMENTS.flatMap((e) => [`osd.items.${e.name}.label`, `osd.items.${e.name}.hint`]),
       ...OSD_GROUPS.map((g) => `osd.groups.${g}`),
-      ...["ANALOG", "HD"].flatMap((s) => [`osd.system.${s}`, `osd.system.${s}Hint`, `osd.system.detected.${s}`]),
+      ...["AUTO", "PAL", "NTSC", "HD"].flatMap((s) => [`osd.system.${s}`, `osd.system.${s}Hint`]),
+      ...["AUTO", "HD"].map((s) => `osd.system.detected.${s}`),
+      ...["analogGroup", "digitalGroup", "hdUnsupported", "hdBlocked", "analogOnDigital"].map((k) => `osd.system.${k}`),
     ];
     expect(need.filter((k) => !(k in EN))).toEqual([]);
   });

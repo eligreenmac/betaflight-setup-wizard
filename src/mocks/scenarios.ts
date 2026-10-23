@@ -20,8 +20,10 @@ import { createEmitter, type Emitter } from "../api/events";
 import type { Backup, ClearedPort, CliScript, FcInfo, FcSerialPort, FlashStage, SerialFunction } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask, type FunctionName } from "../wizard/ports";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
-import type { OsdLayout, OsdSystem } from "../api/osdPending";
 import type { ModelWithOsd } from "../wizard/osd";
+import { CATALOG_COMMAND, type FirmwareCatalog } from "../api/catalog";
+import { BEEPER_NAMES, type OsdLayout, type OsdVideoSystem } from "../types/pendingModel";
+import { compareVersions } from "../wizard/version";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 
 export const SCENARIOS = [
@@ -40,7 +42,7 @@ export const SCENARIOS = [
   "flash-verify",
   "read-protected",
   "driver-replace",
-  "osd-ntsc",
+  "osd-sd-only",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -316,7 +318,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       manufacturerId: "SPBE",
       mcu: "STM32F405",
       uid: UID,
-      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : [])],
+      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : []), ...(scenario === "osd-sd-only" ? ["USE_OSD_SD"] : [])],
       serialPorts: device.ports.map((p) => ({ ...p })),
       // present stays null until device_probe_board ran (ARCHITECTURE §4.1).
       rxSpi: device.probed
@@ -405,12 +407,12 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
-  // ---- pending Config contract (api/osdPending.ts): the default OSD layout for this board.
+  // ---- pending Config contract (#66, api/osdPending.ts): the default OSD layout per video system and firmware line.
   const pendingHandlers: Record<string, (args: never) => unknown> = {
-    config_osd_default_layout: ({ system }: { system: OsdSystem }) => {
+    config_osd_default_layout: ({ videoSystem, firmwareVersion }: { videoSystem: OsdVideoSystem; firmwareVersion: string }) => {
       legacy("config_osd_default_layout");
-      if (system !== "ANALOG" && system !== "HD") throw err("CONFIG_UNSUPPORTED", `unknown OSD system ${String(system)}`);
-      return mockOsdLayout(system, scenario === "osd-ntsc" ? "NTSC" : "PAL");
+      if (!["AUTO", "PAL", "NTSC", "HD"].includes(videoSystem)) throw err("CONFIG_UNSUPPORTED", `unknown video system ${String(videoSystem)}`);
+      return mockOsdLayout(videoSystem, firmwareVersion);
     },
   };
 
@@ -421,6 +423,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     await sleep(fast(cmd) ? latency / 2 : latency);
     const p = pendingHandlers[cmd];
     if (p) return p(args);
+    if ((cmd as string) === CATALOG_COMMAND) return mockFirmwareCatalog((args as { firmwareVersion?: string }).firmwareVersion ?? "");
     return inner(cmd, args);
   }) as Backend;
 
@@ -438,47 +441,84 @@ const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
 };
 
 /** Rough stand-in for the config engine (generate / plan): enough for the Review screen. */
+const isV2025 = (fw: string | null | undefined) => !!fw && compareVersions(fw, "2025.12.0") >= 0;
+
 /**
- * Plausible default layouts (stand-in for config_osd_default_layout): analog PAL 30x16,
- * NTSC 30x13, HD 53x20. Includes an element the UI does not offer (pid_roll).
+ * OSD element names (osd_items_e without OSD_) with their `osd_<cli>_pos` stem. A subset
+ * of Betaflight's list (4.4: 77, 4.5: 80, 2025.12: 82), enough for the demo.
  */
-export function mockOsdLayout(system: OsdSystem, analog: "PAL" | "NTSC" = "PAL"): OsdLayout {
-  const [cols, rows] = system === "HD" ? [53, 20] : analog === "NTSC" ? [30, 13] : [30, 16];
-  const c = Math.floor(cols / 2);
-  const m = Math.floor(rows / 2);
-  const e = (name: string, x: number, y: number, enabledByDefault: boolean) => ({ name, x, y, enabledByDefault });
+export const MOCK_OSD_CLI: Record<string, string> = {
+  RSSI_VALUE: "rssi", MAIN_BATT_VOLTAGE: "vbat", CROSSHAIRS: "crosshairs", ITEM_TIMER_1: "tim_1",
+  ITEM_TIMER_2: "tim_2", FLYMODE: "flymode", CRAFT_NAME: "craft_name", THROTTLE_POS: "throttle",
+  CURRENT_DRAW: "current", MAH_DRAWN: "mah_drawn", GPS_SPEED: "gps_speed", GPS_SATS: "gps_sats",
+  ALTITUDE: "altitude", ROLL_PIDS: "pid_roll", WARNINGS: "warnings", AVG_CELL_VOLTAGE: "avg_cell_voltage",
+  DISARMED: "disarmed", HOME_DIR: "home_dir", HOME_DIST: "home_dist", ESC_TMP: "esc_tmp",
+  LINK_QUALITY: "link_quality", RSSI_DBM_VALUE: "rssi_dbm", GPS_LAP_TIME_CURRENT: "gps_lap_time_current",
+  DEBUG2: "debug2", LIDAR_DIST: "lidar_dist",
+};
+
+/**
+ * Demo config_firmware_catalog(firmwareVersion) (#66 shape, api/catalog.ts).
+ * 2025.12 has no RC_SMOOTHING_INIT_FAIL, adds DEBUG2 / LIDAR_DIST and manages ALTHOLD / POSHOLD.
+ * Unknown / empty version = the 4.5 lists.
+ */
+export function mockFirmwareCatalog(firmwareVersion: string): FirmwareCatalog {
+  const v2025 = isV2025(firmwareVersion);
+  const v44 = !!firmwareVersion && compareVersions(firmwareVersion, "4.5.0") < 0;
   return {
-    grid: { cols, rows },
-    elements: [
-      e("link_quality", 1, 1, true),
-      e("rssi", 1, 2, false),
-      e("rssi_dbm", 1, 3, false),
-      e("tim_2", cols - 7, 1, true),
-      e("gps_sats", cols - 8, 2, true),
-      e("flymode", cols - 6, 3, false),
-      e("tim_1", cols - 7, 4, false),
-      e("gps_speed", cols - 9, 5, false),
-      e("home_dir", c, 1, true),
-      e("home_dist", c - 2, 2, true),
-      e("crosshairs", c - 1, m, false),
-      e("disarmed", c - 4, m + 2, false),
-      e("altitude", 1, m, false),
-      e("warnings", c - 6, rows - 5, true),
-      e("esc_tmp", 1, rows - 4, false),
-      e("vbat", 1, rows - 3, false),
-      e("avg_cell_voltage", 1, rows - 2, true),
-      e("current", cols - 8, rows - 4, false),
-      e("throttle", cols - 8, rows - 3, false),
-      e("mah_drawn", cols - 8, rows - 2, true),
-      e("craft_name", c - 4, rows - 1, true),
-      e("pid_roll", 2, 6, false),
-    ],
+    beepers: BEEPER_NAMES.filter((n) => !(v2025 && n === "RC_SMOOTHING_INIT_FAIL")),
+    beaconEvents: ["RX_LOST", "RX_SET"],
+    osdElements: Object.keys(MOCK_OSD_CLI).filter((n) => !(v44 && n === "GPS_LAP_TIME_CURRENT") && (v2025 || (n !== "DEBUG2" && n !== "LIDAR_DIST"))),
+    modes: ["ARM", "ANGLE", "HORIZON", ...(v2025 ? ["ALTHOLD", "POSHOLD"] : []), "BEEPER", "AIR MODE", "FLIP OVER AFTER CRASH", "PREARM", "GPS RESCUE"],
   };
 }
 
-/** BF 4.4+ `osd_*_pos` value: x (5 bits + HD bit 10), y (5 bits), visible in OSD profile 1 (bit 11). */
+/**
+ * Plausible default layouts (stand-in for config_osd_default_layout): PAL 30x16,
+ * NTSC / AUTO 30x13 (AUTO fits either camera), HD 53x20. Includes an element the UI does
+ * not offer (ROLL_PIDS) and only elements of that firmware line.
+ */
+export function mockOsdLayout(videoSystem: OsdVideoSystem, firmwareVersion = ""): OsdLayout {
+  const [cols, rows] = videoSystem === "HD" ? [53, 20] : videoSystem === "PAL" ? [30, 16] : [30, 13];
+  const c = Math.floor(cols / 2);
+  const m = Math.floor(rows / 2);
+  const e = (name: string, x: number, y: number, enabled: boolean) => ({ name, x, y, enabled });
+  const known = new Set(mockFirmwareCatalog(firmwareVersion).osdElements);
+  return {
+    videoSystem,
+    cols,
+    rows,
+    elements: [
+      e("LINK_QUALITY", 1, 1, true),
+      e("RSSI_VALUE", 1, 2, false),
+      e("RSSI_DBM_VALUE", 1, 3, false),
+      e("ITEM_TIMER_2", cols - 7, 1, true),
+      e("GPS_SATS", cols - 8, 2, true),
+      e("FLYMODE", cols - 6, 3, false),
+      e("ITEM_TIMER_1", cols - 7, 4, false),
+      e("GPS_SPEED", cols - 9, 5, false),
+      e("HOME_DIR", c, 1, true),
+      e("HOME_DIST", c - 2, 2, true),
+      e("CROSSHAIRS", c - 1, m, false),
+      e("DISARMED", c - 4, m + 2, false),
+      e("ALTITUDE", 1, m, false),
+      e("WARNINGS", c - 6, rows - 5, true),
+      e("ESC_TMP", 1, rows - 4, false),
+      e("MAIN_BATT_VOLTAGE", 1, rows - 3, false),
+      e("AVG_CELL_VOLTAGE", 1, rows - 2, true),
+      e("CURRENT_DRAW", cols - 8, rows - 4, false),
+      e("THROTTLE_POS", cols - 8, rows - 3, false),
+      e("MAH_DRAWN", cols - 8, rows - 2, true),
+      e("CRAFT_NAME", c - 4, rows - 1, true),
+      e("ROLL_PIDS", 2, 6, false),
+      e("DEBUG2", 2, 7, false),
+    ].filter((x) => known.has(x.name)),
+  };
+}
+
+/** BF 4.4+ `osd_*_pos` value: x (bits 0-4 + bit 10), y (bits 5-9), `enabled` = visible in all 3 OSD profiles (bits 11-13). */
 export function osdPosValue(x: number, y: number, visible: boolean): number {
-  return (x & 0x1f) | (((x >> 5) & 1) << 10) | ((y & 0x1f) << 5) | (visible ? 1 << 11 : 0);
+  return (x & 0x1f) | (((x >> 5) & 1) << 10) | ((y & 0x1f) << 5) | (visible ? 0x7 << 11 : 0);
 }
 
 export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScript {
@@ -508,7 +548,7 @@ export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScri
   const p = model.receiver.protocol;
   if (model.receiver.telemetry && (p === "CRSF" || p === "FPORT" || (model.receiver.kind === "SPI" && p === "EXPRESSLRS"))) commands.push("feature TELEMETRY");
   if (model.gps.enabled) commands.push("feature GPS", `set gps_provider = ${model.gps.provider ?? "UBLOX"}`);
-  if (model.vtx.kind === "DIGITAL") commands.push("set osd_displayport_device = MSP", "set vcd_video_system = HD");
+  if (model.vtx.kind === "DIGITAL" && !model.osd) commands.push("set osd_displayport_device = MSP", "set vcd_video_system = HD");
   commands.push(`set motor_pwm_protocol = ${model.esc.protocol}`, `set dshot_bidir = ${model.esc.bidirectionalDshot ? "ON" : "OFF"}`);
   if (model.esc.motorPoles) commands.push(`set motor_poles = ${model.esc.motorPoles}`);
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
@@ -520,16 +560,22 @@ export function generateCli(model: ModelWithOsd, ports: FcSerialPort[]): CliScri
     if (id === undefined) throw { code: "CONFIG", message: `unknown or unmanaged flight mode '${s.mode}'` };
     commands.push(`aux ${i} ${id} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`);
   });
-  // Proposed `osd` field (wizard/osd.ts); absent = keep the board's OSD.
+  // #65 `osd` field (wizard/osd.ts); absent = keep the board's OSD.
   if (model.osd) {
-    const layout = mockOsdLayout(model.osd.system);
+    const fw = model.fc.firmwareVersion;
+    const vs = model.osd.videoSystem ?? "AUTO";
+    commands.push("feature OSD");
+    if (model.osd.videoSystem) commands.push(`set vcd_video_system = ${vs}`);
+    if (vs === "HD") commands.push("set osd_displayport_device = MSP", "set osd_canvas_width = 53", "set osd_canvas_height = 20");
+    else if (model.osd.videoSystem) commands.push("set osd_displayport_device = AUTO");
+    const layout = mockOsdLayout(vs, fw);
     for (const el of model.osd.elements) {
       const d = layout.elements.find((l) => l.name === el.name);
-      if (!d) continue;
+      if (!d) throw err("CONFIG_UNSUPPORTED", `OSD element ${el.name} is not in this firmware`);
       const x = el.x ?? d.x;
       const y = el.y ?? d.y;
-      if (x < 0 || y < 0 || x >= layout.grid.cols || y >= layout.grid.rows) throw err("CONFIG_UNSUPPORTED", `osd ${el.name} outside the grid`);
-      commands.push(`set osd_${el.name}_pos = ${osdPosValue(x, y, el.enabled)}`);
+      if (x < 0 || y < 0 || x >= layout.cols || y >= layout.rows) throw err("CONFIG_UNSUPPORTED", `osd ${el.name} outside the grid`);
+      commands.push(`set osd_${MOCK_OSD_CLI[el.name]}_pos = ${osdPosValue(x, y, el.enabled)}`);
     }
   }
   commands.push("save");

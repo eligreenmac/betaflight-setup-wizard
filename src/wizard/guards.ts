@@ -8,7 +8,7 @@
 import type { StepDef } from "./engine";
 import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
 import type { WizardState } from "./state";
-import { systemFromVtx } from "./osd";
+import { effectiveSystem, hdOsdSupport } from "./osd";
 import { MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable, modeKeyOf, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
@@ -184,9 +184,15 @@ export function canGoTo(targetId: string, currentId: string, s: WizardState, ste
   return guardFor(targetId).canEnter(s);
 }
 
-/** OSD: the video system must be known, and "set up" needs the layout loaded. */
+/**
+ * OSD: the video system must be known (and HD needs firmware with an HD OSD), and
+ * "set up" needs the layout loaded. A digital VTX with an analog OSD is only a warning
+ * (shown on the step).
+ */
 export function validateOsd(s: WizardState): Issue[] {
-  if (!systemFromVtx(s.model.vtx) && !s.osd.askedSystem) return [{ key: "validation.osdSystem" }];
+  const system = effectiveSystem(s.model, s.osd, s.fc);
+  if (!system) return [{ key: "validation.osdSystem" }];
+  if (system === "HD" && hdOsdSupport(s.fc) === false) return [{ key: "validation.osdHdUnsupported" }];
   if (s.osd.mode === null) return [{ key: "validation.osdChoose" }];
   if (s.osd.mode === "choose" && !s.osd.layout) return [{ key: "validation.osdLayout" }];
   return [];
