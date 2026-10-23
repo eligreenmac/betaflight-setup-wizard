@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // U5: ESC protocol / bidirectional DShot / motor poles / props-out, ESC telemetry UART,
 // and the safety-gated motor test (src/wizard/motorTest.ts).
-import { computed, onBeforeUnmount, onMounted, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { api } from "../../api/commands";
 import ErrorPanel from "../../components/ErrorPanel.vue";
@@ -19,7 +19,7 @@ const { t } = useI18n();
 const esc = computed(() => wizard.model.esc);
 const protocols: EscProtocol[] = ["DSHOT600", "DSHOT300", "DSHOT150", "ONESHOT125", "MULTISHOT", "PWM"];
 const isDshot = computed(() => esc.value.protocol.startsWith("DSHOT"));
-const acks = computed(() => ({ propsRemoved: wizard.ui.propsOffAck, batteryDisconnected: wizard.ui.batteryOffAck }));
+const acks = computed(() => ({ propsRemoved: wizard.ui.propsOffAck, batteryConnected: wizard.ui.batteryOnAck }));
 const canTest = computed(() => wizard.ui.motorTestAvailable === true && acksComplete(acks.value));
 const needsTelemetryPort = computed(() => neededRoles(wizard.model, wizard.ui).includes("escTelemetry"));
 
@@ -41,10 +41,20 @@ function set<K extends keyof typeof esc.value>(k: K, v: (typeof esc.value)[K]): 
   markDirty();
 }
 
+/** A motor test was started on this visit (the backend accepted it). */
+const started = ref(false);
+/**
+ * No backend signal tells us whether the ESCs are powered (Betaflight reports no
+ * spin feedback without telemetry), so after a start without the "right motor spins"
+ * confirmation, show the "Motors not spinning?" hint next to the controls.
+ */
+const showNoSpinHint = computed(() => started.value && !wizard.ui.motorOrderOk && !wizard.ui.motorDirectionOk);
+
 async function spin(motor: number): Promise<void> {
   if (motorTest.state.running && motorTest.state.motor === motor) return void motorTest.stop("requested");
   try {
     await motorTest.start(motor, { port: wizard.connectedPath, acks: acks.value });
+    started.value = true;
   } catch {
     /* shown via motorTest.state.error */
   }
@@ -110,12 +120,13 @@ onBeforeUnmount(() => void motorTest.stop("unmount"));
     <template v-else>
       <div class="callout callout--danger">
         <p><strong>{{ t("esc.motorTest.warning") }}</strong></p>
+        <p data-test="motor-safety">{{ t("esc.motorTest.keepClear") }}</p>
         <label class="choice">
           <input v-model="wizard.ui.propsOffAck" type="checkbox" data-test="ack-props" />
           <span>{{ t("esc.motorTest.ackProps") }}</span>
         </label>
         <label class="choice">
-          <input v-model="wizard.ui.batteryOffAck" type="checkbox" data-test="ack-battery" />
+          <input v-model="wizard.ui.batteryOnAck" type="checkbox" data-test="ack-battery" />
           <span>{{ t("esc.motorTest.ackBattery") }}<small>{{ t("esc.motorTest.ackBatteryHint") }}</small></span>
         </label>
       </div>
@@ -145,18 +156,22 @@ onBeforeUnmount(() => void motorTest.stop("unmount"));
       <p class="hint" aria-live="polite">
         {{ motorTest.state.running ? t("esc.motorTest.running", { n: (motorTest.state.motor ?? 0) + 1 }) : t("esc.motorTest.idle") }}
       </p>
-      <p class="hint">{{ t("esc.motorTest.usbOnlyNote") }}</p>
+      <p v-if="showNoSpinHint" class="callout callout--warn" data-test="no-spin-hint">
+        <strong>{{ t("esc.motorTest.noSpinTitle") }}</strong> {{ t("esc.motorTest.noSpinBody") }}
+      </p>
+      <p class="hint">{{ t("esc.motorTest.stopNote") }}</p>
       <ErrorPanel v-if="motorTest.state.error" :error="motorTest.state.error" />
 
+      <p class="hint">{{ t("esc.motorTest.checkIntro") }}</p>
       <label class="choice"><input v-model="wizard.ui.motorOrderOk" type="checkbox" /> {{ t("esc.motorTest.orderOk") }}</label>
       <label class="choice"><input v-model="wizard.ui.motorDirectionOk" type="checkbox" /> {{ t("esc.motorTest.directionOk") }}</label>
     </template>
 
     <fieldset class="disabled-stub" aria-disabled="true">
-      <legend>{{ t("esc.batteryChecks.title") }} <span class="badge">{{ t("common.phase2") }}</span></legend>
-      <p class="callout callout--warn">{{ t("esc.batteryChecks.warning") }}</p>
-      <label class="choice"><input type="checkbox" disabled /> {{ t("esc.batteryChecks.bidir") }}</label>
-      <label class="choice"><input type="checkbox" disabled /> {{ t("esc.batteryChecks.esc") }}</label>
+      <legend>{{ t("esc.advancedChecks.title") }} <span class="badge">{{ t("common.phase2") }}</span></legend>
+      <p class="hint">{{ t("esc.advancedChecks.note") }}</p>
+      <label class="choice"><input type="checkbox" disabled /> {{ t("esc.advancedChecks.bidir") }}</label>
+      <label class="choice"><input type="checkbox" disabled /> {{ t("esc.advancedChecks.esc") }}</label>
     </fieldset>
   </div>
 </template>

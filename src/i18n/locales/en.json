@@ -94,7 +94,7 @@
     "time": "This takes about 10 minutes."
   },
   "connect": {
-    "step1": "Plug in the flight controller. Do not connect the battery.",
+    "step1": "Plug in the flight controller with a USB cable. The battery is needed later, for the motor test.",
     "step2": "Choose it in the list, or let the wizard find it.",
     "choosePort": "Port",
     "auto": "Find it for me",
@@ -301,10 +301,11 @@
     },
     "motorTest": {
       "title": "Motor test",
-      "warning": "Motors can spin. Confirm both before testing:",
+      "warning": "Motors will spin. Confirm both before testing:",
+      "keepClear": "Keep hands, hair and loose objects clear of the motors, and hold or secure the quad while they spin.",
       "ackProps": "All propellers are removed.",
-      "ackBattery": "The battery is disconnected. The board is on USB power only.",
-      "ackBatteryHint": "Many ESCs cannot spin motors on USB power. That is expected and safe.",
+      "ackBattery": "The battery is connected.",
+      "ackBatteryHint": "The ESCs need battery power to spin the motors. Hold or secure the quad and keep clear of the motors.",
       "unavailable": "The motor test is not available in this version yet. You can skip it and check the motors later in Betaflight Configurator, with the propellers removed.",
       "diagram": "Motor layout, seen from above, front at the top",
       "front": "Front",
@@ -314,15 +315,18 @@
       "stop": "Stop all motors",
       "idle": "Motors are stopped.",
       "running": "Motor {n} is spinning. Select it again or Stop to stop it.",
-      "usbOnlyNote": "Motors stop when you leave this step or switch windows, when you close the window or quit the app, and on their own within half a second if the app stops responding.",
+      "stopNote": "Motors stop when you leave this step or switch windows, when you close the window or quit the app, and on their own within half a second if the app stops responding.",
+      "noSpinTitle": "Motors not spinning?",
+      "noSpinBody": "Check that the battery is connected and the ESCs are powered (most ESCs beep when they get power), and that the ESCs are plugged into the flight controller. Then select the motor again.",
+      "checkIntro": "Recommended: spin each motor and tick what you see. It catches swapped motor wires before the first flight.",
       "orderOk": "The right motor spins for each button.",
       "directionOk": "Every motor spins in the direction shown."
     },
-    "batteryChecks": {
-      "title": "Checks that need the battery",
-      "warning": "These checks need the battery connected, so they are turned off in this version. Do them later with the propellers removed.",
+    "advancedChecks": {
+      "title": "Advanced ESC checks",
+      "note": "These checks are not in this version yet. You can do them later in Betaflight Configurator, with the propellers removed.",
       "bidir": "Bidirectional DShot RPM check",
-      "esc": "ESC check and motor direction under battery power"
+      "esc": "ESC firmware and settings check"
     }
   },
   "switches": {
@@ -880,7 +884,7 @@
     "MOTOR_TEST_REFUSED": {
       "title": "The motor test was not started",
       "body": "Safety checks stopped the motor test. The reason is shown below.",
-      "step1": "Confirm that the propellers are removed and the battery is disconnected."
+      "step1": "Confirm that the propellers are removed and the battery is connected, then try again."
     },
     "BOARD_ARMED": {
       "title": "The board is armed",

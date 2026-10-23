@@ -7,7 +7,7 @@ import { uiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
 import { bindMotorStopTriggers, defaultMotorDeps, MOTOR_KEEPALIVE_MS, MotorTestController, type MotorTestDeps } from "../src/wizard/motorTest";
 
-const ACKS = { propsRemoved: true, batteryDisconnected: true };
+const ACKS = { propsRemoved: true, batteryConnected: true };
 const flush = async () => {
   for (let i = 0; i < 5; i++) await Promise.resolve();
 };
@@ -39,8 +39,8 @@ describe("motor test safety gate", () => {
   it("refuses without BOTH acknowledgements and never calls the backend", async () => {
     const d = fakeDeps();
     const c = new MotorTestController(d);
-    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: true, batteryDisconnected: false } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
-    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: false, batteryDisconnected: true } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
+    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: true, batteryConnected: false } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
+    await expect(c.start(0, { port: "COM5", acks: { propsRemoved: false, batteryConnected: true } })).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" });
     await expect(c.start(0, { port: null, acks: ACKS })).rejects.toMatchObject({ code: "DISCONNECTED" });
     expect(d.start).not.toHaveBeenCalled();
     await c.start(1, { port: "COM5", acks: ACKS });

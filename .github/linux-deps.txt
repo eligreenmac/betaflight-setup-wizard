@@ -1,8 +1,11 @@
 # Ubuntu packages for the Linux CI job (Tauri 2 + udev/libusb). One per line.
-# Read by .github/scripts/apt-install.sh; also the apt cache key.
+# Read by .github/scripts/apt-install.sh; part of the apt cache key.
+# `a | b`: install the first of a, b that the runner's Ubuntu release has. All six
+# names below exist on both 24.04 (noble) and 26.04 (resolute) (checked against the
+# archive indexes, Oct 2026); the ayatana line keeps the legacy name as a fallback.
 libwebkit2gtk-4.1-dev
 libgtk-3-dev
 librsvg2-dev
-libayatana-appindicator3-dev
+libayatana-appindicator3-dev | libappindicator3-dev
 libudev-dev
 libusb-1.0-0-dev
