@@ -172,6 +172,9 @@ export const guards: Record<string, StepGuard> = {
       const issues: Issue[] = [];
       const allowed = r.kind === "SPI" ? SPI_RX_PROTOCOLS : SERIAL_RX_PROTOCOLS;
       if (!r.protocol || !allowed.includes(r.protocol)) issues.push({ key: "validation.rxProtocolRequired" });
+      // The board's build lacks this receiver (known only when its build options are; unknown never blocks).
+      const m = s.ui.rxMissing;
+      if (m && m.kind === r.kind && m.protocol === r.protocol && m.missing.length) issues.push({ key: "validation.rxOptionMissing" });
       return [...issues, ...portIssues(s, "receiver")];
     },
   },

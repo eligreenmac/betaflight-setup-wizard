@@ -11,7 +11,7 @@
  * is kept on the UiError. There is no backend BUSY code; a busy port is PORT_BUSY.
  */
 
-import type { DriverMissingDetails, PendingUnsavedChangesDetails, PortBusyDetails } from "../types/model";
+import type { BuildOptionsUnavailableDetails, DriverMissingDetails, PendingUnsavedChangesDetails, PortBusyDetails, RequiredOptionUnsupportedDetails } from "../types/model";
 
 export const ERROR_CATEGORIES = ["Connection", "Device", "Protocol", "Flash", "Network", "Io", "Safety", "Operation"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -97,6 +97,12 @@ export const PENDING_ERROR_CODES = {
   BOARD_MOVING: "Device",
   ACC_CALIBRATION_FAILED: "Device",
   PENDING_UNSAVED_CHANGES: "Safety",
+  // Firmware build options (Device #74/#75), from flasher_required_options before anything is
+  // touched: BUILD_OPTIONS_UNAVAILABLE {release} = the Build API option list could not be
+  // loaded (retry); REQUIRED_OPTION_UNSUPPORTED {release, options} = the release can't be
+  // built with what the wizard's answers need (pick another release).
+  BUILD_OPTIONS_UNAVAILABLE: "Network",
+  REQUIRED_OPTION_UNSUPPORTED: "Flash",
 } as const satisfies Record<string, ErrorCategory>;
 export type PendingErrorCode = keyof typeof PENDING_ERROR_CODES;
 
@@ -123,7 +129,7 @@ export interface UiError {
   category: ErrorCategory;
   message: string;
   /** Structured extras from AppError (#38): PORT_BUSY {port, heldBy}, DRIVER_MISSING {vid, pid, detail}. */
-  details?: PortBusyDetails | DriverMissingDetails | PendingUnsavedChangesDetails;
+  details?: PortBusyDetails | DriverMissingDetails | PendingUnsavedChangesDetails | BuildOptionsUnavailableDetails | RequiredOptionUnsupportedDetails;
 }
 
 export const isPortBusyDetails = (d: unknown): d is PortBusyDetails =>

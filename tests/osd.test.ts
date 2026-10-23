@@ -200,7 +200,7 @@ describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
     expect(w!.find('[data-test="osd-hd-unknown"]').exists()).toBe(false);
   });
 
-  it("unsupported + detected HD VTX: a clear warning and a choice (flash / keep current / analog)", async () => {
+  it("unsupported + detected HD VTX: a clear warning and a choice (update firmware / keep current / analog)", async () => {
     await open(DJI, "osd-hd-unsupported");
     expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBeNull();
     const box = w!.get('[data-test="osd-hd-blocked"]');
@@ -219,10 +219,14 @@ describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
     await w!.get('[data-osd-system="AUTO"]').setValue(true);
     await settle();
     expect(effectiveSystem(wizard.model, wizard.osd, wizard.fc)).toBe("AUTO");
-    // Or flash firmware with the HD OSD.
-    await w!.get('[data-test="osd-hd-flash"]').trigger("click");
+    // Or update the firmware to add the HD OSD (confirmed first; see firmwareOptions.test.ts).
+    await w!.get('[data-test="reflash-offer"]').trigger("click");
+    await settle();
+    expect(w!.get('[data-test="reflash-confirm"]').text()).toContain(en.reflash.confirmBody);
+    await w!.get('[data-test="reflash-go"]').trigger("click");
     await settle();
     expect(nav.currentId).toBe("firmware");
+    expect(wizard.ui.reflash).toEqual({ returnTo: "osd", requirements: { osd: { videoSystem: "HD" } } });
   });
 
   it("firmware without HD OSD: HD disabled with an explanation; a detected HD VTX is asked instead", async () => {

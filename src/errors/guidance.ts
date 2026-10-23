@@ -20,6 +20,7 @@ export type GuidanceActionId =
   | "editPorts"
   | "editComponents"
   | "backToOsd"
+  | "pickRelease"
   | "openLink";
 
 export interface GuidanceAction {
@@ -110,6 +111,9 @@ const TABLE: Record<ErrorCode, Entry> = {
   CONNECT_REBOOT_NOT_CONFIRMED: { steps: 2, actions: [retry] },
   // config_plan: HD OSD on firmware without MSP DisplayPort (Review step).
   OSD_HD_UNSUPPORTED: { steps: 2, actions: [{ id: "backToOsd", labelKey: "actions.backToOsd", primary: true }] },
+  // Firmware step, build options (Device #74/#75). Body uses {release} / {options} (ErrorPanel).
+  BUILD_OPTIONS_UNAVAILABLE: { steps: 2, actions: [retry] },
+  REQUIRED_OPTION_UNSUPPORTED: { steps: 1, actions: [{ id: "pickRelease", labelKey: "actions.pickRelease", primary: true }] },
 };
 
 /** Number of `stepN` keys per code (kept in sync with the locales by tests/i18n.test.ts). */

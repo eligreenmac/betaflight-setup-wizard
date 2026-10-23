@@ -5,14 +5,21 @@
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { openExternal } from "../api/links";
+import { optionList } from "../wizard/optionNames";
 import { guidanceFor, toUiError, type GuidanceAction, type GuidanceActionId } from "../errors/guidance";
 
 const props = defineProps<{ error: unknown; busy?: boolean; hide?: GuidanceActionId[] }>();
 const emit = defineEmits<{ action: [id: GuidanceActionId] }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
 
 const err = computed(() => toUiError(props.error));
 const g = computed(() => guidanceFor(err.value));
+/** Copy parameters from `details` (BUILD_OPTIONS_UNAVAILABLE {release}, REQUIRED_OPTION_UNSUPPORTED {release, options}). */
+const params = computed(() => {
+  const d = err.value.details && typeof err.value.details === "object" ? (err.value.details as unknown as Record<string, unknown>) : {};
+  const options = Array.isArray(d.options) ? d.options.map(String) : [];
+  return { release: typeof d.release === "string" ? d.release : "", options: optionList(options, t, te) };
+});
 const actions = computed(() => g.value.actions.filter((a) => !props.hide?.includes(a.id)));
 const linkError = ref<string | null>(null);
 
@@ -29,17 +36,18 @@ async function run(a: GuidanceAction) {
 
 <template>
   <section :class="['callout', g.severity === 'warning' ? 'callout--warn' : 'callout--danger']" role="alert" :data-error-code="g.code">
-    <h3>{{ t(g.titleKey) }}</h3>
-    <p>{{ t(g.bodyKey) }}</p>
+    <h3>{{ t(g.titleKey, params) }}</h3>
+    <p>{{ t(g.bodyKey, params) }}</p>
     <p v-if="g.showMessage && err.message" class="mono" dir="ltr">{{ err.message }}</p>
     <ol>
-      <li v-for="k in g.stepKeys" :key="k">{{ t(k) }}</li>
+      <li v-for="k in g.stepKeys" :key="k">{{ t(k, params) }}</li>
     </ol>
     <div class="btn-row">
       <button
         v-for="a in actions"
         :key="a.id + a.labelKey"
         type="button"
+        :data-action="a.id"
         :class="['btn', a.primary ? 'btn--primary' : '']"
         :disabled="busy"
         @click="run(a)"

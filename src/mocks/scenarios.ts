@@ -32,6 +32,18 @@
  * `osd-hd-plan-error`: null, but the firmware has no MSP DisplayPort, so config_plan refuses
  * an HD OSD with #67's CONFIG error. `osd-sd-only`: null, build options say "OSD (SD)".
  *
+ * Firmware build options (Device #74/#75, flasher_required_options): the board's build lists
+ * MOCK_RX_<protocol> / MOCK_OSD_<system> names (MOCK_OSD_HD only when HD is supported);
+ * a flash adds the request's requiredOptions (`device.addedOptions`; MOCK_OSD_HD turns HD
+ * on). `osd-hd-reflash`: like osd-hd-unsupported (hdOsdSupported false, config_plan refuses
+ * HD) until a mid-wizard update adds the HD OSD. `reflash-after-apply`: the same board, to
+ * show the update being refused after an apply. `rx-option-missing`: the build has no CRSF
+ * receiver (MOCK_RX_CRSF). `fw-dropped-options`: the board's build has USE_WING and
+ * USE_LED_STRIP_64, which every release fetched here leaves out (droppedOptions).
+ * `fw-options-unavailable`: the first flasher_required_options for a release fails with
+ * BUILD_OPTIONS_UNAVAILABLE; Try again works. `fw-option-unsupported`: only 2025.12.0-RC1
+ * can be built with the requirements (REQUIRED_OPTION_UNSUPPORTED otherwise).
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
@@ -72,6 +84,12 @@ export const SCENARIOS = [
   "osd-hd-unsupported",
   "osd-hd-unknown",
   "osd-hd-plan-error",
+  "osd-hd-reflash",
+  "reflash-after-apply",
+  "rx-option-missing",
+  "fw-dropped-options",
+  "fw-options-unavailable",
+  "fw-option-unsupported",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -136,10 +154,18 @@ interface MockDevice {
   /** Simulated frame tilt; null = automatic demo cycle. */
   tilt: Euler | null;
   attitudeTimer: ReturnType<typeof setInterval> | null;
+  /** Build options the last flash added (its request's requiredOptions). */
+  addedOptions: string[];
+  /** Build options the last flash left out (droppedOptions). */
+  droppedOptions: string[];
+  /** The next N flasher_required_options calls for a release fail with BUILD_OPTIONS_UNAVAILABLE. */
+  optionsFailuresLeft: number;
+  /** flasher_required_options calls, with their release (tests). */
+  requiredOptionsLog: (string | null)[];
 }
 
 /** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
-const err = (code: ErrorCode, message: string): UiError => uiError(code, message);
+const err = (code: ErrorCode, message: string, details?: UiError["details"]): UiError => (details ? { ...uiError(code, message), details } : uiError(code, message));
 const portBusy = (port: string, heldBy: "APP" | "EXTERNAL", message: string): UiError => ({ ...uiError("PORT_BUSY", message), details: { port, heldBy } });
 const UID = "3a0021000c51333038363834";
 
@@ -172,6 +198,10 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     dfuOtherDriver: scenario === "driver-replace" ? "STTub30" : null,
     driverInstalls: 0,
     flashFailuresLeft: scenario === "flash-fail" ? 1 : 0,
+    addedOptions: [],
+    droppedOptions: [],
+    optionsFailuresLeft: scenario === "fw-options-unavailable" ? 1 : 0,
+    requiredOptionsLog: [],
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     readProtected: scenario === "read-protected",
     unprotectLog: [],
@@ -296,14 +326,22 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         : [],
     flasher_fetch_firmware: async ({ request }) => {
       await stages(["DOWNLOADING"]);
-      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false, droppedOptions: [] };
+      const droppedOptions = scenario === "fw-dropped-options" ? (request.options ?? []).filter((o) => DROPPED_BY_RELEASE.includes(o)) : [];
+      return { request, path: `/tmp/bfsw/${request.target}_${request.release}.hex`, format: "HEX", sha256: "0".repeat(64), buildKey: "mock", fromCache: false, droppedOptions };
     },
     // Opaque demo names: the real per-release mapping lives in the flasher backend.
-    flasher_required_options: ({ requirements }) => {
+    flasher_required_options: ({ requirements, release }) => {
       legacy("flasher_required_options");
+      device.requiredOptionsLog.push(release ?? null);
       const out: string[] = [];
       if (requirements.receiver?.protocol) out.push(`MOCK_RX_${requirements.receiver.protocol}`);
       if (requirements.osd?.videoSystem) out.push(`MOCK_OSD_${requirements.osd.videoSystem}`);
+      if (release != null && device.optionsFailuresLeft > 0) {
+        device.optionsFailuresLeft--;
+        throw err("BUILD_OPTIONS_UNAVAILABLE", `could not load the build options of ${release}`, { release });
+      }
+      if (release != null && scenario === "fw-option-unsupported" && out.length && release !== "2025.12.0-RC1")
+        throw err("REQUIRED_OPTION_UNSUPPORTED", `${release} can't be built with ${out.join(", ")}`, { release, options: out });
       return out;
     },
     flasher_list_cache: () => [],
@@ -326,6 +364,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       await stages(["ERASING", "WRITING", "VERIFYING", "REBOOTING"]);
       device.inDfu = false;
       device.firmwareVersion = image.request.release;
+      device.addedOptions = [...(image.request.requiredOptions ?? [])];
+      device.droppedOptions = [...(image.droppedOptions ?? [])];
       events.emit("flasher://progress", { stage: "DONE", fraction: 1, message: null });
     },
     config_read_ports: () => device.ports.map((p) => ({ ...p })),
@@ -362,7 +402,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       // config::generate (#67): an HD OSD on firmware without MSP DisplayPort.
       const osd = (model as { osd?: { videoSystem?: string | null } | null }).osd;
       const hdOsd = !!osd && (osd.videoSystem === "HD" || (!osd.videoSystem && model.vtx.kind === "DIGITAL"));
-      if (hdOsd && NO_DISPLAYPORT.includes(scenario))
+      if (hdOsd && NO_DISPLAYPORT.includes(scenario) && !device.addedOptions.includes("MOCK_OSD_HD"))
         throw { code: "CONFIG", message: "configuration error: HD OSD needs MSP DisplayPort, which this firmware build does not have" };
       return generateCli(model, device.ports);
     },
@@ -414,6 +454,33 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     }
   }
 
+  /** Device's FcInfo.hdOsdSupported (boolean | null), read via wizard/osd.ts hdOsdSupport.
+   * null for legacy-backend / osd-sd-only too: hdOsdSupport falls back to the build options. */
+  function hdOsd(): boolean | null {
+    if (device.addedOptions.includes("MOCK_OSD_HD")) return true;
+    if (["osd-hd-unsupported", "osd-hd-reflash", "reflash-after-apply"].includes(scenario)) return false;
+    return ["osd-hd-unknown", "osd-hd-plan-error", "legacy-backend", "osd-sd-only"].includes(scenario) ? null : true;
+  }
+
+  /** The board's build options: opaque MOCK_* names matching flasher_required_options. */
+  function buildOptions(elrs: boolean): string[] {
+    const rx = ["CRSF", "GHST", "SBUS", "FPORT", "IBUS", "SRXL2", "SUMD", "SPEK2048", ...(elrs ? ["EXPRESSLRS"] : [])].filter((p) => !(scenario === "rx-option-missing" && p === "CRSF"));
+    const osd = ["AUTO", "PAL", "NTSC", ...(hdOsd() === true ? ["HD"] : [])];
+    const base = [
+      "CRSF",
+      "SBUS",
+      "GPS",
+      "VTX",
+      "DSHOT_BITBANG",
+      ...(elrs ? ["USE_RX_EXPRESSLRS"] : []),
+      ...(scenario === "osd-sd-only" ? ["USE_OSD_SD"] : []),
+      ...(scenario === "fw-dropped-options" ? DROPPED_BY_RELEASE : []),
+      ...rx.map((p) => `MOCK_RX_${p}`),
+      ...osd.map((v) => `MOCK_OSD_${v}`),
+    ].filter((o) => !device.droppedOptions.includes(o));
+    return [...new Set([...base, ...device.addedOptions])];
+  }
+
   function fcInfo(): FcInfo {
     const elrs = scenario === "onboard-elrs";
     return {
@@ -424,15 +491,10 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       manufacturerId: "SPBE",
       mcu: "STM32F405",
       uid: UID,
-      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(elrs ? ["USE_RX_EXPRESSLRS"] : []), ...(scenario === "osd-sd-only" ? ["USE_OSD_SD"] : [])],
+      buildOptions: buildOptions(elrs),
       // Device's FcInfo.hdOsdSupported (boolean | null), read via wizard/osd.ts hdOsdSupport.
       // null for legacy-backend / osd-sd-only too: hdOsdSupport falls back to the build options.
-      hdOsdSupported:
-        scenario === "osd-hd-unsupported"
-          ? false
-          : ["osd-hd-unknown", "osd-hd-plan-error", "legacy-backend", "osd-sd-only"].includes(scenario)
-            ? null
-            : true,
+      hdOsdSupported: hdOsd(),
       serialPorts: device.ports.map((p) => ({ ...p })),
       // present stays null until device_probe_board ran (ARCHITECTURE §4.1).
       rxSpi: device.probed
@@ -605,7 +667,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
 }
 
 /** Scenarios whose firmware has no MSP DisplayPort: config_plan refuses an HD OSD (osd-hd-plan-error: the board reports "unknown"). */
-const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error"];
+const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error", "osd-hd-reflash", "reflash-after-apply"];
+/** fw-dropped-options: on the board's build, left out by every release fetched here. */
+const DROPPED_BY_RELEASE: string[] = ["USE_WING", "USE_LED_STRIP_64"];
 
 const TO_SERIAL_FUNCTION: Partial<Record<FunctionName, SerialFunction>> = {
   MSP: "MSP",

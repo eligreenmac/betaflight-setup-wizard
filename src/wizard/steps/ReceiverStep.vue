@@ -1,16 +1,43 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
 // U4: receiver protocol, UART (port picker inside the step), telemetry question.
-import { computed } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import PortPicker from "../../components/PortPicker.vue";
+import ReflashOffer from "../../components/ReflashOffer.vue";
+import { missingOptions } from "../reflash";
+import { optionList } from "../optionNames";
 import type { RxProtocol } from "../../types/model";
 import { asksTelemetry, SERIAL_RX_PROTOCOLS } from "../receiver";
 import { markDirty, setReceiverProtocol, wizard } from "../state";
 
 defineProps<{ stepId: string }>();
-const { t } = useI18n();
+const { t, te } = useI18n();
 const rx = computed(() => wizard.model.receiver);
+
+/**
+ * Is this receiver in the board's build? Asks the backend which options it needs
+ * (flasher_required_options; the mapping is backend-only) and compares with the board's
+ * build options. Unknown (empty list, no backend answer) never blocks.
+ */
+async function checkOptions(): Promise<void> {
+  const { kind, protocol } = wizard.model.receiver;
+  if (kind === "NONE" || !protocol) {
+    wizard.ui.rxMissing = null;
+    return;
+  }
+  const missing = await missingOptions(wizard.fc, { receiver: { kind, protocol } });
+  // Answer for an older choice: drop it.
+  if (wizard.model.receiver.kind !== kind || wizard.model.receiver.protocol !== protocol) return;
+  wizard.ui.rxMissing = missing ? { kind, protocol, missing } : null;
+}
+const missing = computed(() => {
+  const m = wizard.ui.rxMissing;
+  return m && m.kind === rx.value.kind && m.protocol === rx.value.protocol && m.missing.length ? m.missing : null;
+});
+const rxReq = computed(() => ({ receiver: { kind: rx.value.kind, protocol: rx.value.protocol } }));
+watch(() => [rx.value.kind, rx.value.protocol, wizard.fc], () => void checkOptions());
+onMounted(checkOptions);
 
 function setTelemetry(v: boolean): void {
   wizard.model.receiver.telemetry = v;
@@ -44,6 +71,12 @@ function setFlag(k: "inverted" | "halfDuplex", v: boolean): void {
       </fieldset>
       <PortPicker role="receiver" />
     </template>
+
+    <div v-if="missing" class="callout callout--warn" role="alert" data-test="rx-option-missing">
+      <p>{{ t("receiver.optionMissing", { protocol: rx.protocol ? t(`receiver.protocols.${rx.protocol}`) : "", options: optionList(missing, t, te) }) }}</p>
+      <p>{{ t("receiver.optionMissingChoices") }}</p>
+      <ReflashOffer return-to="receiver" :requirements="rxReq" />
+    </div>
 
     <fieldset v-if="asksTelemetry(rx.protocol)">
       <legend>{{ t("receiver.telemetryQuestion") }}</legend>

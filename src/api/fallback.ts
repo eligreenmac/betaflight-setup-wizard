@@ -50,7 +50,8 @@ export const WRITE_DEPENDENCIES: Partial<Record<string, string[]>> = {
   config_rollback: ["config_backup"],
   config_restore: ["config_list_backups"],
   device_cli_exec: [],
-  flasher_flash: ["flasher_fetch_firmware", "flasher_list_dfu_devices"],
+  // flasher_required_options: never flash a real board with options a simulated backend chose.
+  flasher_flash: ["flasher_fetch_firmware", "flasher_list_dfu_devices", "flasher_required_options"],
   flasher_remove_read_protection: ["flasher_list_dfu_devices"],
   // TODO(shared): pending device command (api/pending.ts). Calibration is stored on the board.
   device_acc_calibrate: [],
