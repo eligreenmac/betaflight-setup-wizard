@@ -15,7 +15,11 @@
  */
 import type { DroneModel, FcSerialPort } from "../types/model";
 
-/** Betaflight serialPortFunction_e bits (same for 4.4 / 4.5 / 2025.12, see ARCHITECTURE §5). */
+/**
+ * Betaflight serialPortFunction_e bits (same for 4.4 / 4.5 / 2025.12 / 2026.6, see ARCHITECTURE §5).
+ * 2026.6 adds LIDAR_NL (1 << 19) and OSD_CUSTOM_TEXT (1 << 20); like every bit not listed
+ * here they are unmanaged, so a port using them counts as "in use" and is kept.
+ */
 export const FN = {
   MSP: 1 << 0,
   GPS: 1 << 1,

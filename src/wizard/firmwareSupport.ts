@@ -2,8 +2,8 @@
 /**
  * Which Betaflight lines can the wizard set up? Asked of the config engine, never
  * hard-coded in the UI: `config_firmware_catalog(version)` is pure (no FC I/O) and fails
- * with UNSUPPORTED_FIRMWARE for a line the engine has no dialect for (e.g. 2026.6.x
- * while the backend supports 4.4 / 4.5 / 2025.12). When Config adds a line, the UI
+ * with UNSUPPORTED_FIRMWARE for a line the engine has no dialect for (e.g. 2026.12.x
+ * while the backend supports 4.4 / 4.5 / 2025.12 / 2026.6). When Config adds a line, the UI
  * accepts it with no change here.
  *
  * Only a definite UNSUPPORTED_FIRMWARE marks a line unsupported; any other failure

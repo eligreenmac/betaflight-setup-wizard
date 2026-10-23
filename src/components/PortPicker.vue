@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // SPDX-License-Identifier: GPL-3.0-or-later
 // UART picker for one wizard role. Lists ONLY the port names the board reports
-// (never derived from identifiers, which changed in 2025.12: UART1 = 51).
+// (never derived from identifiers, which changed in 2025.12: UART1 = 51; 2026.6 adds UART11..15 = 61..65).
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
 import { excludedPortsFor, foreignBits, freePortsFor, functionNames, getRolePort, managedBits, setRolePort, type PortRole } from "../wizard/ports";

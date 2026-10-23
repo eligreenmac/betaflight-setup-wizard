@@ -3,7 +3,7 @@
  * Beeper conditions (Betaflight io/beeper.c `beeperTable`). The model stores the #65
  * names (BeeperName, the 4.4/4.5 CLI spelling) in `beepers.disabled`, as the FULL state:
  * listed = `beeper -X`, every other condition the firmware has = `beeper X`. The config
- * engine translates per firmware (CRASH_FLIP is written as CRASHFLIP on 2025.12).
+ * engine translates per firmware (CRASH_FLIP is written as CRASHFLIP on 2025.12 and 2026.6).
  *
  * Which conditions the firmware has comes from config_firmware_catalog().beepers (see
  * api/catalog.ts). Without a catalog (not loaded / empty) the full #65 list is shown.
