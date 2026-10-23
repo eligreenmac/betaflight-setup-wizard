@@ -4,7 +4,7 @@
 // and the safety-gated motor test (src/wizard/motorTest.ts).
 import { computed, onBeforeUnmount, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { device } from "../../api/device";
+import { api } from "../../api/commands";
 import ErrorPanel from "../../components/ErrorPanel.vue";
 import PortPicker from "../../components/PortPicker.vue";
 import { isNotImplemented } from "../../errors/codes";
@@ -59,7 +59,7 @@ onMounted(async () => {
   if (wizard.ui.motorTestAvailable !== null) return;
   // Probe: device_motor_test_stop is always safe to send (a no-op when idle).
   try {
-    await device.motorTestStop();
+    await api.device.motorTestStop();
     wizard.ui.motorTestAvailable = true;
   } catch (e) {
     wizard.ui.motorTestAvailable = !isNotImplemented(e);

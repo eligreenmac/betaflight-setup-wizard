@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { afterEach, describe, expect, it } from "vitest";
 import { api, EVENTS } from "../src/api/commands";
-import { DEVICE_EVENTS, device, type DeviceFcInfo } from "../src/api/device";
 import { onEvent } from "../src/api/events";
 import { toUiError } from "../src/errors/codes";
 import { installMock, uninstallMock } from "../src/mocks/install";
@@ -19,35 +18,35 @@ describe("device contract (#38) against the scenario mock", () => {
 
   it("motor test and RC stream work against the mock; legacy backend reports NOT_IMPLEMENTED", async () => {
     const mock = installMock({ latencyMs: 0 });
-    await expect(device.motorTestStart(2, 1100, false)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED", category: "Safety" });
-    await expect(device.motorTestStart(2, 1200, true)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" }); // over the 1150 cap: refused, not clamped
-    const r = await device.motorTestStart(2, 1100, true, { maxThrottle: 1150, watchdogMs: 50 });
+    await expect(api.device.motorTestStart(2, 1100, false)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED", category: "Safety" });
+    await expect(api.device.motorTestStart(2, 1200, true)).rejects.toMatchObject({ code: "MOTOR_TEST_REFUSED" }); // over the 1150 cap: refused, not clamped
+    const r = await api.device.motorTestStart(2, 1100, true, { maxThrottle: 1150, watchdogMs: 50 });
     expect(r.limits).toEqual({ maxThrottle: 1150, watchdogMs: 100 }); // watchdog clamped 100..2000
     expect(r.outputConfig).toMatchObject({ motorCount: 4, stopValue: 1000, feature3d: false });
     expect(mock.device.motorsSpinning.has(2)).toBe(true);
-    await device.motorTestKeepalive();
+    await api.device.motorTestKeepalive();
     // Motor test and RC stream share the manager's connection.
-    await expect(device.rcStreamStart(15)).rejects.toMatchObject({ code: "PORT_BUSY", details: { heldBy: "APP" } });
-    await device.motorTestStop();
+    await expect(api.device.rcStreamStart(15)).rejects.toMatchObject({ code: "PORT_BUSY", details: { heldBy: "APP" } });
+    await api.device.motorTestStop();
     expect(mock.device.motorsSpinning.size).toBe(0);
-    await expect(device.motorTestKeepalive()).rejects.toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
+    await expect(api.device.motorTestKeepalive()).rejects.toMatchObject({ code: "MOTOR_TEST_NOT_ACTIVE" });
     const stopped: string[] = [];
-    await onEvent(DEVICE_EVENTS.rcStopped, (p) => stopped.push(p.reason));
-    await device.rcStreamStart(null);
-    await device.rcStreamStop();
+    await onEvent(EVENTS.rcStopped, (p) => stopped.push(p.reason));
+    await api.device.rcStreamStart(null);
+    await api.device.rcStreamStop();
     expect(stopped).toEqual(["REQUESTED"]);
     uninstallMock();
     installMock({ latencyMs: 0, scenario: "legacy-backend" });
-    await expect(device.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
-    await expect(device.rcStreamStart(15)).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+    await expect(api.device.motorTestStop()).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
+    await expect(api.device.rcStreamStart(15)).rejects.toMatchObject({ code: "NOT_IMPLEMENTED" });
   });
 
   it("device_probe_board fills rxSpi.present; the wizard probes only on 4.5+ and keeps identify on failure", async () => {
     const { probeOnboardReceiver, hasOnboardElrs } = await import("../src/wizard/receiver");
     installMock({ latencyMs: 0, scenario: "onboard-elrs" });
     const id = await api.device.identify();
-    expect((id as DeviceFcInfo).rxSpi?.present).toBeNull();
-    expect((id as DeviceFcInfo).serialPorts?.map((p) => p.name)).toContain("UART2");
+    expect(id.rxSpi.present).toBeNull();
+    expect(id.serialPorts.map((p) => p.name)).toContain("UART2");
     const probed = await probeOnboardReceiver(id);
     expect(probed.rxSpi).toMatchObject({ present: true, resources: expect.arrayContaining(["RX_SPI_CS"]) });
     expect(hasOnboardElrs(probed)).toBe(true);

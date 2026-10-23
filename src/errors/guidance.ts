@@ -93,6 +93,7 @@ const TABLE: Record<ErrorCode, Entry> = {
   INTERNAL: { steps: 1, actions: [reportIssue] },
   NOT_IMPLEMENTED: { steps: 1, actions: [reportIssue], warning: true },
   CONFIG_UNSUPPORTED: { steps: 2, actions: [{ id: "editComponents", labelKey: "actions.editComponents", primary: true }, reportIssue], showMessage: true },
+  MIXED_BACKEND: { steps: 2, actions: [reportIssue] },
   UNKNOWN: { steps: 1, actions: [retry, reportIssue] },
 };
 

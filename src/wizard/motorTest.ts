@@ -16,7 +16,8 @@
  * The connection manager owns the port, so no port is passed (ARCHITECTURE §4.1).
  */
 import { reactive, watch } from "vue";
-import { DEVICE_EVENTS, device, type MotorTestLimits, type MotorTestStopReason } from "../api/device";
+import { api, EVENTS } from "../api/commands";
+import type { MotorTestLimits, MotorTestStopReason } from "../types/model";
 import { onEvent, type Unlisten } from "../api/events";
 import { toUiError, uiError, type ErrorCode, type UiError } from "../errors/codes";
 
@@ -66,9 +67,9 @@ export interface MotorTestDeps {
 }
 
 export const defaultMotorDeps: MotorTestDeps = {
-  start: (a) => device.motorTestStart(a.motorIndex, a.throttle, a.propsOffConfirmed, a.limits),
-  keepalive: () => device.motorTestKeepalive(),
-  stop: () => device.motorTestStop(),
+  start: (a) => api.device.motorTestStart(a.motorIndex, a.throttle, a.propsOffConfirmed, a.limits),
+  keepalive: () => api.device.motorTestKeepalive(),
+  stop: () => api.device.motorTestStop(),
   setInterval: (fn, ms) => globalThis.setInterval(fn, ms),
   clearInterval: (h) => globalThis.clearInterval(h as ReturnType<typeof setInterval>),
 };
@@ -211,7 +212,7 @@ export function bindMotorStopTriggers(ctl: MotorTestController, src: StopTrigger
   if (src.backendEvents) {
     let off: Unlisten | null = null;
     let disposed = false;
-    void onEvent(DEVICE_EVENTS.motorTestStopped, (p) => void ctl.backendStopped(p.reason, p.error))
+    void onEvent(EVENTS.motorTestStopped, (p) => void ctl.backendStopped(p.reason, p.error))
       .then((u) => (disposed ? u() : (off = u)))
       .catch(() => undefined);
     disposers.push(() => {

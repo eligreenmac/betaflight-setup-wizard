@@ -5,7 +5,6 @@
  * Kept out of the .vue file so it can be tested against the scenario mock.
  */
 import { api } from "../api/commands";
-import { flasherNext } from "../api/device";
 import { onEvent } from "../api/events";
 import { uiError, type ErrorCode, type UiError } from "../errors/codes";
 import type { Backup, DfuDevice, FcInfo, FcSerialPort, FlashProgress } from "../types/model";
@@ -110,7 +109,7 @@ export async function runFirmwareUpdate(
  * so wait for it before flashing again with runFirmwareUpdate (which then skips the reboot).
  */
 export async function removeReadProtection(dfuSerial: string | null, poll: PollOptions = DEFAULT_POLL): Promise<DfuDevice> {
-  await flasherNext.removeReadProtection(dfuSerial, true);
+  await api.flasher.removeReadProtection(dfuSerial, true);
   const dfu = await pollUntil(async () => (await api.flasher.listDfuDevices())[0], poll);
   if (!dfu) throw fail("DFU_NOT_FOUND", "board did not come back in DFU mode after removing read protection");
   return dfu;

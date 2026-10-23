@@ -4,7 +4,6 @@ import { mount, type VueWrapper } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../src/App.vue";
 import type { Backend } from "../src/api/commands";
-import type { DeviceBackend } from "../src/api/device";
 import { createEmitter } from "../src/api/events";
 import { demoState, installFallback, resetDemoState } from "../src/api/fallback";
 import { i18n, setLocale } from "../src/i18n";
@@ -174,8 +173,8 @@ describe("binding screen", () => {
       throw { code: "NOT_IMPLEMENTED", message: `${cmd} is not implemented yet` };
     };
     installFallback(
-      { backend: mock.backend, deviceBackend: mock.deviceBackend, events: mock.events.on },
-      { backend: impl as unknown as Backend, deviceBackend: impl as unknown as DeviceBackend, events: createEmitter().on },
+      { backend: mock.backend, events: mock.events.on },
+      { backend: impl as unknown as Backend, events: createEmitter().on },
     );
     w = mount(App, { global: { plugins: [i18n] }, attachTo: document.body });
     await settle();

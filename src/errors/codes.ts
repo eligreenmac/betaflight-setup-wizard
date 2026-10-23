@@ -11,7 +11,7 @@
  * is kept on the UiError. There is no backend BUSY code; a busy port is PORT_BUSY.
  */
 
-import type { DriverMissingDetails, PortBusyDetails } from "../api/device";
+import type { DriverMissingDetails, PortBusyDetails } from "../types/model";
 
 export const ERROR_CATEGORIES = ["Connection", "Device", "Protocol", "Flash", "Network", "Io", "Safety", "Operation"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
@@ -59,9 +59,11 @@ export const DESIGN_ERROR_CODES = Object.keys(ERROR_CODE_CATEGORY) as DesignErro
  * unknown command maps to); it drives the "not available yet" fallbacks.
  * CONFIG_UNSUPPORTED is the config engine's `CONFIG` error: the board cannot take part
  * of the setup, in the MVP mostly the receiver (an SPI protocol other than ExpressLRS,
- * or no onboard SPI receiver, ARCHITECTURE §5.1). UNKNOWN is the catch-all.
+ * or no onboard SPI receiver, ARCHITECTURE §5.1). MIXED_BACKEND is the demo-fallback
+ * safety stop: a write would combine simulated and real data (api/fallback.ts), so
+ * nothing was sent. UNKNOWN is the catch-all.
  */
-export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "UNKNOWN"] as const;
+export const UI_ERROR_CODES = ["NOT_IMPLEMENTED", "CONFIG_UNSUPPORTED", "MIXED_BACKEND", "UNKNOWN"] as const;
 export type UiOnlyCode = (typeof UI_ERROR_CODES)[number];
 export type ErrorCode = DesignErrorCode | UiOnlyCode;
 export const ALL_ERROR_CODES: ErrorCode[] = [...DESIGN_ERROR_CODES, ...UI_ERROR_CODES];
@@ -97,6 +99,7 @@ export function isErrorCode(code: string): code is ErrorCode {
 }
 
 export function categoryOf(code: ErrorCode): ErrorCategory {
+  if (code === "MIXED_BACKEND") return "Safety";
   return code in ERROR_CODE_CATEGORY ? ERROR_CODE_CATEGORY[code as DesignErrorCode] : "Operation";
 }
 
