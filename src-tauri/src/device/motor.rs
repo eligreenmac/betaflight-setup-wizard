@@ -817,6 +817,25 @@ pub(crate) mod fake {
         pub uid: Arc<Mutex<[u8; 12]>>,
         /// While set, writes on links from `serial()` block (see `MockSerial::wedge`).
         pub wedge: Arc<AtomicBool>,
+        /// A CLI session is active: input is echoed and parsed as CLI lines, MSP is ignored.
+        pub cli: Arc<AtomicBool>,
+        /// Plain `exit` reboots, as in every Betaflight release (4.4 `cliExit`, 4.5+
+        /// `cliExitCmd` without `noreboot`). `false` models an exit that leaves the CLI but
+        /// keeps RAM (what `exit noreboot` does on 4.5+ / 2025.12).
+        pub exit_reboots: bool,
+        /// Unsaved changes live in RAM (any CLI command other than `exit`); a reboot clears it.
+        pub ram_dirty: Arc<AtomicBool>,
+        /// MSP_REBOOT requests received (payloads).
+        pub msp_reboots: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// `exit` does not leave the CLI (a board that never recovers).
+        pub cli_sticky: bool,
+        /// Every byte written to the FC.
+        pub rx_log: Arc<Mutex<Vec<u8>>>,
+        /// CLI lines received while in CLI mode.
+        pub cli_lines: Arc<Mutex<Vec<String>>>,
+        /// On every reboot: unplug this "present" flag for ~30 ms (USB VCP re-enumerating).
+        /// `None` = UART bridge, the port never goes away.
+        pub unplug_on_reboot: Arc<Mutex<Option<Arc<AtomicBool>>>>,
     }
 
     impl Default for FakeFc {
@@ -830,6 +849,14 @@ pub(crate) mod fake {
                 motor_count: 4,
                 uid: Arc::new(Mutex::new([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0])),
                 wedge: Arc::default(),
+                cli: Arc::default(),
+                exit_reboots: true,
+                ram_dirty: Arc::default(),
+                msp_reboots: Arc::default(),
+                cli_sticky: false,
+                rx_log: Arc::default(),
+                cli_lines: Arc::default(),
+                unplug_on_reboot: Arc::default(),
             }
         }
     }
@@ -852,15 +879,70 @@ pub(crate) mod fake {
     }
 
     impl FakeFc {
+        /// FC reset: RAM changes are gone, the CLI is closed, a USB VCP re-enumerates.
+        fn reboot(&self) {
+            self.ram_dirty.store(false, Ordering::SeqCst);
+            self.cli.store(false, Ordering::SeqCst);
+            if let Some(p) = self.unplug_on_reboot.lock().unwrap().clone() {
+                p.store(false, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    p.store(true, Ordering::SeqCst);
+                });
+            }
+        }
+
         pub fn serial(&self) -> MockSerial {
             let me = self.clone();
             let mut parser = MspParser::default();
+            let mut line = Vec::<u8>::new();
             let mut link = MockSerial::new(move |w| {
+                me.rx_log.lock().unwrap().extend_from_slice(w);
                 let mut out = Vec::new();
+                if me.cli.load(Ordering::SeqCst) {
+                    // Betaflight CLI: echo, run complete lines, never answer MSP.
+                    out.extend_from_slice(w);
+                    for &b in w {
+                        if b != b'\r' && b != b'\n' {
+                            line.push(b);
+                            continue;
+                        }
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let cmd = String::from_utf8_lossy(&line).trim().to_string();
+                        line.clear();
+                        me.cli_lines.lock().unwrap().push(cmd.clone());
+                        match cmd.as_str() {
+                            // Betaflight's output (cliExitCmd + cliRebootEx).
+                            "exit" if !me.cli_sticky && me.exit_reboots => {
+                                out.extend_from_slice(
+                                    b"\r\n# leaving CLI mode, unsaved changes lost\r\n\r\nRebooting",
+                                );
+                                me.reboot();
+                            }
+                            "exit" if !me.cli_sticky => {
+                                out.extend_from_slice(b"\r\n# leaving CLI mode, no reboot\r\n");
+                                me.cli.store(false, Ordering::SeqCst);
+                            }
+                            "exit" => out.extend_from_slice(b"\r\n# "),
+                            _ => {
+                                me.ram_dirty.store(true, Ordering::SeqCst);
+                                out.extend_from_slice(b"\r\n# ");
+                            }
+                        }
+                    }
+                    return out;
+                }
                 for ev in parser.feed(w) {
                     let MspEvent::Frame(f) = ev else { continue };
                     let reply: Option<Vec<u8>> = match f.code {
                         codes::MSP_API_VERSION => Some(vec![0, 1, 46]),
+                        codes::MSP_REBOOT => {
+                            me.msp_reboots.lock().unwrap().push(f.payload.clone());
+                            me.reboot();
+                            Some(vec![f.payload.first().copied().unwrap_or(0)])
+                        }
                         codes::MSP_UID => Some(me.uid.lock().unwrap().to_vec()),
                         codes::MSP_ADVANCED_CONFIG => Some(vec![1, 1, 0, me.protocol, 0, 0]),
                         codes::MSP_FEATURE_CONFIG => Some(me.features.to_le_bytes().to_vec()),
