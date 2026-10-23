@@ -1,8 +1,27 @@
 //! Tauri commands for workstream `config`. Signatures are a contract with the UI
 //! (src/api/commands.ts, docs/ARCHITECTURE.md §3 and §5.1).
 
+use std::path::PathBuf;
+
+use tauri::{AppHandle, Manager, Runtime};
+
+use super::backup::BackupStore;
 use crate::error::{AppError, AppResult};
 use crate::model::{ApplyResult, Backup, CliScript, DroneModel, FcSerialPort, VerifyReport};
+
+// The FC-facing commands below are implemented in `super::session` (read_ports, plan,
+// backup, apply, verify, rollback) against `device::Connection`. They stay
+// NOT_IMPLEMENTED here until the device workstream exposes the active connection in
+// Tauri state; wiring them is then a one-liner each.
+
+/// `<app_data_dir>/backups`
+fn backups_root<R: Runtime>(app: &AppHandle<R>) -> AppResult<PathBuf> {
+    let base = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Io(format!("app data dir: {e}")))?;
+    Ok(base.join("backups"))
+}
 
 /// Read the FC's serial ports (names, firmware identifiers, current functions).
 #[tauri::command]
@@ -55,14 +74,16 @@ pub async fn config_rollback(backup: Backup) -> AppResult<ApplyResult> {
 
 /// All backups on disk, newest first (all boards).
 #[tauri::command]
-pub async fn config_list_backups() -> AppResult<Vec<Backup>> {
-    Err(AppError::NotImplemented("config_list_backups"))
+pub async fn config_list_backups<R: Runtime>(app: AppHandle<R>) -> AppResult<Vec<Backup>> {
+    BackupStore::new(backups_root(&app)?).list()
 }
 
 /// Absolute path of the backups root folder (UI opens it with the opener plugin).
 #[tauri::command]
-pub async fn config_backups_dir() -> AppResult<String> {
-    Err(AppError::NotImplemented("config_backups_dir"))
+pub async fn config_backups_dir<R: Runtime>(app: AppHandle<R>) -> AppResult<String> {
+    let root = backups_root(&app)?;
+    std::fs::create_dir_all(&root)?;
+    Ok(root.to_string_lossy().into_owned())
 }
 
 /// Restore by id (from config_list_backups): safety backup, then the rollback path.

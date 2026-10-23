@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "fc": { "boardName": "CRAZYBEEF4SX1280", "firmwareVersion": "4.5.2", "apiVersion": "1.46" },
+  "receiver": {
+    "kind": "SPI", "protocol": "EXPRESSLRS", "port": null, "telemetry": true,
+    "elrsBindingPhrase": "example whoop phrase", "elrsDomain": "ISM2400"
+  },
+  "vtx": { "kind": "NONE" },
+  "gps": { "enabled": false },
+  "esc": { "protocol": "DSHOT300", "bidirectionalDshot": true, "motorPoles": 12 },
+  "switches": [
+    { "mode": "ARM", "auxChannel": 0, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "ANGLE", "auxChannel": 1, "rangeMin": 900, "rangeMax": 1300 },
+    { "mode": "FLIP OVER AFTER CRASH", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100 },
+    { "mode": "BEEPER", "auxChannel": 3, "rangeMin": 1700, "rangeMax": 2100 }
+  ],
+  "extras": {}
+}
