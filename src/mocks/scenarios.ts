@@ -13,8 +13,9 @@ import type { Backend, CommandMap, CommandName } from "../api/commands";
 import { createMockBackend } from "../api/mock";
 import { createEmitter, type Emitter } from "../api/events";
 import type { UpcomingBackend, UpcomingCommand, UpcomingCommandMap } from "../api/upcoming";
-import type { AppError, DroneModel, FcSerialPort, FlashStage } from "../types/model";
+import type { AppError, Backup, DroneModel, FcSerialPort, FlashStage } from "../types/model";
 import { FN, isReserved, plannedClearings, targetMask } from "../wizard/ports";
+import { ROLE_TO_PLAN } from "../wizard/plan";
 
 export const SCENARIOS = [
   "happy",
@@ -26,6 +27,9 @@ export const SCENARIOS = [
   "verify-mismatch",
   "slow",
   "legacy-backend",
+  "onboard-elrs",
+  "fw-2025",
+  "rollback-fail",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -54,9 +58,11 @@ interface MockDevice {
   verifyFailuresLeft: number;
   motorsSpinning: Set<number>;
   rcTimer: ReturnType<typeof setInterval> | null;
+  backups: { backup: Backup; ports: FcSerialPort[] }[];
 }
 
 const err = (code: string, message: string): AppError => ({ code, message });
+const UID = "3a0021000c51333038363834";
 
 export function isScenario(s: string | null | undefined): s is Scenario {
   return !!s && (SCENARIOS as readonly string[]).includes(s);
@@ -70,15 +76,16 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   const events = createEmitter();
 
   const device: MockDevice = {
-    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : "4.5.1",
+    firmwareVersion: scenario === "old-firmware" ? "4.3.2" : scenario === "fw-2025" ? "2025.12.0" : "4.5.1",
+    // 4.x: UART1 = 0; 2025.12+: UART1 = 51. The UI must only use the names.
     ports: [
       { name: "VCP", identifier: 20, functionMask: FN.MSP, isConnectionPort: true },
-      { name: "UART1", identifier: 0, functionMask: 0, isConnectionPort: false },
-      { name: "UART2", identifier: 1, functionMask: FN.RX_SERIAL, isConnectionPort: false },
-      { name: "UART3", identifier: 2, functionMask: FN.MSP | FN.VTX_MSP, isConnectionPort: false },
-      { name: "UART4", identifier: 3, functionMask: 0, isConnectionPort: false },
-      { name: "UART5", identifier: 4, functionMask: 0, isConnectionPort: false },
-      { name: "UART6", identifier: 5, functionMask: FN.MSP, isConnectionPort: false },
+      ...[0, FN.RX_SERIAL, FN.MSP | FN.VTX_MSP, 0, 0, FN.MSP].map((functionMask, i) => ({
+        name: `UART${i + 1}`,
+        identifier: (scenario === "fw-2025" ? 51 : 0) + i,
+        functionMask,
+        isConnectionPort: false,
+      })),
       { name: "SOFTSERIAL1", identifier: 30, functionMask: 0, isConnectionPort: false },
     ],
     inDfu: false,
@@ -87,6 +94,18 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     motorsSpinning: new Set(),
     rcTimer: null,
+    backups: [],
+  };
+  const snapshot = (): Backup => {
+    const createdAt = new Date(Date.UTC(2026, 9, 23, 4, 0, device.backups.length)).toISOString();
+    const backup: Backup = {
+      path: `C:\\Users\\pilot\\AppData\\Roaming\\io.github.eligreenmac.bfsw\\backups\\${UID}\\${createdAt.replace(/[:.]/g, "-")}.txt`,
+      boardName: "SPEEDYBEEF405V4",
+      firmwareVersion: device.firmwareVersion,
+      createdAt,
+    };
+    device.backups.unshift({ backup, ports: device.ports.map((p) => ({ ...p })) });
+    return backup;
   };
 
   type H = { [K in CommandName]?: (args: CommandMap[K][0]) => CommandMap[K][1] | Promise<CommandMap[K][1]> };
@@ -116,8 +135,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       boardName: "SPEEDYBEEF405V4",
       manufacturerId: "SPBE",
       mcu: "STM32F405",
-      uid: "3a0021000c51333038363834",
-      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG"],
+      uid: UID,
+      buildOptions: ["CRSF", "SBUS", "GPS", "VTX", "DSHOT_BITBANG", ...(scenario === "onboard-elrs" ? ["USE_RX_EXPRESSLRS"] : [])],
     }),
     device_cli_exec: ({ line }) => `# ${line}\n`,
     device_reboot_to_bootloader: () => {
@@ -155,10 +174,11 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       events.emit("flasher://progress", { stage: "DONE", fraction: 1, message: null });
     },
     config_read_ports: () => device.ports.map((p) => ({ ...p })),
-    config_backup: () => ({ path: "/tmp/bfsw/backup-mock.txt", boardName: "SPEEDYBEEF405V4", firmwareVersion: device.firmwareVersion, createdAt: new Date(0).toISOString() }),
+    config_backup: () => snapshot(),
     config_generate: ({ model, ports }) => generateCli(model, ports),
     config_apply: async ({ script }) => {
       for (const stage of ["BACKUP", "SENDING", "SAVING", "REBOOTING", "RECONNECTED"] as const) {
+        if (stage === "BACKUP") snapshot();
         events.emit("config://apply-progress", { stage, fraction: 0, message: null });
         await sleep(stepMs);
       }
@@ -178,7 +198,14 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       }
       return { ok: true, mismatches: [] };
     },
-    config_rollback: () => ({ applied: 1, errors: [], saved: true }),
+    config_rollback: async ({ backup }) => {
+      await sleep(stepMs * 3);
+      if (scenario === "rollback-fail") throw err("CLI", "###ERROR### in line 12: serial 2 131073 115200 57600 0 115200");
+      const hit = device.backups.find((b) => b.backup.path === backup.path);
+      if (!hit) throw err("IO", `backup file not found: ${backup.path}`);
+      device.ports = hit.ports.map((p) => ({ ...p }));
+      return { applied: 42, errors: [], saved: true };
+    },
   };
 
   async function stages(list: FlashStage[]) {
@@ -197,6 +224,12 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
   }) as Backend;
 
   const upcomingHandlers: { [K in UpcomingCommand]: (a: UpcomingCommandMap[K][0]) => UpcomingCommandMap[K][1] } = {
+    config_plan: ({ model, ports }) => {
+      const opts = { escTelemetry: model.esc.telemetryPort !== null };
+      const clearings = plannedClearings(ports, model, opts).map((c) => ({ port: c.port, roles: c.roles.map((r) => ROLE_TO_PLAN[r]) }));
+      return { ...generateCli(model, ports), clearings };
+    },
+    config_list_backups: () => device.backups.map((b) => b.backup),
     motor_test_start: ({ motor }) => {
       device.motorsSpinning.add(motor);
     },
@@ -248,7 +281,7 @@ export function generateCli(model: DroneModel, ports: FcSerialPort[]) {
   if (model.esc.motorPoles) commands.push(`set motor_poles = ${model.esc.motorPoles}`);
   commands.push(`set yaw_motors_reversed = ${model.esc.propsOut ? "ON" : "OFF"}`);
   if (model.esc.telemetryPort) commands.push("feature ESC_SENSOR");
-  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, BEEPER: 13, "FLIP OVER AFTER CRASH": 35 };
+  const boxIds: Record<string, number> = { ARM: 0, ANGLE: 1, BARO: 3, ALTHOLD: 3, BEEPER: 13, "GPS HOLD": 11, "POS HOLD": 11, "FLIP OVER AFTER CRASH": 35 };
   model.switches.forEach((s, i) => commands.push(`aux ${i} ${boxIds[s.mode] ?? 0} ${s.auxChannel} ${s.rangeMin} ${s.rangeMax} 0 0`));
   commands.push("save");
   return { commands, warnings, dialect: "4.5" };

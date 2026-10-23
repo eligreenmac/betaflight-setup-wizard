@@ -55,3 +55,71 @@ describe("upcoming contract wrappers (UI-side, TODO(shared))", () => {
     await expect(api.flasher.flash(image, null, { fullErase: false, manifest: true })).rejects.toMatchObject({ code: "FLASH_FAILED" });
   });
 });
+
+describe("firmware update orchestration", () => {
+  const poll = { tries: 3, intervalMs: 0 };
+  const fc = { fcVariant: "BTFL", firmwareVersion: "4.5.1", apiVersion: "1.46", boardName: "SPEEDYBEEF405V4", manufacturerId: null, mcu: null, uid: null, buildOptions: [] };
+
+  it("runs fetch, backup, bootloader, flash, reconnect and ends on the new version", async () => {
+    const { runFirmwareUpdate } = await import("../src/wizard/flash");
+    installMock({ latencyMs: 0 });
+    const stages: string[] = [];
+    const flash: string[] = [];
+    const res = await runFirmwareUpdate(fc, "4.5.2", { onStage: (s) => stages.push(s), onProgress: (p) => flash.push(p.stage) }, poll);
+    expect(stages).toEqual(["download", "backup", "bootloader", "flash", "reconnect"]);
+    expect(flash.at(-1)).toBe("DONE");
+    expect(res.fc.firmwareVersion).toBe("4.5.2");
+    expect(res.backup).not.toBeNull();
+  });
+
+  it("stops with DRIVER_MISSING, then resumes from DFU after the driver is installed", async () => {
+    const { runFirmwareUpdate } = await import("../src/wizard/flash");
+    installMock({ latencyMs: 0, scenario: "driver-missing" });
+    const hooks = { onStage: () => {}, onProgress: () => {} };
+    await expect(runFirmwareUpdate(fc, "4.5.2", hooks, poll)).rejects.toMatchObject({ code: "DRIVER_MISSING" });
+    await api.system.installDfuDriver();
+    const res = await runFirmwareUpdate(fc, "4.5.2", hooks, poll);
+    expect(res.fc.firmwareVersion).toBe("4.5.2");
+  });
+});
+
+describe("review plan, backups and rollback", () => {
+  it("uses config_plan when present, else falls back to generate + UI clearings", async () => {
+    const { fetchPlan } = await import("../src/wizard/plan");
+    const m = emptyDroneModel(); // nothing selected: UART2 (RX) and UART3 (VTX) get cleared
+    installMock({ latencyMs: 0 });
+    const ports = await api.config.readPorts();
+    const a = await fetchPlan(m, ports, { escTelemetry: false });
+    expect(a.source).toBe("backend");
+    expect(a.plan.clearings).toEqual([
+      { port: "UART2", roles: ["RX"] },
+      { port: "UART3", roles: ["VTX"] },
+    ]);
+    uninstallMock();
+    installMock({ latencyMs: 0, scenario: "legacy-backend" });
+    const b = await fetchPlan(m, ports, { escTelemetry: false });
+    expect(b.source).toBe("wizard");
+    expect(b.plan.clearings).toEqual(a.plan.clearings);
+    expect(b.plan.commands).toEqual(a.plan.commands);
+  });
+
+  it("lists backups (backend or session fallback) and restores one with config_rollback", async () => {
+    const { listBackups, restoreBackup, canRestoreOnto } = await import("../src/wizard/backups");
+    const mock = installMock({ latencyMs: 0 });
+    const before = await api.config.backup();
+    mock.device.ports.find((p) => p.name === "UART2")!.functionMask = 0;
+    const list = await listBackups([]);
+    expect(list.source).toBe("backend");
+    expect(list.backups[0]).toEqual(before);
+    expect(canRestoreOnto(before, "SPEEDYBEEF405V4")).toBe(true);
+    expect(canRestoreOnto(before, "MATEKH743")).toBe(false);
+    const res = await restoreBackup(before);
+    expect(res.ports.find((p) => p.name === "UART2")!.functionMask).not.toBe(0);
+    uninstallMock();
+    installMock({ latencyMs: 0, scenario: "legacy-backend" });
+    expect((await listBackups([before])).source).toBe("session");
+    uninstallMock();
+    installMock({ latencyMs: 0, scenario: "rollback-fail" });
+    await expect(restoreBackup(before)).rejects.toMatchObject({ code: "CLI" });
+  });
+});

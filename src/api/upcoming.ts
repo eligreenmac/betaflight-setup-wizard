@@ -13,7 +13,7 @@
  * shows a disabled control with guidance instead of failing.
  */
 import { invoke } from "@tauri-apps/api/core";
-import type { AppError, VerifyReport } from "../types/model";
+import type { AppError, Backup, CliScript, DroneModel, FcSerialPort, VerifyReport } from "../types/model";
 
 // ---- types (proposed shapes; confirm in the shared PR) -------------------------
 
@@ -48,7 +48,31 @@ export const UPCOMING_EVENTS = {
   rcChannels: "device://rc-channels",
 } as const;
 
+/** Wizard-managed roles, as named in a config plan. */
+export const PLAN_ROLES = ["RX", "VTX", "GPS", "ESC_TELEMETRY"] as const;
+export type PlanRole = (typeof PLAN_ROLES)[number];
+
+/** One port the plan will clear managed roles from (board-reported port NAME). */
+export interface PlanClearing {
+  port: string;
+  roles: PlanRole[];
+}
+
+/** Read-only result of config_plan: what apply WOULD do, nothing is written. */
+export interface ConfigPlan {
+  commands: string[];
+  warnings: string[];
+  dialect: string;
+  clearings: PlanClearing[];
+}
+
+export const planToScript = (p: ConfigPlan): CliScript => ({ commands: p.commands, warnings: p.warnings, dialect: p.dialect });
+
 export interface UpcomingCommandMap {
+  /** Read-only preview of apply: CLI commands plus the managed roles/ports it clears. */
+  config_plan: [{ model: DroneModel; ports: FcSerialPort[] }, ConfigPlan];
+  /** Backups for the connected board (%APPDATA%/<app>/backups/<board-uid>/), newest first. */
+  config_list_backups: [Record<string, never>, Backup[]];
   /** Spin one motor (0-based index, Betaflight order) at a low test throttle (percent, 0..100). */
   motor_test_start: [{ motor: number; throttlePercent: number }, void];
   /** Stop all motors. Must be safe to call at any time. */
@@ -108,8 +132,10 @@ export function resetUpcomingBackend(): void {
   backend = tauriBackend;
 }
 
-/** TODO(shared): becomes `api.device.motorTest*` / `api.device.rcChannelsStream`. */
+/** TODO(shared): becomes `api.config.plan` / `api.config.listBackups` / `api.device.motorTest*` / `api.device.rcChannelsStream`. */
 export const upcoming = {
+  configPlan: (model: DroneModel, ports: FcSerialPort[]) => backend("config_plan", { model, ports }),
+  configListBackups: () => backend("config_list_backups", {} as Record<string, never>),
   motorTestStart: (motor: number, throttlePercent: number) => backend("motor_test_start", { motor, throttlePercent }),
   motorTestStop: () => backend("motor_test_stop", {} as Record<string, never>),
   rcChannelsStream: (enabled: boolean) => backend("rc_channels_stream", { enabled }),

@@ -124,8 +124,8 @@ describe("clearing managed roles on apply", () => {
       // VTX switched off: UART3's MSP+VTX_MSP is cleared. UART6's plain MSP is untouched.
     });
     expect(plannedClearings(PORTS, m, noTlm)).toEqual([
-      { port: "UART2", functions: ["RX_SERIAL"] },
-      { port: "UART3", functions: ["MSP", "VTX_MSP"] },
+      { port: "UART2", roles: ["receiver"], functions: ["RX_SERIAL"] },
+      { port: "UART3", roles: ["vtx"], functions: ["MSP", "VTX_MSP"] },
     ]);
     expect(targetMask(PORTS[4]!, m, noTlm)).toBe(FN.RX_SERIAL);
     expect(targetMask(PORTS[5]!, m, noTlm)).toBe(FN.MSP);
@@ -150,9 +150,31 @@ describe("clearing managed roles on apply", () => {
       m.vtx.port = "UART3";
     });
     expect(plannedClearings(PORTS, m, noTlm)).toEqual([
-      { port: "UART2", functions: ["RX_SERIAL"] },
-      { port: "UART3", functions: ["MSP", "VTX_MSP"] },
+      { port: "UART2", roles: ["receiver"], functions: ["RX_SERIAL"] },
+      { port: "UART3", roles: ["vtx"], functions: ["MSP", "VTX_MSP"] },
     ]);
     expect(targetMask(PORTS[3]!, m, noTlm)).toBe(FN.TBS_SMARTAUDIO);
+  });
+});
+
+describe("firmware 2025.12+ port identifiers", () => {
+  // 2025.12+ numbers UART1 as 51. The adapter must only ever use the names the board reports.
+  const NEW: FcSerialPort[] = [
+    port("VCP", 20, FN.MSP, true),
+    port("UART1", 51),
+    port("UART2", 52, FN.RX_SERIAL),
+    port("UART3", 53),
+  ];
+  it("offers and prefills by the reported names regardless of identifier", () => {
+    const m = model((m) => {
+      m.receiver.kind = "SERIAL";
+    });
+    prefillFromBoard(NEW, m, noTlm);
+    expect(m.receiver.port).toBe("UART2");
+    expect(names(freePortsFor("receiver", NEW, m, noTlm))).toEqual(["UART1", "UART2", "UART3"]);
+  });
+  it("plans clearings by name", () => {
+    const m = model();
+    expect(plannedClearings(NEW, m, noTlm)).toEqual([{ port: "UART2", roles: ["receiver"], functions: ["RX_SERIAL"] }]);
   });
 });

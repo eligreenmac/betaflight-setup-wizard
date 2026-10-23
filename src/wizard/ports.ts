@@ -179,9 +179,22 @@ export function prefillFromBoard(ports: readonly FcSerialPort[], model: DroneMod
 }
 
 export interface PortClearing {
+  /** Board-reported port name. */
   port: string;
+  /** Wizard roles whose functions are removed from this port. */
+  roles: PortRole[];
   /** Managed functions that will be removed from this port. */
   functions: FunctionName[];
+}
+
+/** Which wizard role a managed function bit belongs to. */
+export function rolesOfMask(mask: number): PortRole[] {
+  const roles: PortRole[] = [];
+  if (mask & FN.RX_SERIAL) roles.push("receiver");
+  if (mask & (FN.TBS_SMARTAUDIO | FN.IRC_TRAMP | FN.VTX_MSP)) roles.push("vtx");
+  if (mask & FN.GPS) roles.push("gps");
+  if (mask & FN.ESC_SENSOR) roles.push("escTelemetry");
+  return roles;
 }
 
 /**
@@ -198,7 +211,7 @@ export function plannedClearings(ports: readonly FcSerialPort[], model: DroneMod
     let keep = 0;
     for (const role of neededRoles(model, opts)) if (getRolePort(model, role) === p.name) keep |= roleMask(role, model, opts);
     const clear = have & ~keep;
-    if (clear !== 0) out.push({ port: p.name, functions: functionNames(clear) });
+    if (clear !== 0) out.push({ port: p.name, roles: rolesOfMask(clear), functions: functionNames(clear) });
   }
   return out;
 }
