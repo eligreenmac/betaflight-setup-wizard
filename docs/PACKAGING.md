@@ -25,22 +25,39 @@ Windows binds nothing to these IDs by itself:
   `USB\VID_xxxx&PID_yyyy` device nodes with their bound service (`SPDRP_SERVICE`) and
   Device Manager problem code. A DFU device is OK only if bound to `WinUSB` with no
   problem. Another driver (e.g. ST's DfuSe `STTub30`, libusb0) or none →
-  `action = INSTALL_DFU_DRIVER`.
-- **Install only when needed** (`system_install_dfu_driver`): for each distinct DFU
-  VID:PID that needs it, start `<resources>/drivers/bfsw-wdi-simple.exe` with
-  `ShellExecuteExW("runas")` → one UAC prompt per device type (normally one). The main
-  app never runs elevated. Afterwards the status is re-read; the command fails with
-  `DRIVER` if the device is still not on WinUSB, the user declined UAC, or libwdi
-  returned an error (message includes the libwdi error text).
+  `action = INSTALL_DFU_DRIVER`; with another driver bound, `replacesDriver = true`
+  (WinUSB will replace it, so the UI warns first).
+- **Install only when needed** (`system_install_dfu_driver`): one
+  `ShellExecuteExW("runas")` of Windows PowerShell (`<System32>\WindowsPowerShell\v1.0\
+  powershell.exe`, found via `GetSystemDirectoryW`) → **one UAC prompt** for all DFU
+  VID:PIDs that need it. The elevated script (`src-tauri/src/system/install_script.rs`):
+  1. creates a fresh `%ProgramData%\BFSW-WinUSB-<run id>` with a protected DACL
+     `O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)` (SYSTEM + Administrators only), and
+     refuses to continue if it already existed, is a reparse point, its owner/ACL is
+     anything else, or it is not empty;
+  2. copies `<resources>/drivers/bfsw-wdi-simple.exe` into it and runs it from there,
+     once per VID:PID with `--dest <dir>\<vid>_<pid>` (stops at the first failure);
+  3. always deletes the folder (only if it created and verified it).
+  Driver files are therefore never extracted to the user-writable `%TEMP%`, where
+  unelevated code could swap the `.inf/.cat`/co-installer between extraction and
+  install. The main app never runs elevated. Afterwards the status is re-read; the
+  command fails with `DRIVER` if a device is still not on WinUSB, the user declined
+  UAC, the folder checks failed, or libwdi returned an error (message includes the
+  libwdi error text). Note: the UAC prompt shows "Windows PowerShell" (Microsoft)
+  rather than the unsigned helper.
 - **Helper** = libwdi's unmodified `wdi-simple` example, v1.5.1 (commit pinned), built
   by `.github/actions/build-wdi-simple` on `windows-latest` with MSVC exactly like
   libwdi's own VS2022 CI (WDK 8.0 redistributable for the WinUSB co-installers),
   WinUSB-only (libusb-win32/libusbK payloads disabled) and x86/x64-only (ARM64 installer
   disabled: hosted runners lack the v143 ARM64 tools and the app ships x64 only). The
-  result is cached by commit.
+  result is cached by commit. The WDK redist MSI is pinned by SHA256
+  (`wdk-redist-sha256` input,
+  `29314207814ce9d5d73695f7e9239539cf37c79e750b9d5ea5a5ef5487a583d6`, Authenticode
+  "Microsoft Corporation" 2012); the build fails hard on a mismatch. Nothing is
+  downloaded at runtime: the co-installers are embedded in the helper at build time.
   Command line: `--vid 0x0483 --pid 0xDF11 --type 0 --name "... (Betaflight Setup
-  Wizard)" --inf bfsw_0483_df11.inf --dest %TEMP%\bfsw-winusb\0483_df11 --silent
-  --timeout 120000`.
+  Wizard)" --inf bfsw_0483_df11.inf --dest %ProgramData%\BFSW-WinUSB-<id>\0483_df11
+  --silent --timeout 120000`.
 - The exe is **not committed**; `src-tauri/drivers/*` is bundled as Tauri resources,
   and CI fails if the NSIS installer does not contain it.
 
@@ -95,7 +112,8 @@ Their vendor drivers are not ours to redistribute. `system_driver_status` return
 const s = await api.system.driverStatus();
 for (const d of s.devices.filter(d => !d.driverOk)) {
   switch (d.action) {
-    case "INSTALL_DFU_DRIVER": /* button → */ await api.system.installDfuDriver(); break;
+    case "INSTALL_DFU_DRIVER": // if d.replacesDriver: warn "replaces <d.service>" + confirm first
+      /* button → */ await api.system.installDfuDriver(); break;
     case "VENDOR_DOWNLOAD":    /* show */ s.guidance[d.guidanceIndex!]; break; // open downloadUrl in the system browser
     case "REPLUG":             /* "unplug and replug / check Device Manager" */ break;
   }
@@ -104,6 +122,11 @@ for (const d of s.devices.filter(d => !d.driverOk)) {
 
 - Use `guidance[i].id` for i18n keys (e.g. `drivers.guidance.CP210X`); `vendor`,
   `chips`, `downloadUrl` are data, not translations. `notes` are English diagnostics.
+- `replacesDriver = true` (DFU device currently bound to another driver, e.g.
+  `STTub30` from ST DfuSe/older CubeProgrammer, or libusb0): show a warning naming
+  `service` and require explicit confirmation before `installDfuDriver()`; tools that
+  depend on that driver stop working with the board until it is switched back in
+  Device Manager.
 - `installDfuDriver()` may take a while (UAC + driver install, up to minutes); show a
   spinner and handle `{code: "DRIVER"}` (declined UAC or failure) with a retry.
 - Open `downloadUrl` with `openExternal()` from `src/api/opener.ts`. Its allow-list

@@ -155,6 +155,8 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
               driverOk: device.dfuDriverOk,
               action: device.dfuDriverOk ? "NONE" : "INSTALL_DFU_DRIVER",
               guidanceIndex: null,
+              // Mock DFU device has no driver bound, so nothing is replaced.
+              replacesDriver: false,
             },
           ]
         : [],

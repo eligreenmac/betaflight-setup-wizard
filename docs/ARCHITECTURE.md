@@ -96,11 +96,13 @@ Enums:
 {
   "dfuWinusb": false,          // a DFU device is plugged in without WinUSB
   "vcp": true,                 // no VCP/bridge device is missing its driver
-  "notes": ["STM32 DFU (0483:DF11): no driver bound"],
+  "notes": ["STM32 DFU (0483:DF11) ...: service=STTub30, problem=0",
+            "STM32 DFU (0483:DF11): installing WinUSB replaces driver STTub30"],
   "devices": [
     { "vid": 1155, "pid": 57105, "name": "STM32 DFU", "kind": "DFU",
-      "instanceId": "USB\\VID_0483&PID_DF11\\205F32...", "service": null,
-      "driverOk": false, "action": "INSTALL_DFU_DRIVER", "guidanceIndex": null }
+      "instanceId": "USB\\VID_0483&PID_DF11\\205F32...", "service": "STTub30",
+      "driverOk": false, "action": "INSTALL_DFU_DRIVER", "guidanceIndex": null,
+      "replacesDriver": true }   // another driver is bound and will be replaced
   ],
   "guidance": [
     { "id": "CP210X", "vendor": "Silicon Labs", "chips": "CP210x ...",
@@ -111,6 +113,9 @@ Enums:
 ```
 
 UI rule: `action = INSTALL_DFU_DRIVER` → button calling `system_install_dfu_driver`;
+if `replacesDriver` is true, first warn that the current driver (`service`, e.g. ST's
+DfuSe `STTub30`) will be replaced by WinUSB (tools that rely on it, such as DfuSe,
+stop seeing the board) and require confirmation;
 `VENDOR_DOWNLOAD` → show `guidance[guidanceIndex]` (vendor + link, opened in the
 system browser); `REPLUG` → ask to replug / check Device Manager. Third-party
 bridge drivers are never bundled.
@@ -270,7 +275,12 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   armed, `device_disconnect`, dropping the worker/handle, and the **emergency stop in the Tauri
   run loop**: `on_window_event` on `CloseRequested` and `Destroyed`, and the `App::run` callback on
   `RunEvent::ExitRequested` and `RunEvent::Exit` call `device::emergency_stop_all()` (event
-  `APP_CLOSING`). This does not depend on the UI being alive.
+  `APP_CLOSING`). This does not depend on the UI being alive, and it never waits on the
+  manager lock (a keepalive may hold it): it sets the test's halt flag, which the worker checks
+  before every `MSP_SET_MOTOR`, on keepalive/update and every ≤20 ms, and writes the all-stop
+  frame directly through a duplicated port handle (`SerialLink::try_clone_writer`). Port cleanup
+  is a single `try_lock`; if the manager is busy the worker stops the motors itself as soon as
+  the in-flight exchange returns. After a halt, keepalive/update get `MOTOR_TEST_NOT_ACTIVE`.
 - `MSP_SET_ARMING_DISABLED` is **not** sent. Betaflight has no firmware-side MSP motor timeout:
   if USB drops mid-test the last value stays applied, so the UI must tell the user to test on
   USB power with the battery disconnected and props off.
@@ -369,7 +379,8 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
 - Tauri bundler targets: NSIS (+ Hebrew/English installer languages) and MSI.
 - WinUSB: libwdi-based elevated helper exe shipped as a Tauri resource (phase 1),
   invoked by `system_install_dfu_driver`: binds WinUSB only to connected DFU devices that
-  lack it (one UAC prompt; the app itself never runs elevated). Details, build and
+  lack it (one UAC prompt; the app itself never runs elevated). Driver files are
+  extracted to a per-run SYSTEM/Administrators-only folder under `%ProgramData%`. Details, build and
   LGPL-3.0 obligations: `docs/PACKAGING.md`.
   device/flasher never install drivers; they report `DRIVER_MISSING` with the device's
   `{vid, pid}` (§2.3).
