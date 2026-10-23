@@ -59,8 +59,8 @@ const beaconEvents = computed(() => availableBeaconEvents(catalogState.catalog?.
 const beacon = computed(() => wizard.ext.beepers?.dshotBeaconDisabled ?? null);
 function setBeaconMode(change: boolean): void {
   if (!wizard.ext.beepers) return;
-  // Changing starts from Betaflight's default: the beacon sounds for both events.
-  wizard.ext.beepers = { ...wizard.ext.beepers, dshotBeaconDisabled: change ? (beacon.value ?? []) : null };
+  // Changing starts from Betaflight's default: the beacon is off for both events.
+  wizard.ext.beepers = { ...wizard.ext.beepers, dshotBeaconDisabled: change ? (beacon.value ?? [...beaconEvents.value]) : null };
   markDirty();
 }
 function toggleBeacon(e: DshotBeaconCondition, on: boolean): void {

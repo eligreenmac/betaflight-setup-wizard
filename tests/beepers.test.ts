@@ -149,8 +149,9 @@ describe("Beepers step UI", () => {
     expect(w.get('[data-section="beacon"]').text()).toContain("motors themselves can beep");
     expect(wizard.ext.beepers?.dshotBeaconDisabled ?? null).toBeNull();
     await w.get('[data-beacon="change"]').setValue(true);
-    expect(wizard.ext.beepers?.dshotBeaconDisabled).toEqual([]);
-    await w.get('[data-beacon-event="RX_SET"]').setValue(false);
+    // Starts from the firmware default: off for both.
+    expect(wizard.ext.beepers?.dshotBeaconDisabled).toEqual(["RX_LOST", "RX_SET"]);
+    await w.get('[data-beacon-event="RX_LOST"]').setValue(true);
     expect(wizard.ext.beepers?.dshotBeaconDisabled).toEqual(["RX_SET"]);
     // Toggling a beeper keeps the beacon answer.
     await w.get('[data-beeper="SYSTEM_INIT"]').setValue(false);

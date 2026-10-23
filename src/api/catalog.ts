@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Typed UI-side wrapper for Config's read-only `config_firmware_catalog(firmwareVersion)`
- * (lands with the generator PR; mocked in demo mode). What this firmware has:
+ * (shared PR #66; mocked in demo mode). What this firmware line has:
  * beeper conditions, DShot beacon events, OSD elements and modes. The UI uses it instead
  * of hard-coded lists.
  *
- * TODO(shared): move to CommandMap when it lands. Assumed result shape (each list may be
- * strings or `{name}` objects; unknown keys are ignored):
- *   { beepers: string[], beaconEvents: string[], osdElements: string[], modes: string[] }
+ * TODO(shared): use api.config.firmwareCatalog / FirmwareCatalog from #66 when it lands.
+ * Shape as in #66 (parsed tolerantly: `{name}` objects are accepted, unknown keys ignored):
+ *   { beepers: BeeperName[], beaconEvents: DshotBeaconCondition[], osdElements: string[], modes: string[] }
  */
 import { reactive } from "vue";
 import { call, type CommandName } from "./commands";

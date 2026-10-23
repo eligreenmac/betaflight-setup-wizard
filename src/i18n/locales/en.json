@@ -549,7 +549,7 @@
     },
     "beacon": {
       "title": "Motor beacon (DShot)",
-      "body": "With DShot, the motors themselves can beep. They are much louder than a buzzer, which helps you find a quad that crashed in tall grass.",
+      "body": "With DShot, the motors themselves can beep. They are much louder than a buzzer, which helps you find a quad that crashed in tall grass. Betaflight has this off by default.",
       "keep": "Keep the board's current setting",
       "change": "Choose",
       "events": {
