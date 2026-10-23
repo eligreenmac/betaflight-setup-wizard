@@ -1393,3 +1393,139 @@ fn osd_default_layout_and_catalog_commands() {
         }
     }
 }
+
+/// Every key the model fixtures set survives JSON -> DroneModel -> JSON. serde silently drops
+/// unknown fields, so a misspelled or missing Rust field would otherwise go unnoticed.
+#[test]
+fn model_fixtures_round_trip_without_dropping_fields() {
+    fn missing(
+        input: &serde_json::Value,
+        output: &serde_json::Value,
+        path: &str,
+        out: &mut Vec<String>,
+    ) {
+        match (input, output) {
+            (serde_json::Value::Object(i), serde_json::Value::Object(o)) => {
+                for (k, v) in i {
+                    if v.is_null() {
+                        continue;
+                    }
+                    match o.get(k) {
+                        Some(ov) => missing(v, ov, &format!("{path}.{k}"), out),
+                        None => out.push(format!("{path}.{k}")),
+                    }
+                }
+            }
+            (serde_json::Value::Array(i), serde_json::Value::Array(o)) => {
+                if i.len() != o.len() {
+                    out.push(format!("{path} (length)"));
+                }
+                for (n, (a, b)) in i.iter().zip(o).enumerate() {
+                    missing(a, b, &format!("{path}[{n}]"), out);
+                }
+            }
+            (a, b) if a != b => out.push(format!("{path}: {a} != {b}")),
+            _ => {}
+        }
+    }
+    let dir = fixtures().join("models");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        let input: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let m: DroneModel = serde_json::from_value(input.clone()).unwrap();
+        let output = serde_json::to_value(&m).unwrap();
+        let mut out = Vec::new();
+        missing(&input, &output, "", &mut out);
+        assert!(
+            out.is_empty(),
+            "{}: dropped or changed {out:?}",
+            p.display()
+        );
+        checked += 1;
+    }
+    assert!(checked >= 2);
+}
+
+/// Each batch-2 field, parsed from the fixture JSON, changes the generated script: removing
+/// just that key from the JSON removes exactly that field's commands (on every dialect).
+#[test]
+fn batch2_fields_from_json_each_change_the_script() {
+    type Pred = fn(&str) -> bool;
+    let fields: [(&str, Pred); 6] = [
+        // ALWAYS also clears an old AIR MODE range
+        ("airmode", |l| {
+            l.contains("AIRMODE") || l.starts_with("aux ")
+        }),
+        ("removeModes", |l| l.starts_with("aux ")),
+        ("beepers", |l| {
+            l.starts_with("beeper ") || l.starts_with("beacon ")
+        }),
+        ("sensors", |l| {
+            ["acc_hardware", "baro_hardware", "mag_hardware"]
+                .iter()
+                .any(|s| l.starts_with(&format!("set {s} ")))
+        }),
+        ("boardAlignment", |l| l.starts_with("set align_board_")),
+        // the OSD section, plus the displayport / video system lines it takes over from vtx
+        ("osd", |l| {
+            l.starts_with("set osd_")
+                || l == "feature OSD"
+                || l == "feature -OSD"
+                || l.starts_with("set vcd_")
+                || l.starts_with("set displayport_")
+        }),
+    ];
+    for name in ["batch2-freestyle-hd", "whoop-batch2-analog-osd"] {
+        let text = std::fs::read_to_string(fixtures().join(format!("models/{name}.json"))).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if name == "batch2-freestyle-hd" {
+            for (field, _) in fields {
+                assert!(json.get(field).is_some_and(|v| !v.is_null()), "{field}");
+            }
+        }
+        for d in Dialect::ALL {
+            let mut fc = MockFc::load(d.as_str(), board_for(name));
+            // optional-mode ranges, so removeModes has something to remove
+            fc.preset(&[
+                "aux 5 35 4 1700 2100 0 0",
+                "aux 6 36 5 1700 2100 0 0",
+                "aux 7 28 6 1700 2100 0 0",
+            ]);
+            let full: DroneModel = serde_json::from_value(json.clone()).unwrap();
+            let full = gen_on(&fc, &full, d).unwrap().commands;
+            for (field, pred) in fields {
+                if json.get(field).is_none_or(|v| v.is_null()) {
+                    continue;
+                }
+                let mut j = json.clone();
+                j.as_object_mut().unwrap().remove(field);
+                let m: DroneModel = serde_json::from_value(j).unwrap();
+                let without = gen_on(&fc, &m, d)
+                    .unwrap_or_else(|e| panic!("{name} {d:?} without {field}: {e}"))
+                    .commands;
+                let only_full: Vec<&String> =
+                    full.iter().filter(|l| !without.contains(l)).collect();
+                let only_without: Vec<&String> =
+                    without.iter().filter(|l| !full.contains(l)).collect();
+                assert!(
+                    only_full.iter().any(|l| pred(l)),
+                    "{name} {d:?}: {field} wrote nothing of its own: {only_full:?}"
+                );
+                if field == "airmode" {
+                    assert!(
+                        only_full.iter().any(|l| l.contains("AIRMODE")),
+                        "{name} {d:?}: no feature AIRMODE line: {only_full:?}"
+                    );
+                }
+                for l in only_full.iter().chain(&only_without) {
+                    assert!(pred(l), "{name} {d:?}: dropping {field} changed {l:?}");
+                }
+            }
+        }
+    }
+}

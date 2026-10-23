@@ -818,8 +818,11 @@ fn sensors_section(cx: &mut Ctx) -> AppResult<()> {
             (false, _) => "NONE".to_string(),
             (true, None | Some("AUTO")) => "AUTO".to_string(),
             (true, Some("NONE")) => {
+                // The batch never calibrates. An ACC calibration saves the whole config to
+                // flash when it finishes, so it must not run inside our batch (it would
+                // persist half of it): the UI calibrates only after config_apply returns.
                 cx.warnings.push(if key == "acc_hardware" {
-                    "accelerometer turned on: calibrate it (level, Configurator or stick command) before flying in self-level modes".to_string()
+                    "accelerometer turned on: once this config is saved and the FC has rebooted, calibrate it (level) before flying in self-level modes".to_string()
                 } else {
                     format!("{what} turned on (AUTO): it is detected at the next boot; without one fitted it stays off")
                 });
