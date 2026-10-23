@@ -155,7 +155,9 @@ describe("?mock=fw-too-new (board on Betaflight 2026.12.0-alpha)", () => {
     expect(w!.find('[data-test="fw-not-supported-yet"]').exists()).toBe(false);
     expect(w!.find('[data-test="fw-some-not-supported"]').exists()).toBe(false);
     expect((w!.get("#release").element as HTMLSelectElement).value).toBe("2026.12.0");
-    expect(w!.text()).toContain(en.firmware.upToDate);
+    // A pre-release is below its release (semver): 2026.12.0-alpha is not up to date next to 2026.12.0.
+    expect(w!.text()).not.toContain(en.firmware.upToDate);
+    expect(w!.get('[data-test="update"]').text()).toBe(en.firmware.updateTo.replace("{version}", "2026.12.0"));
     await click(w!, "keep");
     await click(w!, "next");
     expect(nav.currentId).not.toBe("firmware");
