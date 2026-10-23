@@ -91,6 +91,77 @@ is written; the generator rejects out-of-range values with `CONFIG`, nothing sen
 
 The `gps.*` fields only apply when `gps.enabled`.
 
+#### 2.1.1 Model batch 2: modes, beepers, sensors, board alignment, OSD (shape; implementation follows)
+
+All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless noted. **null or absent = keep the FC's current state**; nothing is written for them. Sources: Betaflight `src/main` at tags 4.4.3, 4.5.5 and 2025.12.5.
+
+```jsonc
+{
+  "switches": [ { "mode": "AIR MODE", "auxChannel": 1, "rangeMin": 1700, "rangeMax": 2100 },
+                { "mode": "FLIP OVER AFTER CRASH", "auxChannel": 2, "rangeMin": 1700, "rangeMax": 2100 },
+                { "mode": "PREARM", "auxChannel": 3, "rangeMin": 1700, "rangeMax": 2100 } ],
+  "airmode": "SWITCH",                       // ALWAYS | SWITCH | OFF | null
+  "removeModes": [],                         // e.g. ["PREARM"]: delete that optional mode's FC ranges
+  "beepers": { "disabled": ["ON_USB"], "dshotBeaconDisabled": ["RX_SET"] },
+  "sensors": { "acc": true, "baro": false, "mag": null },
+  "boardAlignment": { "roll": 0, "pitch": 0, "yaw": 90 },
+  "osd": { "videoSystem": "HD",
+           "elements": [ { "name": "MAIN_BATT_VOLTAGE", "enabled": true, "x": 1, "y": 18 },
+                         { "name": "LINK_QUALITY", "enabled": true },        // x/y null = default layout
+                         { "name": "RSSI_VALUE", "enabled": false } ] }
+}
+```
+
+- **Optional modes.** The stable names follow `config::modes` (firmware box names): `PREARM` (permanent id 36), `FLIP OVER AFTER CRASH` (35, "turtle"), `AIR MODE` (28). Aliases like `AIRMODE` and `TURTLE` are also accepted, but the UI writes the canonical names. These three are managed **only when the model mentions them**:
+  - an entry in `switches` replaces that mode's FC ranges;
+  - a name in `removeModes` deletes them;
+  - otherwise the FC's ranges are kept.
+
+  The always-managed modes (ARM, ANGLE, …) keep today's rule: their FC ranges are replaced by `switches`.
+- **`airmode`.** On every supported line, air mode is `feature AIRMODE || box AIRMODE` (`fc/rc_modes.c`). The AIR MODE box is only offered when the feature is off (`msp/msp_box.c`). The feature is on by default (`config/feature.c`). 2025.12 renamed `airmodeIsEnabled()` to `isAirmodeEnabled()` but did not change the behaviour.
+  - `ALWAYS`: `feature AIRMODE`. Any AIR MODE range is removed, since it would be dead.
+  - `SWITCH`: `feature -AIRMODE` plus the `switches` entry. If that entry is missing, it's a `CONFIG` error.
+  - `OFF`: `feature -AIRMODE`, and AIR MODE ranges are removed.
+  - Rejected with `CONFIG`: an AIR MODE switch together with `ALWAYS` or `OFF`.
+- **`beepers`.** The stable names are the 4.4/4.5 CLI names from `beeper list` (`io/beeper.c` `beeperTable`). When `beepers` is set, the generator writes every condition the firmware has: `beeper -X` for the listed ones and `beeper X` for the rest. This gives a full, verifiable state. Per-version differences:
+  - On 2025.12, `CRASH_FLIP` is written as `CRASHFLIP`.
+  - `RC_SMOOTHING_INIT_FAIL` doesn't exist on 2025.12. Listing it there gives a warning and nothing is written for it.
+  - The CLI matches names by prefix (`strncasecmp`), so the generator always writes full names.
+  - Firmware default: all conditions on (`beeper_off_flags` = 0). The DShot beacon is off for both RX_LOST and RX_SET (`DEFAULT_DSHOT_BEACON_OFF_FLAGS`).
+  - `dshotBeaconDisabled` maps to `beacon -X` / `beacon X` for the only allowed conditions, RX_LOST and RX_SET.
+  - `beeper` and `beacon` become guard-allowlisted verbs in the implementation PR.
+  - The old `extras.beeper` boolean is not used by the generator. It stays accepted, is ignored, and is superseded by `beepers`.
+- **`sensors`.**
+  - `true` sets `acc_hardware` / `baro_hardware` / `mag_hardware` to `AUTO`. If the FC already names a specific chip, that chip is kept.
+  - `false` sets it to `NONE`. No `feature` is involved on 4.4+.
+  - The gyro is always on.
+  - With ACC off, the firmware hides ANGLE, HORIZON, HEADFREE and ACRO TRAINER (plus ALTHOLD and POSHOLD on 2025.12). Failsafe and GPS rescue can't self-level, because angle mode requires `sensors(SENSOR_ACC)` (`fc/core.c`). So `acc: false` together with an ANGLE, HORIZON, ALTHOLD, POSHOLD or GPS RESCUE switch is a `CONFIG` error.
+  - `baro: false` with ALTHOLD gives a warning: ALTHOLD can fall back to GPS altitude.
+  - Turning ACC on needs an accelerometer calibration before arming (Device's `device_acc_calibrate`).
+  - Device's `SensorState.configuredHardware` reads the same settings: `NONE` = `false` (disabled), anything else = `true`.
+  - **Calibration is never interleaved with a config batch.** The firmware saves the whole config to flash when an ACC calibration finishes. So the UI runs `device_acc_calibrate` only after `config_apply` has returned (saved, rebooted, reconnected), or before `config_plan`, never between them. The config script doesn't rely on unsaved RAM state outside its own batch: every batch ends in `save` + reboot (or `exit`), and the batch holds the port, so a calibration can't start mid-batch (`PORT_BUSY`).
+- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on all three lines (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device reports them as `SensorAlignment.boardRollDeg` / `boardPitchDeg` / `boardYawDeg` (signed whole degrees, #63), which are the same values as `boardAlignment.roll` / `pitch` / `yaw`.
+- **`osd`.**
+  - **Setting `osd` writes:**
+    - always: `feature OSD`;
+    - when `videoSystem` is set: `vcd_video_system`;
+    - for HD: `osd_displayport_device = MSP` and `osd_canvas_width = 53` / `osd_canvas_height = 20`. The CLI doesn't resize the canvas; only MSP_SET_OSD_CONFIG does that (`msp/msp.c`).
+    - for analog: `osd_displayport_device = AUTO`.
+  - **Grids:** PAL 30×16, NTSC 30×13, AUTO 30×13 (fits either camera), HD 53×20 (`drivers/display.h`, `osd/osd.h`).
+  - **Elements:**
+    - Each element maps to `osd_<cli>_pos`. The stable name is the `osd_items_e` name without `OSD_`, e.g. `MAIN_BATT_VOLTAGE` → `osd_vbat_pos`, `ITEM_TIMER_2` → `osd_tim_2_pos`.
+    - The 4.4 list has 77 elements; 4.5 adds `GPS_LAP_TIME_*`; 2025.12 adds `DEBUG2` and `LIDAR_DIST`. An unknown name for the firmware is a `CONFIG` error.
+    - Elements not listed keep the FC's state.
+    - An element whose x/y doesn't fit the grid is a `CONFIG` error.
+  - **Position encoding** is identical on all three lines (`osd/osd.h`):
+    - x bits 0–4 plus bit 10 (x ≤ 63);
+    - y bits 5–9;
+    - bits 11–13: visible in OSD profile 1/2/3;
+    - bits 14–15: element variant (type).
+
+    `enabled` sets or clears all three profile bits. The type bits are kept from the FC.
+  - **Defaults:** config owns the default positions. The firmware's own defaults put every element hidden at the centre, so they aren't useful. `config_osd_default_layout(videoSystem, firmwareVersion)` returns `OsdLayout {videoSystem, cols, rows, elements: {name, x, y, enabled}[]}` for that firmware line. The UI preview and the generator use the same table.
+
 ### 2.2 Other types (see model.rs for fields)
 
 `HostPort`, `HostPortKind`, `FcInfo {…, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
@@ -218,6 +289,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `config_list_backups` | – | `Backup[]` | config |
 | `config_backups_dir` | – | `string` | config |
 | `config_restore` | `backupId` | `ApplyResult` (events) | config |
+| `config_osd_default_layout` | `videoSystem: OsdVideoSystem, firmwareVersion: string` | `OsdLayout` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
 | `system_driver_status` | – | `DriverStatus` | packaging |
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
