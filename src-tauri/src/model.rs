@@ -990,14 +990,22 @@ pub enum SerialFunction {
     Msp,
 }
 
-/// Emitted on event `config://progress` by config_apply / config_rollback / config_restore.
+/// Emitted on event `config://progress` by config_apply / config_rollback / config_restore /
+/// config_restore_after_flash.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigProgress {
     pub stage: ConfigStage,
-    /// 0.0..=1.0 within the stage (SENDING: lines sent / total)
+    /// 0.0..=1.0 within the stage (SENDING / RESTORING: lines sent / total)
     pub fraction: f32,
+    /// Never contains a backup line (they can hold secrets); RESTORING says "line n/total".
     pub message: Option<String>,
+    /// RESTORING only: 1-based number of the backup line being replayed (0 before the first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    /// RESTORING only: number of backup lines (the `diff all` body, comments included).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1005,9 +1013,80 @@ pub struct ConfigProgress {
 pub enum ConfigStage {
     Backup,
     Sending,
+    /// config_restore_after_flash: replaying the backup (progress carries `line` / `total`).
+    Restoring,
     Saving,
     Rebooting,
     Reconnected,
+}
+
+/// Result of `config_restore_after_flash` (ARCHITECTURE.md §5.2). Every non-empty line of
+/// the backup's `diff all` body is counted exactly once: in `applied`, `failed` or `skipped`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreReport {
+    /// Lines the FC accepted (after dialect mapping), `defaults nosave` included.
+    pub applied: usize,
+    /// Lines the FC rejected; the restore continued past them.
+    pub failed: Vec<RestoreFailure>,
+    /// Lines deliberately not sent, each with a reason.
+    pub skipped: Vec<RestoreSkip>,
+    /// Mapping notes (renames, battery-profile placement, UID policy), read-back differences.
+    pub warnings: Vec<String>,
+    /// True once `save` was accepted (also when some lines failed: intended on this path).
+    pub saved: bool,
+    /// The backup's firmware line differs from the flashed one (dialect mapping was used).
+    pub line_changed: bool,
+    /// Full firmware version of the backup, e.g. "2025.12.5".
+    pub from_version: String,
+    /// Full firmware version now on the board, e.g. "2026.6.2".
+    pub to_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreFailure {
+    /// The backup line (secret values masked).
+    pub line: String,
+    /// The FC's error, plus the command actually sent when the line was mapped.
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreSkip {
+    /// The backup line (secret values masked).
+    pub line: String,
+    pub reason: RestoreSkipReason,
+    /// Human-readable explanation (e.g. "removed in 2025.12").
+    pub detail: String,
+}
+
+/// Why a backup line was not sent (ARCHITECTURE.md §5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RestoreSkipReason {
+    /// A comment, including the `# version` banner.
+    Comment,
+    /// `diff all` / `batch start` / `batch end` / `save`: the restore sends its own.
+    SessionControl,
+    /// board_name, manufacturer_id, mcu_id, signature: identity of the hardware, never replayed.
+    BoardIdentity,
+    /// resource / timer / dma when the firmware line changed (pin maps differ per line).
+    HardwareLineChanged,
+    /// The setting, feature, beeper, value or command does not exist on the target line.
+    RemovedOnTarget,
+    /// The setting exists on the target line but not in this firmware build.
+    NotInBuild,
+    /// Same name, different meaning on the target line (D-term across 4.5 ↔ 2025.12).
+    SemanticsChanged,
+    /// An aux mode or adjustment function with no equivalent on the target line.
+    NoEquivalentMode,
+    /// A serial port the target firmware / board does not have.
+    PortNotAvailable,
+    /// A 2026.6 battery profile other than the selected one, restored onto a line without
+    /// battery profiles.
+    OtherBatteryProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1170,6 +1249,55 @@ pub struct AppInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restore_report_and_progress_wire_format() {
+        let r = RestoreReport {
+            applied: 3,
+            failed: vec![RestoreFailure {
+                line: "set angle_limit = 90".into(),
+                error: "###ERROR IN set: INVALID VALUE###".into(),
+            }],
+            skipped: vec![RestoreSkip {
+                line: "board_name SPEEDYBEEF405V4".into(),
+                reason: RestoreSkipReason::BoardIdentity,
+                detail: "hardware identity".into(),
+            }],
+            warnings: vec![],
+            saved: true,
+            line_changed: true,
+            from_version: "2025.12.5".into(),
+            to_version: "2026.6.2".into(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["lineChanged"], true);
+        assert_eq!(v["fromVersion"], "2025.12.5");
+        assert_eq!(v["toVersion"], "2026.6.2");
+        assert_eq!(v["failed"][0]["error"], "###ERROR IN set: INVALID VALUE###");
+        assert_eq!(v["skipped"][0]["reason"], "BOARD_IDENTITY");
+        let p = ConfigProgress {
+            stage: ConfigStage::Restoring,
+            fraction: 0.5,
+            message: Some("line 5/10".into()),
+            line: Some(5),
+            total: Some(10),
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["stage"], "RESTORING");
+        assert_eq!(
+            (v["line"].as_u64(), v["total"].as_u64()),
+            (Some(5), Some(10))
+        );
+        let v = serde_json::to_value(ConfigProgress {
+            stage: ConfigStage::Saving,
+            fraction: 0.0,
+            message: None,
+            line: None,
+            total: None,
+        })
+        .unwrap();
+        assert!(v.get("line").is_none() && v.get("total").is_none());
+    }
 
     /// The craft-name rule is one rule: the schema's pattern is CRAFT_NAME_PATTERN, and
     /// `craft_name_valid` agrees with every shared case (tests/model-limits.test.ts runs the

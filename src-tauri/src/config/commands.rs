@@ -22,7 +22,7 @@ use crate::device::{ConnectionManager, FcLink};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ApplyResult, Backup, CliScript, ConfigProgress, DroneModel, FcSerialPort, FirmwareCatalog,
-    OsdLayout, OsdVideoSystem, VerifyReport,
+    OsdLayout, OsdVideoSystem, RestoreReport, VerifyReport,
 };
 
 /// `config://progress`, payload [`ConfigProgress`] (stages BACKUP, SENDING, SAVING,
@@ -262,6 +262,18 @@ pub async fn config_restore(app: AppHandle, backup_id: String) -> AppResult<Appl
         restore(m, store, &backup_id, emit)
     })
     .await
+}
+
+/// Restore a `diff all` backup after a firmware flash, across firmware lines
+/// (ARCHITECTURE.md §5.2). Contract only for now: returns `NOT_IMPLEMENTED` until the
+/// implementation lands.
+#[tauri::command]
+pub async fn config_restore_after_flash(
+    app: AppHandle,
+    backup_id: String,
+) -> AppResult<RestoreReport> {
+    let _ = (app, backup_id);
+    Err(AppError::NotImplemented("config_restore_after_flash"))
 }
 
 #[cfg(test)]
