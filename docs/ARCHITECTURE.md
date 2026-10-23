@@ -160,6 +160,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 unless note
     - bits 14–15: element variant (type).
 
     `enabled` sets or clears all three profile bits. The type bits are kept from the FC.
+  - **Catalog:** `config_firmware_catalog(firmwareVersion)` lists, per firmware line, the beeper conditions, DShot beacon events, OSD element names and stable mode names, so the UI doesn't hard-code them. It describes the line, not one board's build; plan checks the FC's `dump all`.
   - **Defaults:** config owns the default positions. The firmware's own defaults put every element hidden at the centre, so they aren't useful. `config_osd_default_layout(videoSystem, firmwareVersion)` returns `OsdLayout {videoSystem, cols, rows, elements: {name, x, y, enabled}[]}` for that firmware line. The UI preview and the generator use the same table.
 
 ### 2.2 Other types (see model.rs for fields)
@@ -292,6 +293,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `config_backups_dir` | – | `string` | config |
 | `config_restore` | `backupId` | `ApplyResult` (events) | config |
 | `config_osd_default_layout` | `videoSystem: OsdVideoSystem, firmwareVersion: string` | `OsdLayout` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
+| `config_firmware_catalog` | `firmwareVersion: string` | `FirmwareCatalog {beepers: BeeperName[], beaconEvents: DshotBeaconCondition[], osdElements: string[], modes: string[]}` (read-only, no FC I/O; `UNSUPPORTED_FIRMWARE` for other lines) | config |
 | `system_driver_status` | – | `DriverStatus` | packaging |
 | `system_install_dfu_driver` | – | – | packaging |
 | `system_app_info` | – | `AppInfo` | packaging |
