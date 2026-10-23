@@ -196,8 +196,41 @@ non-numeric or > 65535 pre-release (e.g. `-beta.1`) or `+build` metadata. So:
 - Windows Installer ignores the 4th field when it compares versions, and Tauri's MSI
   uses `MajorUpgrade AllowSameVersionUpgrades="yes"`, so `0.1.0-1` → `0.1.0-2` →
   `0.1.0` install over each other as upgrades. In SemVer `0.1.0-1` < `0.1.0`, so the
-  final release still sorts after its previews. The NSIS `VIProductVersion` is
-  `X.Y.Z.0` (Tauri only maps `+build` there); the NSIS display version stays `X.Y.Z-N`.
+  final release still sorts after its previews.
+
+### Windows file versions (NSIS installer and app exe)
+
+The numeric `VERSIONINFO` (fixed `FileVersion` and `ProductVersion`, which Explorer and
+inventory tools show) follows the same rule as the MSI. `X.Y.Z-N` → `X.Y.Z.N`;
+`X.Y.Z` → `X.Y.Z.0`, because a VERSIONINFO always has 4 fields. The string
+`FileVersion`/`ProductVersion` and the NSIS display version stay `X.Y.Z-N`.
+`src-tauri/windows/version.mjs` holds the rule, and
+`check-release-version.mjs` outputs it as `windows_version`.
+
+Tauri itself only puts semver `+build` metadata in the 4th field (which MSI forbids),
+so `0.1.0-1` came out as `0.1.0.0` (v0.1.0-1's setup.exe and app exe). Two pieces fix that:
+
+- **NSIS installer**: `bundle.windows.nsis.template` = `src-tauri/windows/installer.nsi`.
+  This is Tauri's own template for the locked `@tauri-apps/cli` version, where only
+  `VIProductVersion`/`VIFileVersion` are computed from `${VERSION}` with
+  `!searchparse`.
+  - `installerHooks` can't do it: hooks are `!include`d before `VERSIONWITHBUILD` is
+    defined and before `VIProductVersion` is set, and NSIS rejects redefining either.
+  - The file is generated, not hand-edited: after updating `@tauri-apps/cli`, run
+    `node src-tauri/windows/nsis-template.mjs --write`.
+  - CI (`--check` in `build.yml`) fails if the file differs from that version's upstream
+    template plus the change. So a CLI bump can't silently pair a stale template with a
+    newer bundler.
+- **App exe**: `build.beforeBundleCommand` runs `src-tauri/windows/set-exe-version.mjs`.
+  It runs after `cargo build` and before bundling and signing. It overwrites the 16
+  version bytes of the exe's `VS_FIXEDFILEINFO` in place: same size, idempotent, and it
+  honours `tauri build --config` version overrides. Both bundles then ship the patched
+  exe. On non-Windows builds it does nothing.
+
+CI (`build.yml` and `release.yml`, Windows) runs
+`.github/scripts/check-windows-versions.ps1`. It reads both numeric fields of the built
+`*-setup.exe` and `target/release/betaflight-setup-wizard.exe` and fails if they differ
+from `windows_version`, next to the MSI `ProductVersion` check.
 
 ### Not enabled yet (later phases)
 

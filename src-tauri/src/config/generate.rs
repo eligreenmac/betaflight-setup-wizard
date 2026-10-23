@@ -450,25 +450,22 @@ fn esc_section(cx: &mut Ctx) -> AppResult<()> {
     Ok(())
 }
 
-/// `set craft_name`: 1-16 printable ASCII (MAX_NAME_LENGTH); "" clears it (`-`).
+/// `set craft_name`: see `model::craft_name_valid` (the schema's pattern); "" clears it (`-`).
 fn craft_name_section(cx: &mut Ctx) -> AppResult<()> {
     let Some(name) = cx.model.extras.craft_name.as_deref() else {
         return Ok(());
     };
-    if name.is_empty() {
-        cx.push("set craft_name = -");
-        return Ok(());
-    }
-    let ok = name.len() <= 16
-        && name.chars().all(|c| c == ' ' || c.is_ascii_graphic())
-        && name.trim() == name
-        && name != "-";
-    if !ok {
+    if !crate::model::craft_name_valid(name) {
         return Err(cfg_err(format!(
-            "craft name {name:?} must be 1-16 printable ASCII characters without leading/trailing spaces"
+            "craft name {name:?} must be 1-16 printable ASCII characters other than # and ?, \
+             without leading/trailing spaces, and not just \"-\""
         )));
     }
-    cx.push(format!("set craft_name = {name}"));
+    cx.push(if name.is_empty() {
+        "set craft_name = -".to_string()
+    } else {
+        format!("set craft_name = {name}")
+    });
     Ok(())
 }
 
@@ -516,6 +513,19 @@ fn vtx_table_section(cx: &mut Ctx) -> AppResult<()> {
             "VTX table / band / channel / power are set but the model has no VTX",
         ));
     }
+    // Firmware ranges (cli/settings.c), whether or not the table is known.
+    for (what, val, max) in [
+        ("band", v.band, crate::model::VTX_BAND_MAX),
+        ("channel", v.channel, crate::model::VTX_CHANNEL_MAX),
+        ("power level", v.power, crate::model::VTX_POWER_MAX),
+    ] {
+        if let Some(n) = val.filter(|&n| n == 0 || n > max) {
+            return Err(cfg_err(format!(
+                "VTX {what} {n}: the CLI accepts 1-{max} (vtx_{} range)",
+                what.split(' ').next().unwrap()
+            )));
+        }
+    }
     let table: Option<VtxTableState> = match &v.table {
         Some(t) => {
             vtx_table::validate(t).map_err(cfg_err)?;
@@ -545,14 +555,6 @@ fn vtx_table_section(cx: &mut Ctx) -> AppResult<()> {
         cx.warnings.push(
             "VTX band/channel/power written without a known VTX table; check it on the FC".into(),
         );
-    }
-    if let Some(p) = v.power {
-        if p > vtx_table::MAX_CLI_POWER_INDEX {
-            return Err(cfg_err(format!(
-                "VTX power level {p}: the CLI accepts 1-{} (vtx_power range)",
-                vtx_table::MAX_CLI_POWER_INDEX
-            )));
-        }
     }
     if let Some(t) = &v.table {
         cx.cmds.extend(VtxTableState::commands_for(t));

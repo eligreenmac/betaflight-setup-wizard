@@ -785,6 +785,34 @@ fn model_ext_validation() {
         },
         "CLI accepts 1-7",
     );
+    // Firmware ranges apply even when the model keeps the FC's (unknown) table.
+    for (f, msg) in [
+        (
+            (|m: &mut DroneModel| m.vtx.power = Some(0)) as fn(&mut DroneModel),
+            "CLI accepts 1-7",
+        ),
+        (|m| m.vtx.band = Some(9), "CLI accepts 1-8"),
+        (|m| m.vtx.channel = Some(0), "CLI accepts 1-8"),
+    ] {
+        bad(
+            &|m| {
+                m.vtx.table = None;
+                f(m)
+            },
+            msg,
+        );
+    }
+    bad(
+        &|m| m.extras.craft_name = Some("QUAD#1".into()),
+        "craft name",
+    );
+    bad(&|m| m.extras.craft_name = Some("WHY?".into()), "craft name");
+    bad(&|m| m.extras.craft_name = Some("-".into()), "craft name");
+    // A '-' inside the name is stored as is (only exactly "-" means empty).
+    let mut m = base.clone();
+    m.extras.craft_name = Some("-LR7-".into());
+    let s = gen(&m, Dialect::V4_4).unwrap();
+    assert!(s.commands.contains(&"set craft_name = -LR7-".to_string()));
 
     // "" clears the name; the firmware's empty value is "-".
     let mut m = base.clone();
