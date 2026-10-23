@@ -499,3 +499,69 @@ fn rollback_replays_only_guarded_lines() {
     assert_eq!(fc.log.last().map(String::as_str), Some("save"));
     let _ = std::fs::remove_dir_all(store.root());
 }
+
+fn assert_left_cli_without_save(fc: &MockFc, ctx: &str) {
+    assert!(
+        !fc.log.iter().any(|l| l == "save"),
+        "{ctx}: save sent {:?}",
+        fc.log
+    );
+    assert_eq!(fc.log.last().map(String::as_str), Some("exit"), "{ctx}");
+}
+
+#[test]
+fn apply_link_failure_mid_batch_sends_exit_not_save() {
+    use super::mock::LinkFault;
+    for (at, fault) in [
+        ("set motor_pwm_protocol", LinkFault::Timeout),
+        ("batch start", LinkFault::Timeout),
+        ("serial", LinkFault::Timeout),
+        ("set motor_pwm_protocol", LinkFault::Unplug),
+    ] {
+        let ctx = format!("{at} {fault:?}");
+        let mut fc = MockFc::load("4.5", "speedybeef405v4");
+        let before = fc.snapshot();
+        let store = tmp_store("link");
+        let script = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap();
+        fc.log.clear();
+        fc.link_fault = Some((at.to_string(), fault));
+        let e = session::apply(&mut fc, &script, &store, "UIDL", &mut |_| {}).unwrap_err();
+        // The original error, not the one from the best-effort `exit`.
+        assert_eq!(e.code(), "SERIAL", "{ctx}");
+        let msg = e.to_string();
+        match fault {
+            LinkFault::Timeout => assert!(msg.contains("timeout"), "{ctx}: {msg}"),
+            LinkFault::Unplug => assert!(msg.contains("disconnected"), "{ctx}: {msg}"),
+        }
+        assert_left_cli_without_save(&fc, &ctx);
+        if fault == LinkFault::Timeout {
+            assert_eq!(fc.reboots, 1, "{ctx}: exit reached the FC");
+        }
+        let after = fc.snapshot();
+        assert_eq!(after.ports, before.ports, "{ctx}: batch discarded");
+        assert_eq!(after.settings, before.settings, "{ctx}");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_link_failure_mid_replay_sends_exit_not_save() {
+    use super::mock::LinkFault;
+    for fault in [LinkFault::Timeout, LinkFault::Unplug] {
+        let mut fc = MockFc::load("2025.12", "speedybeef405v4");
+        fc.preset(&["set motor_poles = 16"]);
+        let store = tmp_store("link-rb");
+        let bk = session::backup(&mut fc, &store, "UIDK").unwrap();
+        fc.preset(&["set motor_poles = 12"]);
+        let before = fc.snapshot();
+        fc.log.clear();
+        // After `defaults nosave` wiped RAM: the FC must not stay in CLI with it.
+        fc.link_fault = Some(("set motor_poles".into(), fault));
+        let e = session::rollback(&mut fc, &bk, &store, "UIDK", &mut |_| {}).unwrap_err();
+        assert_eq!(e.code(), "SERIAL", "{fault:?}");
+        assert!(fc.log.contains(&"defaults nosave".to_string()));
+        assert_left_cli_without_save(&fc, &format!("{fault:?}"));
+        assert_eq!(fc.snapshot().settings, before.settings, "{fault:?}");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}

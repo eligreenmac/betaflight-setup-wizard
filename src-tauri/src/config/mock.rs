@@ -44,6 +44,16 @@ impl State {
     }
 }
 
+/// Link-level failure injected by [`MockFc::link_fault`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkFault {
+    /// The line gets no reply (read timeout); the link still works afterwards.
+    Timeout,
+    /// The cable is pulled while sending the line: every later call fails and the FC
+    /// power-cycles (unsaved changes are lost).
+    Unplug,
+}
+
 pub struct MockFc {
     pub version: String,
     pub board_name: String,
@@ -58,6 +68,9 @@ pub struct MockFc {
     /// Every line received, in order.
     pub log: Vec<String>,
     pub reboots: usize,
+    /// Fail the link when a line starting with this prefix is sent.
+    pub link_fault: Option<(String, LinkFault)>,
+    unplugged: bool,
 }
 
 pub fn fixture(firmware: &str, board: &str) -> String {
@@ -93,6 +106,8 @@ impl MockFc {
             fail_on: Vec::new(),
             log: Vec::new(),
             reboots: 0,
+            link_fault: None,
+            unplugged: false,
         }
     }
 
@@ -291,14 +306,35 @@ impl Connection for MockFc {
     }
 
     fn cli_exec(&mut self, line: &str) -> AppResult<String> {
+        if self.unplugged {
+            return Err(AppError::Serial("port closed".into()));
+        }
         if !self.in_cli {
             return Err(AppError::Cli("not in CLI mode".into()));
         }
         self.log.push(line.to_string());
+        if let Some((prefix, fault)) = self.link_fault.clone() {
+            if line.starts_with(prefix.as_str()) {
+                self.link_fault = None;
+                if fault == LinkFault::Unplug {
+                    self.unplugged = true;
+                    self.in_cli = false;
+                    self.live = self.saved.clone();
+                    return Err(AppError::Serial("device disconnected".into()));
+                }
+                return Err(AppError::Serial(format!(
+                    "timeout waiting for reply to `{line}`"
+                )));
+            }
+        }
         Ok(self.exec(line))
     }
 
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
+        if self.unplugged {
+            self.log.push(if save { "save" } else { "exit" }.into());
+            return Err(AppError::Serial("port closed".into()));
+        }
         if !self.in_cli {
             return Err(AppError::Cli("not in CLI mode".into()));
         }

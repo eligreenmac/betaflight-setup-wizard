@@ -118,7 +118,26 @@ pub fn backup<C: Connection + ?Sized>(
 /// Send `lines` inside a CLI batch, stop at the first rejected command. Returns
 /// (applied, errors). `lines` must already be validated (`guard`); the batch is
 /// opened here and closed by `finish` (`save`) or discarded (`exit`).
+///
+/// If the link itself fails (write/read error, timeout, disconnect) anywhere in the
+/// batch, a best-effort `exit` is sent so the FC does not stay in CLI mode with a
+/// half-applied, unsaved batch (`exit` reboots without saving); its own error is
+/// ignored and the original error is returned. `save` is never sent on that path.
 fn send_batch<C: Connection + ?Sized>(
+    conn: &mut C,
+    lines: &[String],
+    cb: &mut dyn FnMut(ConfigProgress),
+) -> AppResult<(usize, Vec<CliError>)> {
+    match send_batch_inner(conn, lines, cb) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let _ = conn.exit_cli(false);
+            Err(e)
+        }
+    }
+}
+
+fn send_batch_inner<C: Connection + ?Sized>(
     conn: &mut C,
     lines: &[String],
     cb: &mut dyn FnMut(ConfigProgress),
