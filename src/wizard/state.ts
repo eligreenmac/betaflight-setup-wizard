@@ -37,8 +37,8 @@ export interface UiState extends RoleOptions {
   flashed: boolean;
   /** Mandatory "all propellers removed" acknowledgement before any motor test. */
   propsOffAck: boolean;
-  /** Mandatory "battery disconnected, USB power only" acknowledgement (no firmware motor timeout). */
-  batteryOffAck: boolean;
+  /** Mandatory "battery connected, quad held / secured" acknowledgement (ESCs need battery power to spin). */
+  batteryOnAck: boolean;
   motorOrderOk: boolean;
   motorDirectionOk: boolean;
   /** null = not probed yet; false = backend has no device_motor_test_* commands yet. */
@@ -73,7 +73,7 @@ function emptyUi(): UiState {
     firmwareDecision: null,
     flashed: false,
     propsOffAck: false,
-    batteryOffAck: false,
+    batteryOnAck: false,
     motorOrderOk: false,
     motorDirectionOk: false,
     motorTestAvailable: null,

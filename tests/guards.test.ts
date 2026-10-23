@@ -77,7 +77,7 @@ describe("guards map", () => {
     expect(keys(s, "vtx")).toEqual([]);
   });
 
-  it("esc: motor confirmations never gate (battery-powered checks are phase 2)", () => {
+  it("esc: motor order/direction confirmations are optional (never gate)", () => {
     const s = ready();
     s.ui.motorTestAvailable = false;
     expect(keys(s, "esc")).toEqual([]);

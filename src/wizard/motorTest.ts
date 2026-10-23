@@ -4,8 +4,9 @@
  *
  * Betaflight has NO firmware-side MSP motor timeout: if USB drops mid-test the last
  * value stays applied. So the UI:
- *   - refuses to start without BOTH acknowledgements ("props removed" AND
- *     "battery disconnected, USB power only"), without calling the backend;
+ *   - refuses to start without BOTH acknowledgements ("all propellers removed" AND
+ *     "battery connected", the ESCs need it to spin; quad held or secured), without
+ *     calling the backend;
  *   - sends device_motor_test_keepalive every 200 ms while a test runs (the backend
  *     watchdog stops motors after `limits.watchdogMs`, default 500, without one);
  *   - calls device_motor_test_stop on: window blur, page hide / beforeunload, step or
@@ -52,9 +53,10 @@ export const STOP_REASON_ERROR: Record<MotorTestStopReason, ErrorCode | null> = 
 
 export interface MotorAcks {
   propsRemoved: boolean;
-  batteryDisconnected: boolean;
+  /** The battery is connected (ESCs powered) and the user keeps clear / holds the quad. */
+  batteryConnected: boolean;
 }
-export const acksComplete = (a: MotorAcks): boolean => a.propsRemoved === true && a.batteryDisconnected === true;
+export const acksComplete = (a: MotorAcks): boolean => a.propsRemoved === true && a.batteryConnected === true;
 
 export type StopTrigger = "requested" | "blur" | "pagehide" | "beforeunload" | "navigation" | "unmount" | "ipc-error" | "backend" | "acks-withdrawn";
 
@@ -93,7 +95,7 @@ export class MotorTestController {
 
   async start(motor: number, opts: { port: string | null; acks: MotorAcks; throttle?: number }): Promise<void> {
     if (!acksComplete(opts.acks)) {
-      const e = uiError("MOTOR_TEST_REFUSED", "confirm that the propellers are removed and the battery is disconnected");
+      const e = uiError("MOTOR_TEST_REFUSED", "confirm that the propellers are removed and the battery is connected");
       this.state.error = e;
       throw e;
     }
