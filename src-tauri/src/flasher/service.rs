@@ -977,6 +977,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn full_erase_option_mass_erases_with_erasing_progress() {
+        let image = parse_intel_hex(&hex()).unwrap();
+        let opts = FlashOptions {
+            full_erase: true,
+            manifest: true,
+        };
+        let mut sim = SimDfu::f405();
+        sim.mass_erase = crate::flasher::dfu::sim::SimMassErase::Supported {
+            nak_polls: 4,
+            busy_polls: 20,
+        };
+        sim.fill(0x0800_4000, 16 * 1024, 0xC5); // saved settings
+        let mut dfu = DfuSe::new(sim).with_sleep(|_| {});
+        let mut seen = Vec::new();
+        flash(
+            &mut dfu,
+            &image,
+            &opts,
+            &mut |p| seen.push(p),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let sim = dfu.into_transport();
+        assert!(sim.log.iter().any(|l| l == "DNLOAD 0 [41] len=1"));
+        assert!(sim.bytes(0x0800_4000, 16 * 1024).iter().all(|&b| b == 0xFF));
+        // The existing ERASING stage carries the mass erase, its fraction only grows.
+        let erasing: Vec<f32> = seen
+            .iter()
+            .take_while(|p| matches!(p.stage, FlashStage::Erasing))
+            .map(|p| p.fraction)
+            .collect();
+        assert!(erasing.len() > 20);
+        assert!(erasing.windows(2).all(|w| w[1] >= w[0]));
+        assert_eq!(erasing.last(), Some(&1.0));
+        assert!(matches!(
+            seen.last().map(|p| &p.stage),
+            Some(FlashStage::Done)
+        ));
+    }
+
     impl FirmwareService<MockHttp> {
         fn api_calls(&self) -> Vec<String> {
             self.api.http().calls.lock().unwrap().clone()
