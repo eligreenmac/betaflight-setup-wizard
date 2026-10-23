@@ -88,7 +88,12 @@ Enums:
 `ConfigStage`, `CliError`, `VerifyReport {ok, mismatches}`, `Mismatch {setting, expected, actual}`,
 `DriverStatus`, `UsbDriverInfo`, `UsbDeviceKind`, `DriverAction`, `DriverGuidance`, `AppInfo`,
 `MotorTestLimits {maxThrottle, watchdogMs}`, `MotorOutputConfig`, `MotorTestSession`,
-`MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`.
+`MotorTestStopped {reason, error}`, `RcChannels {seq, timestampMs, channels}`, `RcStopped {reason, error}`,
+`SensorStatus {gyro, acc, baro, mag: SensorState, accCalibrated, alignment}`,
+`SensorState {present, enabled, configuredHardware, detectedHardware}`,
+`SensorAlignment {boardRollDeg, boardPitchDeg, boardYawDeg, gyroAlignment}`,
+`AccCalibrationResult {durationMs, completion: CALIBRATING_FLAG|FIXED_WAIT, maxGyroRateDps}`,
+`Attitude {seq, timestampMs, roll, pitch, yaw}`, `AttitudeStopped {reason, error}` (§4.3).
 
 `DriverStatus` (from `system_driver_status`, Windows; all-OK and empty on other OSes):
 
@@ -140,8 +145,11 @@ plus the device/flasher codes:
 | `FLASH_FAILED` | DFU erase/write/leave failed | – | Retry; recovery via DFU |
 | `VERIFY_MISMATCH` | Read-back differs from the image | – | Retry flash |
 | `MOTOR_TEST_REFUSED` | Motor-test safety gate refused (props not confirmed, throttle outside stop..cap, 3D mode, invalid motor, motors disabled); motors are at stop | – (reason in `message`) | Show the message; nothing spins |
-| `BOARD_ARMED` | FC is armed at motor-test start (or became armed) | – | "Disarm first" |
+| `BOARD_ARMED` | FC is armed at motor-test start (or became armed), or at `device_acc_calibrate` (nothing sent) | – | "Disarm first" |
 | `MOTOR_TEST_NOT_ACTIVE` | Keepalive after the test stopped (watchdog, armed, disconnect) | – | Reset the motor-test UI |
+| `ACC_NOT_AVAILABLE` | `device_acc_calibrate`: no accelerometer detected, or disabled (`acc_hardware = NONE`), or firmware built without one; nothing was sent | `{ present: boolean, enabled: boolean }` | `enabled: false`: "The accelerometer is turned off"; else "No accelerometer found" (skip the level step) |
+| `BOARD_MOVING` | `device_acc_calibrate`: gyro rate above the limit (§4.3). `during: false`: checked before, nothing was sent. `during: true`: moved while calibrating, the FC already stored the (bad) result | `{ maxRateDps: number, limitDps: number, during: boolean }` | "Put the drone down level and keep it still", then retry |
+| `ACC_CALIBRATION_FAILED` | `device_acc_calibrate`: the FC still reports calibrating after 4 s, or still reports "accelerometer needs calibration" afterwards | – | Retry; then suggest a power cycle |
 
 Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
 `DRIVER` stays for driver-installation failures (packaging).
@@ -171,6 +179,11 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_motor_test_stop` | – | – (all motors to stop) | device |
 | `device_rc_stream_start` | `rateHz: number\|null` (15, clamped 1–50) | – (events) | device |
 | `device_rc_stream_stop` | – | – | device |
+| `device_sensors` | – | `SensorStatus` (read-only; §4.3) | device |
+| `device_acc_calibrate` | – | `AccCalibrationResult`, resolves when the FC is done (§4.3) | device |
+| `device_get_attitude` | – | `Attitude` (one sample, `seq` = `timestampMs` = 0) | device |
+| `device_attitude_stream_start` | `rateHz: number\|null` (10, clamped 1–30) | – (events) | device |
+| `device_attitude_stream_stop` | – | – | device |
 | `flasher_list_targets` | – | `BoardTarget[]` | flasher |
 | `flasher_list_releases` | `target` | `FirmwareRelease[]` | flasher |
 | `flasher_list_dfu_devices` | – | `DfuDevice[]` | flasher |
@@ -205,6 +218,8 @@ Events (named `<module>://<name>`):
 | `device://motor-test-stopped` | `MotorTestStopped {reason: REQUESTED\|WATCHDOG\|ARMED\|DISCONNECTED\|APP_CLOSING\|ERROR, error: AppError\|null}` |
 | `device://rc-channels` | `RcChannels {seq, timestampMs, channels: number[]}` |
 | `device://rc-stopped` | `RcStopped {reason: REQUESTED\|DISCONNECTED\|ERROR, error: AppError\|null}` |
+| `device://attitude` | `Attitude {seq, timestampMs, roll, pitch, yaw}` (degrees, §4.3) |
+| `device://attitude-stopped` | `AttitudeStopped {reason: REQUESTED\|DISCONNECTED\|ERROR, error: AppError\|null}` |
 
 ## 4. Rust interfaces between modules
 
@@ -308,6 +323,68 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
 
 Until `device` lands, `config` tests use a `MockConnection` that replays recorded CLI
 transcripts (put fixtures in `src-tauri/tests/fixtures/<firmware>/`).
+
+### 4.3 Sensors, accelerometer calibration and attitude (device)
+
+Read-only except `MSP_ACC_CALIBRATION`. Writing sensor enables (`acc_hardware` …) or the board
+/ sensor alignment belongs to the config engine; device sends no such command. Line references
+are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
+
+- **`device_sensors`** — `MSP_API_VERSION`, `MSP_STATUS_EX` (`MSP_STATUS` fallback),
+  `MSP_SENSOR_CONFIG` (96), `MSP2_SENSOR_CONFIG_ACTIVE` (0x300A, 4.5+ only), `MSP_BOARD_INFO`,
+  `MSP_BOARD_ALIGNMENT_CONFIG` (38), `MSP_SENSOR_ALIGNMENT` (126).
+  `present` = the `MSP_STATUS` sensor bit (ACC 0, BARO 1, MAG 2, GYRO 5): detected at boot and
+  running; a sensor disabled in the config is never initialised, so it is never present.
+  `enabled` = configured hardware ≠ `NONE` (gyro: always true). Hardware names use the
+  firmware's lookup tables for the connected API version (they differ between 4.4, 4.5 and
+  2025.12). `accCalibrated` = `MSP_BOARD_INFO` configuration problem bit 0
+  (`PROBLEM_ACC_NEEDS_CALIBRATION`) clear. Optional parts the firmware does not answer are
+  `null`.
+- **`device_acc_calibrate`** (holds the port for the whole run; others get `PORT_BUSY`):
+  1. Refuse `BOARD_ARMED` if armed. Betaflight itself ignores the request while armed but still
+     ACKs it (msp.c 3238 / 3285 / 3314: `if (!ARMING_FLAG(ARMED)) accStartCalibration();`).
+  2. Refuse `ACC_NOT_AVAILABLE {present, enabled}` if the ACC bit is clear or `acc_hardware =
+     NONE` (also if the FC rejects the command, i.e. no `USE_ACC`).
+  3. **Moving check**: 5 × `MSP_RAW_IMU` (gyro in deg/s) 40 ms apart; any axis > 8 °/s →
+     `BOARD_MOVING {during: false}`, nothing sent. This catches handling/rotation, **not** a
+     board that is still but not level, or slow sliding; the UI must still ask for a flat, level
+     surface. (Accelerometer data is not used: it reads zero during calibration and its scale
+     differs per sensor.)
+  4. Send `MSP_ACC_CALIBRATION` (205). The FC averages 400 acc samples
+     (`CALIBRATING_ACC_CYCLES`, acceleration_init.c 97 / 100 / 78) at the acc task rate
+     (≈1 kHz), so ≈0.4–0.5 s.
+  5. **Completion**: poll `MSP_STATUS_EX` every 50 ms; `ARMING_DISABLED_CALIBRATING` (bit 12) is
+     set while any sensor calibrates (core.c `updateArmingStatus`, 4.5.5:335-337). Seen set then
+     clear → `completion: CALIBRATING_FLAG`. If the flag cannot be used (no STATUS_EX, already
+     set by another sensor such as a baro, or never caught) → wait 2 s like Configurator
+     (`ACC_CALIBRATION_TIMEOUT_MS`) → `FIXED_WAIT`. Still set after 4 s →
+     `ACC_CALIBRATION_FAILED`. Polls that time out while the FC writes its EEPROM are ignored.
+     Gyro is sampled during the wait; > 8 °/s → `BOARD_MOVING {during: true}` (calibrate again).
+  6. Re-read `MSP_BOARD_INFO`; "acc needs calibration" still set → `ACC_CALIBRATION_FAILED`.
+  - **Auto-save**: the FC saves by itself. The last calibration cycle sets the trims and calls
+    `saveConfigAndNotify()` (acceleration_init.c 4.4.3:445-455, 4.5.5:461-471,
+    2025.12.5:428-438) = `writeEEPROM(); readEEPROM(); beeperConfirmationBeeps(1);` (config.c
+    786 / 826 / 738). Side effect: **any other unsaved MSP change in RAM is saved too**. CLI
+    changes cannot be pending (device leaves the CLI with `exit` before MSP).
+  - `MSP_MAG_CALIBRATION` is not offered: it needs the craft rotated in all directions for 30 s
+    and the algorithm/completion differs between 4.4 and 4.5+ (compass.c).
+- **Attitude** — `MSP_ATTITUDE` (108): roll and pitch int16 decidegrees, yaw int16 whole degrees
+  0..359 (msp.c 1332 / 1324 / 1323); sent as `f32` degrees with Betaflight's signs unchanged
+  (Configurator's 3D model rotates by (−pitch, −yaw, −roll)). Signs: **roll + = right side
+  down, pitch + = nose DOWN, yaw = heading, + = nose right** (imu.c 311-313; osd_elements.c
+  2025.12.5:801 / 4.5.5:765 `pitch > 0 //nose down`; pid.c angle mode uses stick-sign error
+  `angleTarget - attitude`, so pitch stick forward = nose down = positive). `device_attitude_stream_start`
+  lends the port to a worker exactly like the RC stream: default 10 Hz, clamped 1–30;
+  idempotent while running; motor test, RC stream and attitude stream are mutually exclusive
+  (`PORT_BUSY {heldBy: "APP"}`); it ends with `device://attitude-stopped` on
+  `device_attitude_stream_stop` / `device_disconnect` / app close (`REQUESTED`), port loss
+  (`DISCONNECTED`) or 5 unanswered polls / another error (`ERROR`).
+- **Board alignment is not live**: `MSP_SET_BOARD_ALIGNMENT_CONFIG` (39) only writes the
+  parameter group (msp.c 3640-3644 / 3689-3693 / 3728-3732). The rotation matrix is built by
+  `initBoardAlignment()` (boardalignment.c 51 / 66 / 64), which is called only from
+  `fc/init.c` at boot (707 / 676 / 661), not from `activateConfig()`. So `MSP_ATTITUDE` reflects a
+  new alignment only after save + reboot; a live "unsaved preview" must be done in the UI by
+  rotating the displayed attitude.
 
 ## 5. Firmware dialects (config)
 
