@@ -4,7 +4,7 @@
 //! docs/PACKAGING.md.
 
 pub mod commands;
-pub mod install_script;
+pub mod elevated_install;
 pub mod usb_drivers;
 #[cfg(windows)]
 mod windows;
@@ -53,26 +53,26 @@ pub fn install_dfu_driver(helper: Option<PathBuf>) -> AppResult<()> {
     if todo.is_empty() {
         return Ok(());
     }
-    let helper = helper.filter(|p| p.is_file()).ok_or_else(|| {
+    // Fail early (unelevated) if the build has no helper.
+    helper.filter(|p| p.is_file()).ok_or_else(|| {
         AppError::Driver(format!(
             "WinUSB helper ({HELPER_EXE}) is not bundled with this build"
         ))
     })?;
-    // One elevated Windows PowerShell run for all devices: it extracts the driver
-    // files into a fresh SYSTEM/Administrators-only folder under %ProgramData%
-    // (not the user-writable %TEMP%) and runs the helper from there.
-    let helper = helper.to_string_lossy().into_owned();
-    let script = install_script::install_script(&helper, &install_script::run_id(), &todo);
-    let params = install_script::powershell_params(&script).ok_or_else(|| {
-        AppError::Driver("driver helper path contains an unsupported character".into())
-    })?;
-    let ps = windows::powershell_exe()?;
-    let cwd = ps
+    // One elevated relaunch of this exe (UAC prompt names the app) for all
+    // devices: see elevated_install.rs. It extracts the driver files into a fresh
+    // SYSTEM/Administrators-only folder under %ProgramData% (not the user-writable
+    // %TEMP%) and runs the bundled helper from there. The helper itself is located by
+    // the elevated process (next to its own exe), never passed on the command line.
+    let exe = std::env::current_exe()
+        .map_err(|e| AppError::Driver(format!("cannot locate the app executable: {e}")))?;
+    let cwd = exe
         .parent()
         .map(std::path::Path::to_path_buf)
         .unwrap_or_default();
+    let params = elevated_install::params(&todo);
     let timeout_ms = 5 * 60 * 1000 * u32::try_from(todo.len()).unwrap_or(1).max(1);
-    let code = windows::run_elevated(&ps, &params, &cwd, timeout_ms)?;
+    let code = windows::run_elevated(&exe, &params, &cwd, timeout_ms)?;
     if code != 0 {
         let names = todo
             .iter()
@@ -81,7 +81,7 @@ pub fn install_dfu_driver(helper: Option<PathBuf>) -> AppResult<()> {
             .join(", ");
         return Err(AppError::Driver(format!(
             "WinUSB install for {names} failed: {}",
-            install_script::exit_message(code)
+            elevated_install::exit_message(code)
         )));
     }
     // Verify: every device we touched must now be bound to WinUSB.
