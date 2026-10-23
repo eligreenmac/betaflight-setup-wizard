@@ -173,3 +173,47 @@ th { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
 .osd-preview--hd { aspect-ratio: 16 / 9; }
 .osd-el { position: absolute; display: flex; align-items: center; color: #fff; font-family: ui-monospace, monospace; font-weight: 700; font-size: calc(100cqi / var(--osd-cols) * 1.45); line-height: 1; white-space: nowrap; text-shadow: 0 0 2px #000, 0 0 2px #000; cursor: grab; }
 .osd-el--selected, .osd-el:focus-visible { outline: 1px dashed #ff0; }
+
+/* Firmware update options and the restore report (FirmwareStep, RestoreResult). */
+.flash-options {
+  border: 1px solid var(--border, #d0d4da);
+  border-radius: 8px;
+  padding: 0.5rem 0.9rem 0.6rem;
+  margin: 0.75rem 0;
+}
+.flash-options legend {
+  font-weight: 600;
+  padding: 0 0.3rem;
+}
+.flash-options .hint {
+  margin: 0.1rem 0 0.6rem;
+  padding-inline-start: 1.6rem;
+}
+.flash-options .callout {
+  margin: 0.4rem 0;
+}
+.restore-list {
+  margin: 0.5rem 0;
+}
+.restore-list summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.restore-list ul {
+  margin: 0.3rem 0;
+  padding-inline-start: 1.2rem;
+}
+.restore-list li {
+  margin: 0.35rem 0;
+}
+.restore-list code {
+  display: block;
+  inline-size: fit-content;
+  unicode-bidi: isolate;
+}
+.restore-list__why {
+  display: block;
+}
+.restore-list__why {
+  color: var(--muted);
+}

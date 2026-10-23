@@ -141,7 +141,8 @@
       "backup": "Back up your settings",
       "bootloader": "Restart into flashing mode",
       "flash": "Install the firmware",
-      "reconnect": "Reconnect"
+      "reconnect": "Reconnect",
+      "restore": "Put your settings back"
     },
     "flashStage": {
       "DOWNLOADING": "Downloading…",
@@ -1267,5 +1268,69 @@
     "USE_TELEMETRY_SMARTPORT": "SmartPort telemetry (FrSky)",
     "USE_DSHOT": "DShot motor protocol",
     "USE_DSHOT_BITBANG": "DShot bitbang"
+  },
+  "flashOptions": {
+    "title": "Update options",
+    "keep": "Keep my settings",
+    "keepHelp": "Before the update, the wizard saves a backup of the board's settings. When the new firmware is installed, it puts those settings back.",
+    "keepOffHelp": "When this is off, the wizard doesn't put your settings back. Depending on the version, the new firmware keeps them or starts with default settings. Your backup is still saved in the Backups list.",
+    "erase": "Erase the whole chip first",
+    "eraseHelp": "Wipes the board's memory completely before the new firmware is written. Use it if an earlier update failed or the board acts strangely. It takes a little longer.",
+    "warnEraseKeep": "The chip is wiped fully, then your saved settings are put back.",
+    "warnEraseReset": "Everything on the board resets to default settings. If the board had Betaflight, your backup is still saved in the Backups list.",
+    "warnCrossLine": "Your settings come from Betaflight {from} and you're installing {to}, a different version line. Some settings may not carry over cleanly; the wizard asks again for what's needed."
+  },
+  "restore": {
+    "progress": {
+      "start": "Putting your settings back…",
+      "RESTORING": "Putting your settings back: line {line} of {total}…",
+      "SAVING": "Saving the settings on the board…",
+      "REBOOTING": "Restarting the board…",
+      "RECONNECTED": "Checking the settings…"
+    },
+    "doneTitle": "Your settings are back",
+    "doneBody": "{n} settings from your backup were put back on the new firmware.",
+    "notSaved": "The board did not save the settings. Restore your backup from the Backups list, or set the board up again in the next steps.",
+    "lineChanged": "Your settings came from Betaflight {from}. The board now runs {to}, where some settings work differently. The wizard asks again for what's needed in the next steps.",
+    "failedTitle": "Settings the new firmware didn't accept ({n})",
+    "failedHelp": "The board refused these lines from your backup. Each one is shown exactly as the board answered. The wizard asks again for what's needed.",
+    "skippedTitle": "Settings left out on purpose ({n})",
+    "skippedHelp": "These lines were not sent because they don't fit the new firmware. The reason is next to each one.",
+    "warningsTitle": "Notes from the restore ({n})",
+    "warningsHelp": "Notes about the restore, as the app reported them:",
+    "skip": {
+      "COMMENT": "A note in the backup file, not a setting.",
+      "SESSION_CONTROL": "A control line; the wizard sends its own.",
+      "BOARD_IDENTITY": "The board's name and ID belong to the hardware, so they are never copied.",
+      "HARDWARE_LINE_CHANGED": "Pin settings differ between firmware versions, so the new firmware's own pin settings are kept.",
+      "REMOVED_ON_TARGET": "This setting doesn't exist in the new firmware.",
+      "NOT_IN_BUILD": "The new firmware was built without this feature.",
+      "SEMANTICS_CHANGED": "This setting means something different in the new firmware, so it was not copied. Check it again (for example the D-term tuning).",
+      "NO_EQUIVALENT_MODE": "This switch mode doesn't exist in the new firmware.",
+      "PORT_NOT_AVAILABLE": "This port doesn't exist on the board with the new firmware.",
+      "OTHER_BATTERY_PROFILE": "A setting from another battery profile, which the new firmware doesn't have."
+    },
+    "refusedTitle": "The firmware is installed, but your settings were not put back",
+    "refused": {
+      "BOARD_UID_MISMATCH": "The backup belongs to a different board, so it wasn't used.",
+      "BACKUP_NOT_DIFF_ALL": "The backup isn't a complete copy of the settings, so it wasn't used.",
+      "BACKUP_UNREADABLE": "The backup file couldn't be read.",
+      "BOARD_NOT_RECONNECTED": "The board stopped answering while the settings were being put back.",
+      "UNSUPPORTED_FIRMWARE": "The wizard can't put settings back on this Betaflight version yet.",
+      "NOT_AVAILABLE": "This version of the app can't put settings back after an update yet.",
+      "GENERIC": "Something went wrong while putting the settings back."
+    },
+    "refusedStage": {
+      "NOTHING_SENT": "Nothing was changed on the board.",
+      "RESTORING": "The settings were not saved, so the board has the new firmware's default settings.",
+      "SAVING": "It isn't known whether the settings were saved.",
+      "REBOOTING": "The settings were saved, but the wizard couldn't check them."
+    },
+    "backupSaved": "Your backup is saved and listed under Backups:",
+    "showBackups": "Show backups",
+    "hideBackups": "Hide backups",
+    "retry": "Try again",
+    "technical": "Technical details",
+    "noBackup": "No backup was taken during this update (the board was already in flashing mode), so there were no settings to put back."
   }
 }
