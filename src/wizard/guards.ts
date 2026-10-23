@@ -13,6 +13,7 @@ import { ACC_MODES, BARO_MODES, MAX_AUX, MODE_MIN_FIRMWARE, MODES, modeAvailable
 import { catalogState } from "../api/catalog";
 import { validAlignment } from "./orientation";
 import { bindingApplies, hasOnboardElrs, isElrs, SERIAL_RX_PROTOCOLS, SPI_RX_PROTOCOLS } from "./receiver";
+import { reflashBlock } from "./reflash";
 import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
 
 /** A validation problem; `key` is an i18n key under `validation.*`. */
@@ -174,7 +175,12 @@ export const guards: Record<string, StepGuard> = {
       if (!r.protocol || !allowed.includes(r.protocol)) issues.push({ key: "validation.rxProtocolRequired" });
       // The board's build lacks this receiver (known only when its build options are; unknown never blocks).
       const m = s.ui.rxMissing;
-      if (m && m.kind === r.kind && m.protocol === r.protocol && m.missing.length) issues.push({ key: "validation.rxOptionMissing" });
+      if (m && m.kind === r.kind && m.protocol === r.protocol && m.missing.length) {
+        // Say plainly when the update can't be offered: then another protocol is the only way on.
+        const block = reflashBlock(s);
+        const key = !block ? "validation.rxOptionMissing" : block === "applied" ? "validation.rxOptionMissingApplied" : "validation.rxOptionMissingNoUpdate";
+        issues.push({ key, params: { protocol: r.protocol } });
+      }
       return [...issues, ...portIssues(s, "receiver")];
     },
   },

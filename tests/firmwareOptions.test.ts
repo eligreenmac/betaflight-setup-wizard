@@ -312,6 +312,58 @@ describe("mid-wizard firmware update: receiver", () => {
     expect(guards.receiver.validate(wizard).map((i) => i.key)).not.toContain("validation.rxOptionMissing");
   });
 
+  it("no update possible after an apply: plain text that another protocol is the only way on", async () => {
+    await boot("rx-option-missing");
+    serialCrsf();
+    wizard.ui.configApplied = true;
+    await at("receiver");
+    const box = w!.get('[data-test="rx-option-missing"]');
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(en.receiver.optionMissingApplied.replaceAll("{protocol}", "CRSF"));
+    expect(box.text()).not.toContain(en.receiver.optionMissingChoices);
+    expect(box.text()).not.toContain("update the firmware to add this one");
+    expect(w!.find('[data-test="reflash-offer"]').exists()).toBe(false);
+    expect(w!.find('[data-test="reflash-blocked"]').exists()).toBe(false);
+    expect(guards.receiver.validate(wizard).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingApplied", params: { protocol: "CRSF" } }]);
+    await click(w!, "next");
+    expect(nav.currentId).toBe("receiver");
+    expect(w!.text()).toContain(en.validation.rxOptionMissingApplied.replace("{protocol}", "CRSF"));
+    expect(w!.text()).not.toContain(en.validation.rxOptionMissing);
+    // Another protocol: the way forward.
+    await w!.get('[data-protocol="SBUS"]').setValue(true);
+    await settle();
+    expect(w!.find('[data-test="rx-option-missing"]').exists()).toBe(false);
+    expect(guards.receiver.validate(wizard).map((i) => i.key).filter((k) => k.startsWith("validation.rxOption"))).toEqual([]);
+  });
+
+  it("no update possible after an apply, in Hebrew", async () => {
+    setLocale("he");
+    await boot("rx-option-missing");
+    serialCrsf();
+    wizard.ui.configApplied = true;
+    await at("receiver");
+    expect(w!.get('[data-test="rx-option-no-update"]').text()).toBe(he.receiver.optionMissingApplied.replaceAll("{protocol}", "CRSF"));
+    await click(w!, "next");
+    expect(w!.text()).toContain(he.validation.rxOptionMissingApplied.replace("{protocol}", "CRSF"));
+  });
+
+  it("no update possible for another reason (no board): the generic wording", () => {
+    const s = createWizardState();
+    setReceiverKind(s, "SERIAL");
+    setReceiverProtocol(s, "CRSF");
+    s.ui.rxMissing = { kind: "SERIAL", protocol: "CRSF", missing: ["MOCK_RX_CRSF"] };
+    expect(reflashBlock(s)).toBe("noBoard");
+    expect(guards.receiver.validate(s).filter((i) => i.key.startsWith("validation.rxOption"))).toEqual([{ key: "validation.rxOptionMissingNoUpdate", params: { protocol: "CRSF" } }]);
+  });
+
+  it("with the update available, the text still offers it", async () => {
+    await boot("rx-option-missing");
+    serialCrsf();
+    await at("receiver");
+    expect(w!.get('[data-test="rx-option-missing"]').text()).toContain(en.receiver.optionMissingChoices);
+    expect(w!.find('[data-test="rx-option-no-update"]').exists()).toBe(false);
+    expect(guards.receiver.validate(wizard).filter((i) => i.key.startsWith("validation.rxOption")).map((i) => i.key)).toEqual(["validation.rxOptionMissing"]);
+  });
+
   it("unknown never blocks (backend can't say, or no build options)", async () => {
     await boot("legacy-backend");
     serialCrsf();

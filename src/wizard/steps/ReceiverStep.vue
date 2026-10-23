@@ -5,7 +5,7 @@ import { computed, onMounted, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import PortPicker from "../../components/PortPicker.vue";
 import ReflashOffer from "../../components/ReflashOffer.vue";
-import { missingOptions } from "../reflash";
+import { missingOptions, reflashBlock } from "../reflash";
 import { optionList } from "../optionNames";
 import type { RxProtocol } from "../../types/model";
 import { asksTelemetry, SERIAL_RX_PROTOCOLS } from "../receiver";
@@ -35,6 +35,8 @@ const missing = computed(() => {
   const m = wizard.ui.rxMissing;
   return m && m.kind === rx.value.kind && m.protocol === rx.value.protocol && m.missing.length ? m.missing : null;
 });
+/** Why "Update the firmware to add this" can't be offered (null = it can). */
+const block = computed(() => reflashBlock(wizard));
 const rxReq = computed(() => ({ receiver: { kind: rx.value.kind, protocol: rx.value.protocol } }));
 watch(() => [rx.value.kind, rx.value.protocol, wizard.fc], () => void checkOptions());
 onMounted(checkOptions);
@@ -74,8 +76,14 @@ function setFlag(k: "inverted" | "halfDuplex", v: boolean): void {
 
     <div v-if="missing" class="callout callout--warn" role="alert" data-test="rx-option-missing">
       <p>{{ t("receiver.optionMissing", { protocol: rx.protocol ? t(`receiver.protocols.${rx.protocol}`) : "", options: optionList(missing, t, te) }) }}</p>
-      <p>{{ t("receiver.optionMissingChoices") }}</p>
-      <ReflashOffer return-to="receiver" :requirements="rxReq" />
+      <template v-if="!block">
+        <p>{{ t("receiver.optionMissingChoices") }}</p>
+        <ReflashOffer return-to="receiver" :requirements="rxReq" />
+      </template>
+      <!-- No update possible: another protocol is the only way on; say so plainly. -->
+      <p v-else data-test="rx-option-no-update">
+        <strong>{{ t(block === "applied" ? "receiver.optionMissingApplied" : "receiver.optionMissingNoUpdate", { protocol: rx.protocol ?? "" }) }}</strong>
+      </p>
     </div>
 
     <fieldset v-if="asksTelemetry(rx.protocol)">

@@ -232,7 +232,9 @@
       "FRSKY_X_LBT": "FrSky X LBT"
     },
     "optionMissing": "The firmware on this board doesn't include {protocol} receivers (missing: {options}).",
-    "optionMissingChoices": "Pick the protocol your receiver really uses, or update the firmware to add this one."
+    "optionMissingChoices": "Pick the protocol your receiver really uses, or update the firmware to add this one.",
+    "optionMissingApplied": "You can't continue with {protocol}: the firmware on this board doesn't include it, and the firmware can't be updated now because settings were already written to the board in this session. Pick the protocol your receiver really uses. To use {protocol}, finish the wizard, update the firmware, then run the wizard again.",
+    "optionMissingNoUpdate": "You can't continue with {protocol}: the firmware on this board doesn't include it, and the firmware can't be updated from the wizard right now (for example, because part of the data here is simulated). Pick the protocol your receiver really uses. To use {protocol}, update the firmware first, then run the wizard again."
   },
   "binding": {
     "familyQuestion": "Which radio system is this receiver?",
@@ -794,7 +796,9 @@
     "osdChoose": "Choose whether to set up the OSD or keep the current one.",
     "osdLayout": "The default OSD layout hasn't loaded. Try again, or keep the current OSD.",
     "osdHdUnsupported": "The firmware on this board can't show the OSD in digital goggles. Pick an analog option, keep the board's current OSD, or flash firmware with the \"OSD (HD)\" option.",
-    "rxOptionMissing": "The firmware on this board doesn't include this receiver protocol. Pick another one or update the firmware."
+    "rxOptionMissing": "The firmware on this board doesn't include this receiver protocol. Pick another one or update the firmware.",
+    "rxOptionMissingApplied": "{protocol} isn't in the firmware on this board, and the firmware can't be updated after settings were written. Pick another protocol to continue.",
+    "rxOptionMissingNoUpdate": "{protocol} isn't in the firmware on this board, and the firmware can't be updated right now. Pick another protocol to continue."
   },
   "errors": {
     "BOARD_NOT_FOUND": {
