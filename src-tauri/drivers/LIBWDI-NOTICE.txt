@@ -1,0 +1,36 @@
+Betaflight Setup Wizard - third-party component notice
+========================================================
+
+drivers/bfsw-wdi-simple.exe is the "wdi-simple" example program of libwdi,
+built WITHOUT modification (WinUSB driver support only) from:
+
+  Project : libwdi - Windows Driver Installer library
+  Upstream: https://github.com/pbatard/libwdi
+  Version : v1.5.1 (commit 9b23b82a2dd1cbffc16d46c212f92c6bf8c0c602)
+  Authors : Pete Batard and libwdi contributors (see AUTHORS in the source)
+  License : GNU Lesser General Public License v3.0 or later (LGPL-3.0-or-later)
+            - full texts: COPYING.LGPL-3.0.txt and COPYING.GPL-3.0.txt
+
+The only build-time changes are configuration: the libusb-win32 and libusbK
+driver payloads are disabled in msvc/config.h so that only WinUSB is embedded,
+and ARM64 support (OPT_ARM, plus the installer_arm64 project reference in
+libwdi/.msvc/libwdi_static.vcxproj and its libwdi.sln build entries) is
+disabled so only x86/x64 are built.
+The exact build recipe is .github/actions/build-wdi-simple/action.yml in the
+Betaflight Setup Wizard repository:
+  https://github.com/eligreenmac/betaflight-setup-wizard
+
+Corresponding source: the complete source code of this libwdi build is
+available from the upstream tag above, and a copy (libwdi-v1.5.1-source.zip)
+is attached to every Betaflight Setup Wizard GitHub release that ships this
+helper. You may rebuild and replace bfsw-wdi-simple.exe with your own
+modified version; the application only invokes it as a separate program.
+
+The helper embeds Microsoft WinUSB/WDF co-installers from the Windows Driver
+Kit 8.0 redistributable components, which Microsoft licenses for
+redistribution as part of driver packages.
+
+When run, libwdi generates a driver package (.inf/.cat) for the selected USB
+device, creates a self-signed certificate for it, adds that certificate to the
+local machine's trusted stores, and installs the driver (same mechanism as the
+Zadig tool).
