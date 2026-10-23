@@ -13,7 +13,7 @@ import { uiError } from "../src/errors/codes";
 import { motorTest } from "../src/wizard/motorTest";
 import { nav, resetNav } from "../src/wizard/nav";
 import { resetWizard, wizard } from "../src/wizard/state";
-import { click, settle, walkToDone } from "./walk";
+import { click, settle, WALK_TIMEOUT_MS, walkToDone } from "./walk";
 
 /** Today's Phase 0 app: only system_app_info is real; the rest are stubs or not registered. */
 function phase0(overrides: Record<string, (args: unknown) => unknown> = {}) {
@@ -94,7 +94,7 @@ describe("demo mode end to end (no board connected)", () => {
       expect(banner.text()).toContain("Demo mode.");
       expect(banner.text()).toContain("Some features are simulated");
       expect(demoState.simulated).toContain("config_apply");
-    });
+    }, WALK_TIMEOUT_MS);
   }
 
   it("a real backend that finds no board: 'Try the demo' switches everything to the simulated board", async () => {
@@ -110,7 +110,7 @@ describe("demo mode end to end (no board connected)", () => {
     expect(w.get('[data-test="demo-banner"]').text()).toContain("Everything runs on a simulated flight controller");
     await walk("keep");
     expect(nav.currentId).toBe("done");
-  });
+  }, WALK_TIMEOUT_MS);
 
   it("the banner is translated (he)", async () => {
     setLocale("he");
