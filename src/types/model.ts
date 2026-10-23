@@ -110,7 +110,8 @@ export interface DroneModel {
     region: string | null;
     /** Analog VTX table (`vtxtable`); null = keep the FC's table. */
     table?: VtxTable | null;
-    /** 1-based band / channel / power level into `table`; null = keep. */
+    /** 1-based band / channel / power level into `table`; null = keep.
+     *  band, channel: 1..VTX_BAND_MAX / VTX_CHANNEL_MAX (8); power: 1..VTX_POWER_MAX (7). */
     band?: number | null;
     channel?: number | null;
     power?: number | null;
@@ -135,11 +136,23 @@ export interface DroneModel {
     motorOrder?: number[] | null;
   };
   switches: { mode: string; auxChannel: number; rangeMin: number; rangeMax: number }[];
-  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* 1-16 printable ASCII; "" clears; null keeps */ };
+  extras: { beeper?: boolean | null; ledStrip?: boolean | null; craftName?: string | null /* CRAFT_NAME_PATTERN; "" clears; null keeps */ };
 }
 
+/**
+ * extras.craftName rule (= schemas/drone-model.schema.json and model::craft_name_valid in Rust):
+ * 1-16 chars of printable ASCII except `#` and `?`, no leading/trailing space, not exactly "-";
+ * "" clears the name. Betaflight's CLI would cut, strip or misread anything else.
+ */
+export const CRAFT_NAME_PATTERN = /^(?:[\x21\x22\x24-\x2C\x2E-\x3E\x40-\x7E]|[\x21\x22\x24-\x3E\x40-\x7E][\x20-\x22\x24-\x3E\x40-\x7E]{0,14}[\x21\x22\x24-\x3E\x40-\x7E])?$/;
+export const CRAFT_NAME_MAX_LENGTH = 16;
+/** vtx_power is 1-based with CLI range 0..7: a table's 8th power level cannot be selected. */
+export const VTX_POWER_MAX = 7;
+export const VTX_BAND_MAX = 8;
+export const VTX_CHANNEL_MAX = 8;
+
 export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
-/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels; name <= 8, label <= 3 chars. */
+/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels (only 1..VTX_POWER_MAX selectable); name <= 8, label <= 3 chars. */
 export interface VtxTable {
   bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
   powerLevels: { value: number; label: string }[];

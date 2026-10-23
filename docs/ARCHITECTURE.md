@@ -75,6 +75,22 @@ Enums:
   The MVP config engine rejects `SOFTSERIAL*` (no soft serial in MVP).
 - `receiver.telemetry` defaults to `true`. Per-motor DShot direction reversal is phase 2 and not in the model.
 
+Optional fields (all 4.4 / 4.5 / 2025.12; `null` or absent = **keep the FC's current value**, nothing
+is written; the generator rejects out-of-range values with `CONFIG`, nothing sent):
+
+| Field | CLI | Rule |
+|---|---|---|
+| `extras.craftName` | `set craft_name = …` | 1–16 chars of printable ASCII (0x20–0x7E) except `#` and `?`, no leading/trailing space, not exactly `-`; `""` clears it (written as `-`). One rule: schema `pattern` = `model::CRAFT_NAME_PATTERN` = `CRAFT_NAME_PATTERN` in model.ts (tests compare them over `schemas/fixtures/craft-name-cases.json`). Why: craft_name is MODE_STRING 1..16 (`MAX_NAME_LENGTH`); the CLI only buffers 0x20–0x7E, cuts the line at `#` (comment), treats `?` as help in the interactive CLI that MSP opens, strips trailing spaces and skips leading ones, and reads exactly `-` as empty. |
+| `vtx.table` | `vtxtable …` | ≤ 8 bands, 8 channels, 8 power levels; band name ≤ 8 chars, power label ≤ 3; frequencies ≤ 5999 MHz (0 = unused); same channel count for every band (`drivers/vtx_table.h`). `null` keeps the FC's table. |
+| `vtx.band`, `vtx.channel` | `vtx_band`, `vtx_channel` | 1–8, 1-based into the table (written or the FC's). |
+| `vtx.power` | `vtx_power` | **1–7**, 1-based into `table.powerLevels` (0 = unknown, never written). The CLI range is `0..VTX_TABLE_MAX_POWER_LEVELS-1`, so the 8th level of an 8-level table can't be selected with the CLI. It must also be ≤ the table's level count. |
+| `esc.idle` | 2025.12 `motor_idle`; 4.4/4.5 `dshot_idle_value` | 0–2000 in 0.01 % (550 = 5.5 %). On 4.4/4.5 it is DShot-only (warning, not written, for analog protocols). |
+| `esc.motorOrder` | `motor_output_reordering` | Item *i* = 0-based output for motor *i+1*; must be a permutation of `0..n` (n ≤ the FC's list length, 8). Remaining slots keep identity. |
+| `gps.galileo` | `gps_ublox_use_galileo` | UBLOX only (warning, not written, for NMEA). |
+| `gps.sbasMode` | `gps_sbas_mode` | AUTO \| EGNOS \| WAAS \| MSAS \| GAGAN \| NONE. |
+
+The `gps.*` fields only apply when `gps.enabled`.
+
 ### 2.2 Other types (see model.rs for fields)
 
 `HostPort`, `HostPortKind`, `FcInfo {…, serialPorts: FcSerialPort[], rxSpi: RxSpiInfo}`,
@@ -421,12 +437,16 @@ fails with `UNSUPPORTED_FIRMWARE` before any write.
   plan writes. It returns `{ok, mismatches:[{setting, expected, actual}]}`.
 - **`config_rollback(backup)` / `config_restore(backupId)`** take a safety backup first, then replay the
   backup's `diff all` (it contains `defaults nosave`), drop its `batch end`, then `save`, reboot and reconnect. They emit the same events.
-  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's.
+  Both refuse if the backup's firmware line (4.4 / 4.5 / 2025.12) differs from the FC's, or if
+  the backup's `boardUid` and the FC's UID (`FcLink::uid()`) are both known and differ (`CONFIG`, nothing sent).
+  The backup is always resolved by `id` inside the backups folder; the `path` field sent by the UI
+  is never opened.
 - **Backups** are stored at `<app_data_dir>/backups/<boardUid>/<UTC YYYYMMDDTHHMMSSZ>.txt` (on Windows
   `%APPDATA%\<identifier>\backups\…`) and are kept forever. `config_backups_dir` returns the root
   for the UI's "open backups folder" action. `<boardUid>` is `FcInfo.uid`, i.e. the 24-char
   `mcu_id` hex (e.g. `backups/0033002b3138510b32383733/`), so the folder matches what
-  `mcu_id` prints in the CLI; `unknown` if MSP_UID failed.
+  `mcu_id` prints in the CLI. Config takes it from `FcLink::uid()` (cached by Device at connect, no
+  I/O; config never runs the `mcu_id` command); `unknown` if that is `None` (MSP_UID failed).
 - **Receiver:** `SERIAL` → `feature RX_SERIAL`, `feature -RX_SPI`, serialrx settings. `SPI`+`EXPRESSLRS`
   → `feature RX_SPI`, `feature -RX_SERIAL`, `set rx_spi_protocol = EXPRESSLRS`, optional
   `expresslrs_uid` (from `receiver.elrsUid`) and `expresslrs_domain`, and no UART. The old receiver UART is cleared.
