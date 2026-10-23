@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+/**
+ * Per-step guards and validators, keyed by the step ids in steps.json.
+ * steps.json decides WHICH steps exist and when they are visible (engine.ts);
+ * this map decides WHEN a step may be entered and what blocks "Next".
+ * Pure functions over WizardState, unit tested in tests/guards.test.ts.
+ */
+import type { StepDef } from "./engine";
+import { exclusionReason, getRolePort, neededRoles, type PortRole } from "./ports";
+import type { WizardState } from "./state";
+import { MAX_AUX, MODES, RANGE_MAX, RANGE_MIN, RANGE_STEP } from "./switches";
+import { isSupportedFirmware, MIN_SUPPORTED_FIRMWARE } from "./version";
+
+/** A validation problem; `key` is an i18n key under `validation.*`. */
+export interface Issue {
+  key: string;
+  params?: Record<string, string | number>;
+}
+
+export interface StepGuard {
+  /** Prerequisites to show the step's content at all. */
+  canEnter: (s: WizardState) => boolean;
+  /** Problems that block "Next". Empty = OK. */
+  validate: (s: WizardState) => Issue[];
+}
+
+const connected = (s: WizardState) => s.fc !== null;
+export const firmwareOk = (s: WizardState): boolean =>
+  s.fc !== null && isSupportedFirmware(s.fc.fcVariant, s.fc.firmwareVersion) && (s.ui.flashed || s.ui.firmwareDecision === "keep");
+const configured = (s: WizardState) => connected(s) && firmwareOk(s) && s.ports.length > 0;
+
+/** Issues for one port role (shared by the receiver / vtx / gps / esc steps). */
+export function portIssues(s: WizardState, role: PortRole): Issue[] {
+  if (!neededRoles(s.model, s.ui).includes(role)) return [];
+  const name = getRolePort(s.model, role);
+  if (name === null) return [{ key: "validation.portMissing", params: { role } }];
+  const port = s.ports.find((p) => p.name === name);
+  if (!port || exclusionReason(port, role, s.model, s.ui) !== null) return [{ key: "validation.portConflict", params: { role, port: name } }];
+  return [];
+}
+
+export function validateSwitches(s: WizardState): Issue[] {
+  const issues: Issue[] = [];
+  const sw = s.model.switches;
+  const arms = sw.filter((m) => m.mode === MODES.arm);
+  if (arms.length === 0) issues.push({ key: "validation.armRequired" });
+  const seen = new Set<string>();
+  for (const m of sw) {
+    if (seen.has(m.mode)) issues.push({ key: "validation.modeDuplicate", params: { mode: m.mode } });
+    seen.add(m.mode);
+    const badRange =
+      m.rangeMin < RANGE_MIN || m.rangeMax > RANGE_MAX || m.rangeMin >= m.rangeMax || m.rangeMin % RANGE_STEP !== 0 || m.rangeMax % RANGE_STEP !== 0;
+    if (badRange) issues.push({ key: "validation.modeRangeInvalid", params: { mode: m.mode } });
+    if (!Number.isInteger(m.auxChannel) || m.auxChannel < 0 || m.auxChannel >= MAX_AUX) issues.push({ key: "validation.auxInvalid", params: { mode: m.mode } });
+  }
+  // A range covering the whole stick travel would arm at power-up.
+  for (const a of arms) if (a.rangeMin <= 1000 && a.rangeMax >= 2000) issues.push({ key: "validation.armAlwaysOn" });
+  // ExpressLRS needs ARM on AUX1 (it switches packet rate / telemetry on it).
+  if (s.model.receiver.protocol === "EXPRESSLRS" && arms.some((a) => a.auxChannel !== 0)) issues.push({ key: "validation.elrsArmAux1" });
+  // Two modes on the same channel AND overlapping range would fire together.
+  for (let i = 0; i < sw.length; i++)
+    for (let j = i + 1; j < sw.length; j++) {
+      const a = sw[i]!;
+      const b = sw[j]!;
+      if (a.auxChannel === b.auxChannel && a.rangeMin < b.rangeMax && b.rangeMin < a.rangeMax && (a.mode === MODES.arm || b.mode === MODES.arm))
+        issues.push({ key: "validation.armOverlap", params: { mode: a.mode === MODES.arm ? b.mode : a.mode } });
+    }
+  return issues;
+}
+
+export const guards: Record<string, StepGuard> = {
+  welcome: { canEnter: () => true, validate: () => [] },
+  connect: {
+    canEnter: () => true,
+    validate: (s) => (connected(s) ? [] : [{ key: "validation.noBoard" }]),
+  },
+  firmware: {
+    canEnter: connected,
+    validate: (s) => {
+      if (!s.fc) return [{ key: "validation.noBoard" }];
+      if (!isSupportedFirmware(s.fc.fcVariant, s.fc.firmwareVersion))
+        return [{ key: "validation.firmwareUnsupported", params: { min: MIN_SUPPORTED_FIRMWARE } }];
+      return firmwareOk(s) ? [] : [{ key: "validation.firmwareDecide" }];
+    },
+  },
+  components: {
+    canEnter: configured,
+    validate: (s) => {
+      const issues: Issue[] = [];
+      if (s.ports.length === 0) issues.push({ key: "validation.noConfig" });
+      if (s.model.receiver.kind === "NONE") issues.push({ key: "validation.receiverRequired" });
+      if (s.model.vtx.kind !== "NONE" && !s.model.vtx.protocol) issues.push({ key: "validation.vtxProtocolRequired" });
+      return issues;
+    },
+  },
+  receiver: {
+    canEnter: configured,
+    validate: (s) => {
+      const r = s.model.receiver;
+      const issues: Issue[] = [];
+      if (!r.protocol) issues.push({ key: "validation.rxProtocolRequired" });
+      return [...issues, ...portIssues(s, "receiver")];
+    },
+  },
+  vtx: {
+    canEnter: configured,
+    validate: (s) => {
+      const v = s.model.vtx;
+      const issues: Issue[] = [];
+      if (!v.protocol) issues.push({ key: "validation.vtxProtocolRequired" });
+      if (v.kind === "DIGITAL" && !v.digitalSystem) issues.push({ key: "validation.digitalSystemRequired" });
+      return [...issues, ...portIssues(s, "vtx")];
+    },
+  },
+  gps: {
+    canEnter: configured,
+    validate: (s) => [...(s.model.gps.provider ? [] : [{ key: "validation.gpsProviderRequired" }]), ...portIssues(s, "gps")],
+  },
+  esc: {
+    canEnter: configured,
+    validate: (s) => {
+      const e = s.model.esc;
+      const issues: Issue[] = [];
+      if (e.bidirectionalDshot && !e.protocol.startsWith("DSHOT")) issues.push({ key: "validation.bidirNeedsDshot" });
+      if (e.bidirectionalDshot && (e.motorPoles === null || e.motorPoles < 2 || e.motorPoles % 2 !== 0))
+        issues.push({ key: "validation.motorPolesInvalid" });
+      issues.push(...portIssues(s, "escTelemetry"));
+      // Motor checks are only required when the backend can actually run a motor test.
+      if (s.ui.motorTestAvailable === true) {
+        if (!s.ui.motorOrderOk) issues.push({ key: "validation.motorOrderUnconfirmed" });
+        if (!s.ui.motorDirectionOk) issues.push({ key: "validation.motorDirectionUnconfirmed" });
+      }
+      return issues;
+    },
+  },
+  switches: { canEnter: configured, validate: validateSwitches },
+  review: {
+    canEnter: configured,
+    validate: (s) => (s.ui.script ? [] : [{ key: "validation.notGenerated" }]),
+  },
+  apply: {
+    canEnter: (s) => configured(s) && s.ui.script !== null,
+    validate: (s) => (s.ui.applyStatus === "verified" ? [] : [{ key: "validation.notApplied" }]),
+  },
+  done: { canEnter: (s) => s.ui.applyStatus === "verified", validate: () => [] },
+};
+
+export function guardFor(id: string): StepGuard {
+  const g = guards[id];
+  if (!g) throw new Error(`No guard for wizard step: ${id}`);
+  return g;
+}
+
+export function canLeave(id: string, s: WizardState): boolean {
+  return guardFor(id).validate(s).length === 0;
+}
+
+/** Jump to `targetId`? Going back is always allowed; forward needs every step before it leavable. */
+export function canGoTo(targetId: string, currentId: string, s: WizardState, steps: readonly StepDef[]): boolean {
+  const target = steps.findIndex((x) => x.id === targetId);
+  const current = steps.findIndex((x) => x.id === currentId);
+  if (target < 0) return false;
+  if (target <= current) return true;
+  for (let i = 0; i < target; i++) if (!canLeave(steps[i]!.id, s)) return false;
+  return guardFor(targetId).canEnter(s);
+}
