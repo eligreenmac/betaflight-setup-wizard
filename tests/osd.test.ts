@@ -112,11 +112,44 @@ describe("video system", () => {
 describe("HD gating (FcInfo.hdOsdSupported, else build options)", () => {
   it("hdOsdSupport: HD option = yes; OSD options without HD = no; nothing about the OSD = unknown", () => {
     expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD", "USE_OSD_SD"] })).toBe(true);
-    expect(hdOsdSupport({ buildOptions: ["use_msp_displayport"] })).toBe(true);
-    expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD", "CRSF"] })).toBe(false);
-    expect(hdOsdSupport({ buildOptions: ["CRSF", "GPS"] })).toBeNull();
+    expect(hdOsdSupport({ buildOptions: ["use_osd_hd"] })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_SD", "USE_SERIALRX_CRSF"] })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD"] })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: ["USE_OSD_HD", "USE_MSP_DISPLAYPORT"] })).toBe(true);
+    expect(hdOsdSupport({ buildOptions: ["USE_SERIALRX_CRSF", "USE_GPS"] })).toBeNull();
     expect(hdOsdSupport({ buildOptions: [] })).toBeNull();
     expect(hdOsdSupport(null)).toBeNull();
+  });
+
+  it("hdOsdSupport: USE_MSP_DISPLAYPORT alone is not HD", () => {
+    expect(hdOsdSupport({ buildOptions: ["USE_MSP_DISPLAYPORT"] })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: ["use_msp_displayport", "USE_DSHOT"] })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: ["USE_MSP_DISPLAYPORT"], hdOsdSupported: null })).toBe(false);
+  });
+
+  it("hdOsdSupport on a realistic 4.5 build-options list, with and without USE_OSD_HD", () => {
+    // What a 4.5.2 cloud build of SPEEDYBEEF405V4 with the Configurator's default options
+    // reports via MSP_BUILD_INFO (Build API /api/options/4.5.2 defaults). The composed
+    // speedybeef405v4 4.5 dump fixture is a SITL dump and carries no build options.
+    const v45 = [
+      "USE_SERIALRX_CRSF",
+      "USE_DSHOT",
+      "USE_ACRO_TRAINER",
+      "USE_GPS",
+      "USE_LED_STRIP",
+      "USE_OPTICALFLOW",
+      "USE_OSD_SD",
+      "USE_OSD_HD",
+      "USE_PINIO",
+      "USE_RANGEFINDER",
+      "USE_VTX",
+    ];
+    expect(hdOsdSupport({ buildOptions: v45, hdOsdSupported: null })).toBe(true);
+    const noHd = v45.filter((o) => o !== "USE_OSD_HD");
+    expect(hdOsdSupport({ buildOptions: noHd, hdOsdSupported: null })).toBe(false);
+    expect(hdOsdSupport({ buildOptions: [...noHd, "USE_MSP_DISPLAYPORT"], hdOsdSupported: null })).toBe(false);
+    const noOsd = noHd.filter((o) => o !== "USE_OSD_SD");
+    expect(hdOsdSupport({ buildOptions: noOsd, hdOsdSupported: null })).toBeNull();
   });
 
   it("hdOsdSupport: FcInfo.hdOsdSupported wins when it is a boolean; null / missing / junk = build options", () => {

@@ -66,10 +66,14 @@ export function systemFromVtx(vtx: { kind: VtxKind; protocol?: string | null; di
   return null;
 }
 
-/** Build options that mean the firmware has an HD (MSP DisplayPort) OSD. */
-const HD_OSD_OPTIONS = ["USE_OSD_HD", "USE_MSP_DISPLAYPORT", "OSD_HD", "MSP_DISPLAYPORT"];
-/** Build options that show the OSD was chosen at build time (so a missing HD option is meaningful). */
-const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
+/** The build option that means the firmware has the HD (MSP DisplayPort canvas) OSD. */
+const HD_OSD_OPTION = "USE_OSD_HD";
+/**
+ * Build options that show the OSD was chosen at build time, so a missing USE_OSD_HD is
+ * meaningful. USE_MSP_DISPLAYPORT alone is NOT HD: it is also used without an HD OSD
+ * (e.g. for an analog/SD OSD over DisplayPort).
+ */
+const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_MSP_DISPLAYPORT"];
 
 /**
  * The FC fields the HD gate reads. `hdOsdSupported` is Device's shared field
@@ -79,10 +83,14 @@ const OSD_OPTIONS = ["USE_OSD", "USE_OSD_SD", "USE_FRSKYOSD", "OSD", "OSD_SD"];
  */
 export type HdOsdFc = Pick<FcInfo, "buildOptions"> & Partial<Pick<FcInfo, "hdOsdSupported">>;
 
-/** Old heuristic: the build options (empty on real boards today, so usually "unknown"). */
+/**
+ * Fallback when `hdOsdSupported` is null: USE_OSD_HD = true; any other OSD option
+ * (USE_OSD, USE_OSD_SD, USE_MSP_DISPLAYPORT) without it = false; no OSD option at all
+ * (including an empty list, as on 4.4 / unknown) = null.
+ */
 function hdFromBuildOptions(fc: Pick<FcInfo, "buildOptions"> | null): boolean | null {
-  const opts = (Array.isArray(fc?.buildOptions) ? fc!.buildOptions : []).map((o) => String(o).toUpperCase());
-  if (opts.some((o) => HD_OSD_OPTIONS.includes(o))) return true;
+  const opts = (Array.isArray(fc?.buildOptions) ? fc!.buildOptions : []).map((o) => String(o).trim().toUpperCase());
+  if (opts.includes(HD_OSD_OPTION)) return true;
   if (opts.some((o) => OSD_OPTIONS.includes(o))) return false;
   return null;
 }
