@@ -237,6 +237,7 @@ plus the device/flasher codes:
 | `ACC_NOT_AVAILABLE` | `device_acc_calibrate`: no accelerometer detected, or disabled (`acc_hardware = NONE`), or firmware built without one; nothing was sent | `{ present: boolean, enabled: boolean }` | `enabled: false`: "The accelerometer is turned off"; else "No accelerometer found" (skip the level step) |
 | `BOARD_MOVING` | `device_acc_calibrate`: gyro rate above the limit (§4.3). `during: false`: checked before, nothing was sent. `during: true`: moved while calibrating, the FC already stored the (bad) result | `{ maxRateDps: number, limitDps: number, during: boolean }` | "Put the drone down level and keep it still", then retry |
 | `ACC_CALIBRATION_FAILED` | `device_acc_calibrate`: the FC still reports calibrating after 4 s, or still reports "accelerometer needs calibration" afterwards | – | Retry; then suggest a power cycle |
+| `PENDING_UNSAVED_CHANGES` | `device_acc_calibrate`: the FC may hold unsaved changes in RAM (§4.1 "RAM state"), e.g. a config apply failed and its cleanup reboot was not confirmed. Calibration saves the whole RAM config to EEPROM, so it is refused (checked first, nothing was sent) | `{ reason: "CLI_COMMAND" \| "EXIT_NOREBOOT" \| "MSP_WRITE" }` | Offer "Reboot board" (`device_reboot`), then retry. A plain reconnect or USB replug does **not** clear it (a battery-powered FC keeps its RAM) |
 
 Generic `SERIAL`/`MSP`/`CLI`/`USB` remain for everything else from device/flasher.
 `DRIVER` stays for driver-installation failures (packaging).
@@ -260,6 +261,7 @@ Argument names are camelCase on the JS side (Tauri converts to snake_case Rust p
 | `device_identify` | – | `FcInfo` | device |
 | `device_cli_exec` | `line` | `string` | device |
 | `device_reboot_to_bootloader` | – | – | device |
+| `device_reboot` | – | – (resolves once the reboot is confirmed; §4.1 "RAM state") | device |
 | `device_probe_board` | – | `FcInfo` (identify + read-only CLI probe, §4.1) | device |
 | `device_motor_test_start` | `motorIndex: number\|null, throttle, propsOffConfirmed, limits: MotorTestLimits\|null` | `MotorTestSession` (first call starts, later calls update; §4.2) | device |
 | `device_motor_test_keepalive` | – | – (every 200 ms) | device |
@@ -348,13 +350,61 @@ pub fn generate(model: &DroneModel, ports: &[FcSerialPort]) -> AppResult<CliScri
   read-only commands do, because on 4.4 leaving reboots the FC). The next MSP call — from
   `msp_request`, `device_identify`, motor test or RC stream — first leaves it transparently:
   plain `exit` (on every firmware, so unsaved RAM changes are dropped; `exit noreboot` is
-  never used here), wait for the reboot (if none is seen: MSP_REBOOT `[0]`), wait for the
+  never used here), wait for the reboot (if no `Rebooting` line was seen: MSP_REBOOT `[0]`
+  when the RAM state is dirty or nothing at all was seen; a port drop alone only suffices
+  while RAM is clean, see "RAM state"), wait for the
   port to come back, re-verify MSP_API_VERSION + MSP_UID. One `exit` per transition, `save`
   is never sent. The link is detached before the `exit` is written, so a failure leaves no
   CLI state: the call fails with `SERIAL` (timed out coming back / a different flight
   controller came back) and later calls get `SERIAL` "reconnect first", never a second
   `exit`. `device_reboot_to_bootloader` from an open CLI sends `bl rom` directly. The
   emergency stop never waits for this (it does not take the port lock).
+- **RAM state ("dirty RAM")**: the connection tracks whether the FC's RAM may hold changes
+  that are not in EEPROM, because some FC operations save the *whole* RAM config (accelerometer
+  calibration calls `saveConfigAndNotify()`), which would persist a half-applied config.
+  Tracked entirely inside the device link; callers need no extra calls.
+  - **Set** (first reason kept) when, through the link: `cli_exec` sends a line that is not
+    read-only (`CLI_COMMAND`; read-only = empty / `#` comment, `version`, `status`, `tasks`,
+    `help`, `dump …`, `diff …`, `get …`, and listing commands without arguments such as
+    `serial`, `feature`, `aux`, `resource`; `batch start` counts as a change); `exit_cli(false)`
+    leaves with `exit noreboot` on 4.5+ (`EXIT_NOREBOOT`); `msp_request` sends any code that
+    is not a known read (`MSP_WRITE`: every `MSP_SET_*`, `MSP_EEPROM_WRITE`, `MSP_RESET_CONF`,
+    `MSP_SELECT_SETTING`, `MSP_COPY_PROFILE`, unknown codes, …). `MSP_REBOOT` itself does not
+    set it. The flag is set before the line/frame is written, so a failed send still counts.
+  - **Cleared only by a confirmed reboot**: a reboot **the app issued** in the same sequence
+    whose effect is acknowledged by the FC, i.e. it answered `MSP_REBOOT`, or printed
+    `Rebooting` after our `exit` / `save`, **and** the port then came back (or reopened, UART
+    bridge) with MSP_API_VERSION + MSP_UID re-verified as the same board. Where that happens:
+    `reconnect` after an acknowledged reboot (config's save / discard), the CLI exit of the
+    previous bullet, `device_reboot`, the connect-time reboot below. A change after the
+    acknowledgement voids it.
+  - **Never cleared by a port drop or reconnect alone.** With the battery connected a USB
+    unplug/replug drops the port but the FC keeps its RAM, so a port drop, a plain
+    `reconnect`, or a `device_connect` is never proof of a reboot. In particular: an
+    `MSP_REBOOT` answered with an error frame (or not answered) followed by a port drop does
+    not clear it, and after our `exit` a port drop without `Rebooting` does not count (the
+    link then sends `MSP_REBOOT [0]` and needs its reply). `save` alone does not clear it;
+    `save` printing `Rebooting` + reconnect does.
+  - **Boot evidence is not used.** No MSP message carries an uptime or boot counter on 4.4,
+    4.5 or 2025.12 (`msp.c` has no `millis()`; `MSP_STATUS(_EX)` / `MSP_ANALOG` carry cycle
+    time, sensors, flags, battery). Uptime only exists in CLI `status` ("System Uptime"), and
+    reading it needs the CLI, which on 4.4 can only be left by rebooting.
+  - **`device_reboot`** ("Reboot board"): leaves an open CLI with plain `exit` (never `save`),
+    otherwise sends `MSP_REBOOT [0]`; waits for the port to drop and return (UART bridge:
+    reopens), re-verifies MSP_API_VERSION + MSP_UID, clears the flag, resolves. Betaflight
+    replies to `MSP_REBOOT` before resetting (`msp.c` sets `mspRebootFn` as post-process;
+    `msp_serial.c` waits for the TX to finish before running it). Errors: not confirmed (no
+    reply / error frame / no `Rebooting`) but the same board answered →
+    `PENDING_UNSAVED_CHANGES {reason}` if the flag is set (still set), else `MSP`; the board
+    did not come back in time or a different board came back → `SERIAL`; also
+    `NOT_CONNECTED`, `PORT_BUSY`.
+  - **Fresh connect**: a new connection starts clean, except for a board that was dirty when
+    this app last closed its port (`device_disconnect`, `device_connect` to another port, port
+    lost; matched by MSP_UID, else the path): `device_connect` then issues the same
+    confirmed reboot once before returning. `device_connect` to the already-open port reopens
+    it (same reboot) while the flag is set, instead of returning early. If that reboot is not
+    confirmed, `device_connect` fails (`PENDING_UNSAVED_CHANGES` / `MSP` / `SERIAL`, as
+    `device_reboot`) and the board stays marked.
 - **`FcInfo.uid`**: exactly the CLI `mcu_id` string: 24 lowercase hex chars, the three
   MSP_UID (160) words `U_ID_0, U_ID_1, U_ID_2` (each u32 little-endian on the wire), each
   zero-padded to 8 digits, in that order (`cli.c`: `"%08x%08x%08x", U_ID_0, U_ID_1, U_ID_2`).
@@ -429,6 +479,11 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
   (`PROBLEM_ACC_NEEDS_CALIBRATION`) clear. Optional parts the firmware does not answer are
   `null`.
 - **`device_acc_calibrate`** (holds the port for the whole run; others get `PORT_BUSY`):
+  0. Leave an open CLI first (§4.1: plain `exit` reboots; it only counts as a confirmed
+     reboot if the FC printed `Rebooting` or acknowledged the fallback `MSP_REBOOT`), then
+     refuse `PENDING_UNSAVED_CHANGES {reason}` if the RAM state (§4.1) is dirty. Checked
+     before everything below; nothing is sent to the FC. Only a confirmed reboot clears it
+     (`device_reboot`); a plain reconnect does not.
   1. Refuse `BOARD_ARMED` if armed. Betaflight itself ignores the request while armed but still
      ACKs it (msp.c 3238 / 3285 / 3314: `if (!ARMING_FLAG(ARMED)) accStartCalibration();`).
   2. Refuse `ACC_NOT_AVAILABLE {present, enabled}` if the ACC bit is clear or `acc_hardware =
@@ -452,8 +507,9 @@ are Betaflight 4.4.3 / 4.5.5 / 2025.12.5.
   - **Auto-save**: the FC saves by itself. The last calibration cycle sets the trims and calls
     `saveConfigAndNotify()` (acceleration_init.c 4.4.3:445-455, 4.5.5:461-471,
     2025.12.5:428-438) = `writeEEPROM(); readEEPROM(); beeperConfirmationBeeps(1);` (config.c
-    786 / 826 / 738). Side effect: **any other unsaved MSP change in RAM is saved too**. CLI
-    changes cannot be pending (device leaves the CLI with `exit` before MSP).
+    786 / 826 / 738). Side effect: **any other unsaved change in RAM is saved too**, which is
+    why step 0 refuses while the RAM state is dirty (e.g. after `exit noreboot` + a failed
+    `MSP_REBOOT` in config's cleanup).
   - `MSP_MAG_CALIBRATION` is not offered: it needs the craft rotated in all directions for 30 s
     and the algorithm/completion differs between 4.4 and 4.5+ (compass.c).
 - **Attitude** — `MSP_ATTITUDE` (108): roll and pitch int16 decidegrees, yaw int16 whole degrees
