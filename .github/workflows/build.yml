@@ -7,16 +7,25 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Least privilege: CI only needs to read the repo and upload artifacts.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Action versions: every JavaScript action here runs on Node 24 (checkout@v7,
+# setup-node@v7, upload-artifact@v7, Swatinem/rust-cache@v2 >= 2.8; the local
+# build-wdi-simple action uses actions/cache@v6 and microsoft/setup-msbuild@v3).
+# dtolnay/rust-toolchain is a composite action (no Node runtime).
+# Note: `node-version: 22` below is the app's build toolchain, not the action runtime.
 jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -24,6 +33,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - name: Build WinUSB helper (libwdi, cached)
+        uses: ./.github/actions/build-wdi-simple
       - run: npm ci
       - run: npm test
       - run: npm run build
@@ -32,7 +43,15 @@ jobs:
         run: cargo test --locked
       - name: tauri build (NSIS + MSI)
         run: npm run tauri build
-      - uses: actions/upload-artifact@v4
+      - name: Check WinUSB helper is inside the NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          $list = 7z l $setup.FullName
+          if (-not ($list | Select-String -SimpleMatch 'bfsw-wdi-simple.exe')) { throw "bfsw-wdi-simple.exe not found in $($setup.Name)" }
+          $list | Select-String -SimpleMatch 'drivers'
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-installers
           path: |
@@ -43,7 +62,7 @@ jobs:
   linux-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Tauri system deps
         run: |
           sudo apt-get update
@@ -54,7 +73,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm

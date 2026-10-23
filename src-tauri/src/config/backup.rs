@@ -158,17 +158,6 @@ impl BackupStore {
     }
 }
 
-/// CLI lines to replay from a backup file: everything except comments, blank lines,
-/// `batch end`, `save` and `exit` (the caller saves explicitly).
-pub fn replay_lines(text: &str) -> Vec<String> {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter(|l| !matches!(*l, "batch end" | "save" | "exit"))
-        .map(str::to_string)
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,10 +199,7 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].id, b.id);
         assert_eq!(store.find(&a.id).unwrap().firmware_version, "4.5.2");
-        assert_eq!(
-            replay_lines(&fs::read_to_string(&a.path).unwrap()),
-            vec!["batch start"]
-        );
+        assert!(fs::read_to_string(&a.path).unwrap().contains("batch start"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

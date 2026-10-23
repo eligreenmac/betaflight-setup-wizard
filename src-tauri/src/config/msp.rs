@@ -146,5 +146,7 @@ pub fn fc_info(
         mcu: b.mcu_type_id.and_then(mcu_name).map(str::to_string),
         uid: uid.and_then(decode_uid),
         build_options: Vec::new(),
+        serial_ports: Vec::new(),
+        rx_spi: Default::default(),
     })
 }

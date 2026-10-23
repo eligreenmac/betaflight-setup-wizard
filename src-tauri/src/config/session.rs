@@ -4,24 +4,39 @@
 //! All functions assume they may enter the CLI. Read-only operations do not leave it
 //! (in Betaflight `exit` reboots the FC); the caller decides when to leave.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-use super::backup::{replay_lines, BackupStore};
+use super::backup::BackupStore;
 use super::firmware::{parse_version, Dialect, VersionInfo};
 use super::generate::generate_for;
+use super::guard::{replay_lines, validate_script};
 use super::modes;
 use super::snapshot::{parse_dump, parse_serial, Snapshot};
-use crate::device::Connection;
+use crate::device::{Connection, FcLink};
 use crate::error::{AppError, AppResult};
 use crate::model::{
     ApplyResult, Backup, CliError, CliScript, ConfigProgress, ConfigStage, DroneModel,
     FcSerialPort, Mismatch, VerifyReport,
 };
 
-/// Waits for the FC to come back after a reboot (`save` / `exit`) and re-opens the link.
-/// Implemented by the device workstream's connection; by the mock in tests.
-pub trait Reconnect {
-    fn reconnect(&mut self) -> AppResult<()>;
+/// How long apply/rollback wait for the FC to come back after `save` / `exit`
+/// (`device::Reconnect::reconnect`). F4/F7 boards re-enumerate in 2-5 s; generous for
+/// slow USB hubs and Windows driver binding.
+pub const REBOOT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// MSP_SET_REBOOT; payload `[0]` = reboot into the firmware.
+pub const MSP_SET_REBOOT: u16 = 68;
+
+/// Leave the CLI throwing the unsaved batch away, so the FC never runs a half-applied
+/// configuration. On 4.4 `exit` reboots, which drops the RAM changes. On 4.5+ the device
+/// link leaves the CLI with `exit noreboot` (ARCHITECTURE §4.1), which keeps them active,
+/// so the FC is rebooted over MSP right after. Either way the caller must `reconnect`.
+fn discard<C: Connection + ?Sized>(conn: &mut C, dialect: Dialect) -> AppResult<()> {
+    conn.exit_cli(false)?;
+    if dialect != Dialect::V4_4 {
+        conn.msp_request(MSP_SET_REBOOT, &[0])?;
+    }
+    Ok(())
 }
 
 pub type Progress<'a> = &'a mut dyn FnMut(ConfigProgress);
@@ -114,26 +129,49 @@ pub fn backup<C: Connection + ?Sized>(
     store.save(&diff, board_uid, &board, &info.version, SystemTime::now())
 }
 
-/// Send `lines` inside a CLI batch, stop at the first error. Returns (applied, errors).
+/// Send `lines` inside a CLI batch, stop at the first rejected command. Returns
+/// (applied, errors). `lines` must already be validated (`guard`); the batch is
+/// opened here and closed by `finish` (`save`) or discarded ([`discard`]).
+///
+/// If the link itself fails (write/read error, timeout, disconnect) anywhere in the
+/// batch, a best-effort [`discard`] is made (`exit`, plus an MSP reboot on 4.5+) so the
+/// FC does not stay in CLI mode or keep running a half-applied, unsaved batch; its own
+/// errors are ignored and the original error is returned. `save` is never sent on that
+/// path.
 fn send_batch<C: Connection + ?Sized>(
+    conn: &mut C,
+    dialect: Dialect,
+    lines: &[String],
+    cb: &mut dyn FnMut(ConfigProgress),
+) -> AppResult<(usize, Vec<CliError>)> {
+    match send_batch_inner(conn, lines, cb) {
+        Ok(r) => Ok(r),
+        Err(e) => {
+            let _ = conn.exit_cli(false);
+            if dialect != Dialect::V4_4 {
+                let _ = conn.msp_request(MSP_SET_REBOOT, &[0]);
+            }
+            Err(e)
+        }
+    }
+}
+
+fn send_batch_inner<C: Connection + ?Sized>(
     conn: &mut C,
     lines: &[String],
     cb: &mut dyn FnMut(ConfigProgress),
 ) -> AppResult<(usize, Vec<CliError>)> {
     let mut applied = 0;
     let total = lines.len().max(1) as f32;
-    let starts_batch = lines.first().map(String::as_str) == Some("batch start");
-    if !starts_batch {
-        let r = conn.cli_exec("batch start")?;
-        if is_cli_error("batch start", &r) {
-            return Ok((
-                0,
-                vec![CliError {
-                    command: "batch start".into(),
-                    response: r,
-                }],
-            ));
-        }
+    let r = conn.cli_exec("batch start")?;
+    if is_cli_error("batch start", &r) {
+        return Ok((
+            0,
+            vec![CliError {
+                command: "batch start".into(),
+                response: r.trim().to_string(),
+            }],
+        ));
     }
     for (i, line) in lines.iter().enumerate() {
         let resp = conn.cli_exec(line)?;
@@ -153,8 +191,9 @@ fn send_batch<C: Connection + ?Sized>(
 }
 
 /// Shared tail of apply/rollback: save (or discard on error), reboot, reconnect.
-fn finish<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+fn finish(
+    conn: &mut dyn FcLink,
+    dialect: Dialect,
     applied: usize,
     errors: Vec<CliError>,
     backup: Option<Backup>,
@@ -164,10 +203,13 @@ fn finish<C: Connection + Reconnect + ?Sized>(
     if saved {
         progress(cb, ConfigStage::Saving, 1.0, "save");
     }
-    // Without save the unsaved batch is discarded (`exit` reboots without saving).
-    conn.exit_cli(saved)?;
+    if saved {
+        conn.exit_cli(true)?;
+    } else {
+        discard(conn, dialect)?;
+    }
     progress(cb, ConfigStage::Rebooting, 1.0, "");
-    conn.reconnect()?;
+    conn.reconnect(REBOOT_TIMEOUT)?;
     progress(cb, ConfigStage::Reconnected, 1.0, "");
     Ok(ApplyResult {
         applied,
@@ -179,14 +221,17 @@ fn finish<C: Connection + Reconnect + ?Sized>(
 }
 
 /// C5: backup -> `batch start` + commands -> `save` (batch still active) -> reboot -> reconnect.
+/// The script is validated first (`guard::validate_script`: generator verbs only, no
+/// save/defaults/reboot/batch/...); a bad line is a CONFIG error and nothing is sent.
 /// The first rejected command aborts the batch; nothing is saved.
-pub fn apply<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+pub fn apply(
+    conn: &mut dyn FcLink,
     script: &CliScript,
     store: &BackupStore,
     board_uid: &str,
     cb: Progress,
 ) -> AppResult<ApplyResult> {
+    validate_script(&script.commands)?;
     progress(cb, ConfigStage::Backup, 0.0, "diff all");
     let (_, dialect) = read_version(conn)?;
     if Dialect::from_dialect_str(&script.dialect) != Some(dialect) {
@@ -198,8 +243,8 @@ pub fn apply<C: Connection + Reconnect + ?Sized>(
     }
     let bk = backup(conn, store, board_uid)?;
     progress(cb, ConfigStage::Backup, 1.0, &bk.path);
-    let (applied, errors) = send_batch(conn, &script.commands, cb)?;
-    finish(conn, applied, errors, Some(bk), cb)
+    let (applied, errors) = send_batch(conn, dialect, &script.commands, cb)?;
+    finish(conn, dialect, applied, errors, Some(bk), cb)
 }
 
 /// C6: read back (`dump all`) and compare with what `model` requires.
@@ -286,16 +331,18 @@ fn on(b: bool) -> String {
 }
 
 /// C6: restore a backup. Takes a safety backup first, refuses a different firmware line,
-/// replays the stored `diff all` (which starts with `batch start` + `defaults nosave`),
-/// saves and reconnects.
-pub fn rollback<C: Connection + Reconnect + ?Sized>(
-    conn: &mut C,
+/// replays the stored `diff all`, saves and reconnects. The backup is validated before
+/// anything is sent (`guard::replay_lines` documents exactly which lines are replayed);
+/// a tampered or foreign file is a CONFIG error.
+pub fn rollback(
+    conn: &mut dyn FcLink,
     target: &Backup,
     store: &BackupStore,
     board_uid: &str,
     cb: Progress,
 ) -> AppResult<ApplyResult> {
     let text = std::fs::read_to_string(&target.path)?;
+    let lines = replay_lines(&text)?;
     progress(cb, ConfigStage::Backup, 0.0, "diff all");
     let (info, dialect) = read_version(conn)?;
     if Dialect::from_version(&target.firmware_version).ok() != Some(dialect) {
@@ -306,7 +353,6 @@ pub fn rollback<C: Connection + Reconnect + ?Sized>(
     }
     let safety = backup(conn, store, board_uid)?;
     progress(cb, ConfigStage::Backup, 1.0, &safety.path);
-    let lines = replay_lines(&text);
-    let (applied, errors) = send_batch(conn, &lines, cb)?;
-    finish(conn, applied, errors, Some(safety), cb)
+    let (applied, errors) = send_batch(conn, dialect, &lines, cb)?;
+    finish(conn, dialect, applied, errors, Some(safety), cb)
 }

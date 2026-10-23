@@ -13,9 +13,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::backup::BackupStore;
+use super::firmware::Dialect;
 use super::msp;
-use super::session::{self, Reconnect};
-use crate::device::Connection;
+use super::session;
+use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 use crate::model::CliScript;
 
@@ -27,6 +28,10 @@ struct SitlFc {
     child: Option<Child>,
     sock: Option<TcpStream>,
     in_cli: bool,
+    /// The last `save`/`exit` made the process exit on its own (Betaflight's reboot).
+    rebooted_itself: bool,
+    /// 4.5+: `exit_cli(false)` sends `exit noreboot` (device contract, ARCHITECTURE §4.1).
+    noreboot_exit: bool,
 }
 
 fn io(e: std::io::Error) -> AppError {
@@ -41,8 +46,10 @@ impl SitlFc {
             child: None,
             sock: None,
             in_cli: false,
+            rebooted_itself: false,
+            noreboot_exit: false,
         };
-        fc.reconnect()?;
+        fc.reconnect(session::REBOOT_TIMEOUT)?;
         Ok(fc)
     }
 
@@ -88,6 +95,25 @@ impl SitlFc {
     }
 }
 
+impl SitlFc {
+    /// The SITL "reboots" by exiting; record whether it did so on its own, then clean up.
+    fn wait_for_exit(&mut self) -> AppResult<()> {
+        self.rebooted_itself = false;
+        if let Some(c) = self.child.as_mut() {
+            let end = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < end {
+                if c.try_wait().map_err(io)?.is_some() {
+                    self.rebooted_itself = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        self.stop();
+        Ok(())
+    }
+}
+
 impl Drop for SitlFc {
     fn drop(&mut self) {
         self.stop();
@@ -111,6 +137,9 @@ impl Connection for SitlFc {
         }
         if raw.len() < 6 || &raw[..3] != b"$M>" || raw[4] != code8 {
             return Err(AppError::Cli(format!("MSP {code}: bad reply {raw:02x?}")));
+        }
+        if code == session::MSP_SET_REBOOT {
+            self.wait_for_exit()?;
         }
         Ok(raw[5..5 + raw[3] as usize].to_vec())
     }
@@ -144,25 +173,25 @@ impl Connection for SitlFc {
     }
 
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
+        if !save && self.noreboot_exit {
+            self.sock()?.write_all(b"exit noreboot\n").map_err(io)?;
+            // "# leaving CLI mode, no reboot"; the port is back to MSP afterwards.
+            self.read(None, Duration::from_millis(700))?;
+            self.in_cli = false;
+            return Ok(());
+        }
         let cmd: &[u8] = if save { b"save\n" } else { b"exit\n" };
         self.sock()?.write_all(cmd).map_err(io)?;
         self.read(None, Duration::from_secs(3))?; // "Rebooting", then the process exits
         self.in_cli = false;
-        if let Some(c) = self.child.as_mut() {
-            let end = Instant::now() + Duration::from_secs(5);
-            while Instant::now() < end && c.try_wait().map_err(io)?.is_none() {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-        self.stop();
-        Ok(())
+        self.wait_for_exit()
     }
 }
 
 impl Reconnect for SitlFc {
     /// Restart the process and wait until it answers MSP. A fresh SITL occasionally
     /// accepts the TCP connection before its serial layer is up; retry the start then.
-    fn reconnect(&mut self) -> AppResult<()> {
+    fn reconnect(&mut self, _timeout: Duration) -> AppResult<()> {
         let mut last = AppError::Cli(format!("SITL did not open TCP {PORT}"));
         for _ in 0..3 {
             self.stop();
@@ -188,12 +217,65 @@ impl Reconnect for SitlFc {
             for _ in 0..10 {
                 std::thread::sleep(Duration::from_millis(300));
                 match self.msp_request(msp::MSP_API_VERSION, &[]) {
-                    Ok(_) => return Ok(()),
+                    Ok(_) => {
+                        let v = self.msp_request(msp::MSP_FC_VERSION, &[])?;
+                        let v = msp::decode_fc_version(&v).unwrap_or_default();
+                        self.noreboot_exit = Dialect::from_version(&v)
+                            .map(|d| d != Dialect::V4_4)
+                            .unwrap_or(true);
+                        return Ok(());
+                    }
                     Err(e) => last = e,
                 }
             }
         }
         Err(last)
+    }
+}
+
+/// Wraps the SITL link and fails it when a line starting with `at` is sent: `Timeout`
+/// sends the line but reports no reply; `Drop` closes the socket before sending.
+struct Faulty<'a> {
+    fc: &'a mut SitlFc,
+    at: &'static str,
+    drop_link: bool,
+    sent: Vec<String>,
+}
+
+impl Connection for Faulty<'_> {
+    fn msp_request(&mut self, code: u16, payload: &[u8]) -> AppResult<Vec<u8>> {
+        if code == session::MSP_SET_REBOOT {
+            self.sent.push("MSP_SET_REBOOT".into());
+        }
+        self.fc.msp_request(code, payload)
+    }
+    fn enter_cli(&mut self) -> AppResult<()> {
+        self.fc.enter_cli()
+    }
+    fn cli_exec(&mut self, line: &str) -> AppResult<String> {
+        if line.starts_with(self.at) {
+            if self.drop_link {
+                self.fc.sock = None;
+                return Err(AppError::Serial("device disconnected".into()));
+            }
+            self.fc
+                .sock()?
+                .write_all(format!("{line}\n").as_bytes())
+                .map_err(io)?;
+            return Err(AppError::Serial(format!("timeout waiting for `{line}`")));
+        }
+        self.sent.push(line.to_string());
+        self.fc.cli_exec(line)
+    }
+    fn exit_cli(&mut self, save: bool) -> AppResult<()> {
+        self.sent.push(if save { "save" } else { "exit" }.into());
+        self.fc.exit_cli(save)
+    }
+}
+
+impl Reconnect for Faulty<'_> {
+    fn reconnect(&mut self, timeout: Duration) -> AppResult<()> {
+        self.fc.reconnect(timeout)
     }
 }
 
@@ -207,7 +289,7 @@ fn get(fc: &mut SitlFc, name: &str) -> String {
         .trim()
         .to_string();
     fc.exit_cli(false).unwrap();
-    fc.reconnect().unwrap();
+    fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
     v
 }
 
@@ -287,6 +369,127 @@ fn sitl_end_to_end_apply_error_and_rollback() {
     assert!(r.saved && r.errors.is_empty(), "{r:?}");
     assert_eq!(get(&mut fc, "serialrx_provider"), original);
     assert_eq!(get(&mut fc, "craft_name"), "-");
+    // The real backup went through the guard: identity lines dropped, defaults first.
+    let replayed =
+        super::guard::replay_lines(&std::fs::read_to_string(&first_backup.path).unwrap()).unwrap();
+    assert_eq!(replayed[0], "defaults nosave");
+    assert!(replayed
+        .iter()
+        .all(|l| !l.starts_with("mcu_id") && !l.starts_with("signature") && l != "save"));
+
+    // 4. Guard: a script with `save` is refused before anything reaches the FC.
+    fc.enter_cli().unwrap();
+    let mut f = Faulty {
+        fc: &mut fc,
+        at: "\u{0}never",
+        drop_link: false,
+        sent: Vec::new(),
+    };
+    let e = session::apply(
+        &mut f,
+        &script(&["set craft_name = X", "save"]),
+        &store,
+        &uid,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), "CONFIG");
+    assert!(f.sent.is_empty(), "{:?}", f.sent);
+    f.fc.exit_cli(false).unwrap();
+    f.fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+
+    // 5. Link timeout mid-batch: best-effort `exit` reaches the FC (it reboots on its
+    //    own), `save` is never sent, the half-applied batch is gone after reboot.
+    fc.enter_cli().unwrap();
+    let mut f = Faulty {
+        fc: &mut fc,
+        at: "set craft_name",
+        drop_link: false,
+        sent: Vec::new(),
+    };
+    let e = session::apply(
+        &mut f,
+        &script(&[
+            &format!("set serialrx_provider = {target}"),
+            "set craft_name = HALF",
+        ]),
+        &store,
+        &uid,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert_eq!(e.code(), "SERIAL", "original error returned: {e}");
+    let discard: &[&str] = if dialect == Dialect::V4_4 {
+        &["exit"]
+    } else {
+        &["exit", "MSP_SET_REBOOT"]
+    };
+    assert!(
+        f.sent
+            .ends_with(&discard.iter().map(|x| x.to_string()).collect::<Vec<_>>()),
+        "{:?}",
+        f.sent
+    );
+    assert!(!f.sent.iter().any(|l| l == "save"));
+    assert!(
+        f.fc.rebooted_itself,
+        "SITL rebooted (exit / MSP_SET_REBOOT)"
+    );
+    f.fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+    assert_eq!(get(&mut fc, "serialrx_provider"), original);
+    assert_eq!(get(&mut fc, "craft_name"), "-");
+
+    // 6. Link dropped mid-batch: the `exit` attempt fails (ignored), the original error
+    //    is returned and nothing was saved.
+    fc.enter_cli().unwrap();
+    let mut f = Faulty {
+        fc: &mut fc,
+        at: "set craft_name",
+        drop_link: true,
+        sent: Vec::new(),
+    };
+    let e = session::apply(
+        &mut f,
+        &script(&[
+            &format!("set serialrx_provider = {target}"),
+            "set craft_name = HALF",
+        ]),
+        &store,
+        &uid,
+        &mut |_| {},
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("disconnected"), "{e}");
+    assert!(
+        f.sent
+            .ends_with(&discard.iter().map(|x| x.to_string()).collect::<Vec<_>>()),
+        "{:?}",
+        f.sent
+    );
+    assert!(!f.sent.iter().any(|l| l == "save"));
+    // Observation (not a requirement): does the FC stay in CLI after the link drops?
+    // Reconnect to the same process without restarting it and probe MSP.
+    f.fc.sock = TcpStream::connect(("127.0.0.1", PORT)).ok();
+    f.fc.in_cli = false;
+    let msp_alive = f.fc.msp_request(msp::MSP_API_VERSION, &[]).is_ok();
+    eprintln!("after link drop mid-batch the SITL answers MSP on reconnect: {msp_alive}");
+    f.fc.reconnect(session::REBOOT_TIMEOUT).unwrap(); // restart: unsaved changes are lost
+    assert_eq!(get(&mut fc, "serialrx_provider"), original);
+
+    // 7. Why config reboots over MSP on 4.5+: `exit noreboot` keeps unsaved changes live.
+    if dialect != Dialect::V4_4 {
+        fc.enter_cli().unwrap();
+        fc.cli_exec("set craft_name = LIVE").unwrap();
+        fc.exit_cli(false).unwrap(); // exit noreboot
+        fc.enter_cli().unwrap();
+        let r = fc.cli_exec("get craft_name").unwrap();
+        assert!(r.contains("craft_name = LIVE"), "{r}");
+        fc.exit_cli(false).unwrap();
+        fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+        assert!(fc.rebooted_itself);
+        fc.reconnect(session::REBOOT_TIMEOUT).unwrap();
+        assert_eq!(get(&mut fc, "craft_name"), "-");
+    }
 
     drop(fc);
     let _ = std::fs::remove_dir_all(&dir);

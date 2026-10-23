@@ -20,9 +20,8 @@ use std::collections::BTreeMap;
 use super::firmware::Dialect;
 use super::generate::serial_cmd;
 use super::msp;
-use super::session::Reconnect;
 use super::snapshot::{parse_dump, parse_serial_line, AuxSlot, Snapshot};
-use crate::device::Connection;
+use crate::device::{Connection, Reconnect};
 use crate::error::{AppError, AppResult};
 
 #[derive(Debug, Clone)]
@@ -52,6 +51,16 @@ impl State {
     }
 }
 
+/// Link-level failure injected by [`MockFc::link_fault`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkFault {
+    /// The line gets no reply (read timeout); the link still works afterwards.
+    Timeout,
+    /// The cable is pulled while sending the line: every later call fails and the FC
+    /// power-cycles (unsaved changes are lost).
+    Unplug,
+}
+
 pub struct MockFc {
     pub version: String,
     pub board_name: String,
@@ -78,6 +87,9 @@ pub struct MockFc {
     /// Every line received, in order.
     pub log: Vec<String>,
     pub reboots: usize,
+    /// Fail the link when a line starting with this prefix is sent.
+    pub link_fault: Option<(String, LinkFault)>,
+    unplugged: bool,
 }
 
 pub fn fixture(firmware: &str, board: &str) -> String {
@@ -186,6 +198,8 @@ impl MockFc {
             fail_on: Vec::new(),
             log: Vec::new(),
             reboots: 0,
+            link_fault: None,
+            unplugged: false,
         }
     }
 
@@ -486,9 +500,20 @@ impl MockFc {
 }
 
 impl Connection for MockFc {
+    /// MSP_SET_REBOOT reboots, dropping unsaved RAM changes; identification codes are
+    /// answered from `msp_reply`.
     fn msp_request(&mut self, code: u16, _payload: &[u8]) -> AppResult<Vec<u8>> {
+        if self.unplugged {
+            return Err(AppError::Serial("port closed".into()));
+        }
         if self.in_cli {
             return Err(AppError::Cli("MSP request while in CLI mode".into()));
+        }
+        if code == super::session::MSP_SET_REBOOT {
+            self.log.push("MSP_SET_REBOOT".into());
+            self.live = self.saved.clone();
+            self.reboots += 1;
+            return Ok(vec![0]);
         }
         self.msp_reply(code)
             .ok_or_else(|| AppError::Cli(format!("MSP {code}: unsupported by MockFc")))
@@ -500,14 +525,40 @@ impl Connection for MockFc {
     }
 
     fn cli_exec(&mut self, line: &str) -> AppResult<String> {
+        if self.unplugged {
+            return Err(AppError::Serial("port closed".into()));
+        }
         if !self.in_cli {
             return Err(AppError::Cli("not in CLI mode".into()));
         }
         self.log.push(line.to_string());
+        if let Some((prefix, fault)) = self.link_fault.clone() {
+            if line.starts_with(prefix.as_str()) {
+                self.link_fault = None;
+                if fault == LinkFault::Unplug {
+                    self.unplugged = true;
+                    self.in_cli = false;
+                    self.live = self.saved.clone();
+                    return Err(AppError::Serial("device disconnected".into()));
+                }
+                return Err(AppError::Serial(format!(
+                    "timeout waiting for reply to `{line}`"
+                )));
+            }
+        }
         Ok(self.exec(line))
     }
 
     fn exit_cli(&mut self, save: bool) -> AppResult<()> {
+        if self.unplugged {
+            let exit = if self.dialect == Dialect::V4_4 {
+                "exit"
+            } else {
+                "exit noreboot"
+            };
+            self.log.push(if save { "save" } else { exit }.into());
+            return Err(AppError::Serial("port closed".into()));
+        }
         if !self.in_cli {
             return Err(AppError::Cli("not in CLI mode".into()));
         }
@@ -518,9 +569,16 @@ impl Connection for MockFc {
                 self.saves_after_error += 1;
             }
             self.saved = self.live.clone();
-        } else {
+        } else if self.dialect == Dialect::V4_4 {
             self.log.push("exit".into());
             self.live = self.saved.clone();
+        } else {
+            // device::Connection contract: `exit noreboot` on 4.5+ - leaves the CLI, keeps
+            // the unsaved changes active, no reboot.
+            self.log.push("exit noreboot".into());
+            self.in_cli = false;
+            self.batch_error = false;
+            return Ok(());
         }
         self.in_cli = false;
         self.batch_error = false;
@@ -530,7 +588,7 @@ impl Connection for MockFc {
 }
 
 impl Reconnect for MockFc {
-    fn reconnect(&mut self) -> AppResult<()> {
+    fn reconnect(&mut self, _timeout: std::time::Duration) -> AppResult<()> {
         Ok(())
     }
 }

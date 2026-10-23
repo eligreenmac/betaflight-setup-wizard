@@ -53,10 +53,41 @@ pub struct FcInfo {
     pub manufacturer_id: Option<String>,
     /// MCU type, e.g. "STM32F405"
     pub mcu: Option<String>,
-    /// Hex-encoded unique id (MSP_UID)
+    /// MCU unique id, identical to the CLI `mcu_id` output: the three MSP_UID (160) words
+    /// (u32 little-endian) as `%08x%08x%08x` in order U_ID_0, U_ID_1, U_ID_2 — always 24
+    /// lowercase hex chars. Used as the backup folder name. `None` only if MSP_UID fails.
     pub uid: Option<String>,
     /// Build options/defines compiled in (from Build API key or MSP_BUILD_INFO)
     pub build_options: Vec<String>,
+    /// Serial ports exactly as the board reports them (MSP2_COMMON_SERIAL_CONFIG, falling
+    /// back to MSP_CF_SERIAL_CONFIG). `identifier` is the raw firmware value (4.4/4.5:
+    /// UART1=0; 2025.12+: UART1=51). Empty if the firmware answered neither command.
+    /// Snapshot taken by `device_identify`; `config_read_ports` stays the source for config.
+    #[serde(default)]
+    pub serial_ports: Vec<FcSerialPort>,
+    /// Onboard SPI receiver (e.g. ExpressLRS) detection. MSP alone cannot tell, so
+    /// `rxSpi.present` is null after `device_identify` and filled by `device_probe_board`.
+    #[serde(default)]
+    pub rx_spi: RxSpiInfo,
+}
+
+/// Onboard SPI receiver information (`FcInfo.rxSpi`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RxSpiInfo {
+    /// True when CLI `resource` shows `RX_SPI_CS` assigned to a pin (the board has an
+    /// onboard SPI receiver); false when it is unassigned or the firmware has no RX_SPI.
+    /// Null = not determined (no CLI probe yet).
+    pub present: Option<bool>,
+    /// `RX_SPI_EXPRESSLRS_RESET` and `RX_SPI_EXPRESSLRS_BUSY` are both assigned.
+    pub expresslrs_pins: bool,
+    /// `rx_spi_protocol` as printed by the firmware, e.g. "EXPRESSLRS" (CLI), or the name
+    /// of the MSP_RX_CONFIG index as a hint when only MSP was read.
+    pub protocol: Option<String>,
+    /// `feature RX_SPI` state from MSP_FEATURE_CONFIG (null if not read).
+    pub feature_enabled: Option<bool>,
+    /// Raw assigned `RX_SPI*` resources, e.g. "RX_SPI_CS 1 A04".
+    pub resources: Vec<String>,
 }
 
 /// A flight-controller-side serial port (UART pad), read from the FC.
@@ -74,6 +105,91 @@ pub struct FcSerialPort {
     pub function_mask: u32,
     /// True for the port the app is connected through (USB VCP) - not offered to the user.
     pub is_connection_port: bool,
+}
+
+/// Motor-test limits. Always clamped by the backend: `maxThrottle` <= 1250,
+/// `watchdogMs` 100..=2000. Defaults: 1150 / 500.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestLimits {
+    pub max_throttle: u16,
+    pub watchdog_ms: u32,
+}
+
+/// How the FC drives its motors (read at motor-test start).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorOutputConfig {
+    /// `motor_pwm_protocol` name, e.g. "DSHOT600", "PWM", "DISABLED".
+    pub protocol: String,
+    /// DShot / ProShot.
+    pub digital: bool,
+    /// `feature 3D` (motor test is refused in 3D mode).
+    pub feature3d: bool,
+    pub mincommand: u16,
+    pub motor_count: u8,
+    /// Value meaning "motor stopped": 1000 for digital protocols, else `mincommand`.
+    pub stop_value: u16,
+}
+
+/// Result of `device_motor_test_start`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestSession {
+    pub output_config: MotorOutputConfig,
+    /// The limits actually in force (after clamping).
+    pub limits: MotorTestLimits,
+}
+
+/// Emitted on `device://motor-test-stopped` whenever a running test ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MotorTestStopped {
+    pub reason: MotorTestStopReason,
+    /// `AppError` JSON when `reason` = ERROR.
+    pub error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MotorTestStopReason {
+    /// `device_motor_test_stop` or `device_disconnect`.
+    Requested,
+    /// No keepalive within `watchdogMs`.
+    Watchdog,
+    /// The FC became armed during the test.
+    Armed,
+    Disconnected,
+    /// Window close/destroy or app exit (emergency stop in the Tauri run loop).
+    AppClosing,
+    Error,
+}
+
+/// Emitted on `device://rc-channels` at the stream rate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RcChannels {
+    pub seq: u64,
+    /// Milliseconds since the stream started.
+    pub timestamp_ms: u64,
+    /// Raw MSP_RC values (usually 1000..2000), firmware channel order (AETR + AUX).
+    pub channels: Vec<u16>,
+}
+
+/// Emitted on `device://rc-stopped` when the RC stream ends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RcStopped {
+    pub reason: RcStopReason,
+    pub error: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RcStopReason {
+    Requested,
+    Disconnected,
+    Error,
 }
 
 // ---------------------------------------------------------------- flasher
@@ -455,7 +571,7 @@ pub struct Backup {
     /// Absolute path of the saved `diff all` text file:
     /// `<app_data_dir>/backups/<boardUid>/<timestamp>.txt` (kept forever).
     pub path: String,
-    /// MCU unique id (hex, FcInfo.uid); "unknown" if unavailable.
+    /// MCU unique id (FcInfo.uid: 24-char `mcu_id` hex); "unknown" if unavailable.
     #[serde(default)]
     pub board_uid: String,
     pub board_name: String,
@@ -503,14 +619,89 @@ pub struct Mismatch {
 
 // ---------------------------------------------------------------- system
 
+/// Result of `system_driver_status`. On non-Windows hosts everything is `true`
+/// and `devices` is empty (no driver installation is ever needed there).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverStatus {
-    /// WinUSB bound to STM32/AT32 DFU (0483:DF11, 2E3C:DF11)
+    /// False only when a DFU device (STM32 0483:DF11, AT32 2E3C:DF11, ...) is
+    /// plugged in WITHOUT WinUSB bound -> UI offers `system_install_dfu_driver`.
+    /// True when every connected DFU device is OK or none is connected.
     pub dfu_winusb: bool,
-    /// Vendor VCP / CP210x / CH340 drivers present
+    /// False only when a FC VCP or USB-UART bridge (CP210x, CH340, ...) is
+    /// plugged in without a working driver -> UI shows `guidance` for it.
     pub vcp: bool,
+    /// Human-readable diagnostics (English, for logs/support; not for i18n UI).
     pub notes: Vec<String>,
+    /// Every connected USB device we care about, with its driver binding.
+    #[serde(default)]
+    pub devices: Vec<UsbDriverInfo>,
+    /// Official vendor driver downloads for USB-UART bridges, always filled
+    /// (for the "nothing detected -> driver help" screen). Never bundled.
+    #[serde(default)]
+    pub guidance: Vec<DriverGuidance>,
+}
+
+/// A connected USB device relevant to the wizard and its Windows driver state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsbDriverInfo {
+    pub vid: u16,
+    pub pid: u16,
+    /// Friendly name from our VID/PID table, e.g. "STM32 DFU", "CP210x".
+    pub name: String,
+    pub kind: UsbDeviceKind,
+    /// Windows device instance id, e.g. `USB\VID_0483&PID_DF11\205F32...`.
+    pub instance_id: Option<String>,
+    /// Bound driver service, e.g. "WinUSB", "silabser", "CH341SER_A64",
+    /// "usbser"; `None` when Windows has no driver bound.
+    pub service: Option<String>,
+    /// True when the bound driver is the one the wizard needs.
+    pub driver_ok: bool,
+    /// What the user should do when `driver_ok` is false.
+    pub action: DriverAction,
+    /// For `action = VENDOR_DOWNLOAD`: index into `DriverStatus.guidance`.
+    pub guidance_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UsbDeviceKind {
+    /// MCU ROM USB DFU bootloader (needs WinUSB).
+    Dfu,
+    /// Native MCU USB virtual COM port (inbox usbser on Windows 10+).
+    FcVcp,
+    /// USB-UART bridge chip (CP210x, CH340, ...) - needs the vendor driver.
+    UsbUartBridge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DriverAction {
+    /// Driver is fine.
+    None,
+    /// Call `system_install_dfu_driver` (one UAC prompt).
+    InstallDfuDriver,
+    /// Send the user to the official vendor download (`guidance_index`).
+    VendorDownload,
+    /// Unplug/replug or check Device Manager (e.g. device in an error state).
+    Replug,
+}
+
+/// Official driver download for a USB-UART bridge family.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DriverGuidance {
+    /// Stable id usable as an i18n key suffix: "CP210X", "CH34X", "CH343".
+    pub id: String,
+    /// e.g. "Silicon Labs"
+    pub vendor: String,
+    /// e.g. "CP210x (CP2102/CP2104/CP2102N...)"
+    pub chips: String,
+    /// "VID:PID" strings (upper-case hex) this guidance applies to.
+    pub usb_ids: Vec<String>,
+    /// Official vendor download page (https).
+    pub download_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

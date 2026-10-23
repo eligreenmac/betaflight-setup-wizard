@@ -201,3 +201,29 @@ fn mock_save_semantics_match_real_sitl() {
         );
     }
 }
+
+#[test]
+fn real_sitl_diff_all_replays_through_the_guard() {
+    for v in ["4.4.3", "4.5.5", "2025.12.5"] {
+        let lines = super::guard::replay_lines(&sitl(v, "diff_all.txt"))
+            .unwrap_or_else(|e| panic!("{v}: {e}"));
+        let want: Vec<String> = [
+            "defaults nosave",
+            "feature -GPS",
+            "profile 0",
+            "profile 1",
+            "profile 2",
+            "profile 3",
+            "profile 0",
+            "rateprofile 0",
+            "rateprofile 1",
+            "rateprofile 2",
+            "rateprofile 3",
+            "rateprofile 0",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(lines, want, "{v}");
+    }
+}

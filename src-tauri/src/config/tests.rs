@@ -336,22 +336,43 @@ fn apply_verify_rollback_roundtrip() {
 
 #[test]
 fn apply_stops_at_first_error_and_does_not_save() {
-    let mut fc = MockFc::load("4.5", "speedybeef405v4");
-    let before = fc.snapshot();
-    let store = tmp_store("err");
-    let m = model("freestyle-5in-analog");
-    let script = session::plan(&mut fc, &m).unwrap();
-    fc.fail_on.push("set motor_pwm_protocol".into());
-    let r = session::apply(&mut fc, &script, &store, "UID2", &mut |_| {}).unwrap();
-    assert!(!r.saved);
-    assert_eq!(r.errors.len(), 1);
-    assert!(r.errors[0].command.starts_with("set motor_pwm_protocol"));
-    assert!(!fc.log.contains(&"save".to_string()));
-    assert_eq!(fc.log.last().map(String::as_str), Some("exit"));
-    let after = fc.snapshot();
-    assert_eq!(after.ports, before.ports, "unsaved batch must be discarded");
-    assert_eq!(after.settings, before.settings);
-    let _ = std::fs::remove_dir_all(store.root());
+    for d in Dialect::ALL {
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let before = fc.snapshot();
+        let store = tmp_store(&format!("err-{}", d.as_str()));
+        let m = model("freestyle-5in-analog");
+        let script = session::plan(&mut fc, &m).unwrap();
+        fc.fail_on.push("set motor_pwm_protocol".into());
+        let r = session::apply(&mut fc, &script, &store, "UID2", &mut |_| {}).unwrap();
+        assert!(!r.saved);
+        assert_eq!(r.errors.len(), 1);
+        assert!(r.errors[0].command.starts_with("set motor_pwm_protocol"));
+        assert_discarded(&fc, d, true, &format!("{d:?}"));
+        let after = fc.snapshot();
+        assert_eq!(
+            after.ports, before.ports,
+            "{d:?}: unsaved batch must be discarded"
+        );
+        assert_eq!(after.settings, before.settings, "{d:?}");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+/// No `save`; the batch was thrown away: `exit` (reboots) on 4.4, `exit noreboot` +
+/// MSP_SET_REBOOT on 4.5+ (the reboot is skipped only when the link is gone).
+fn assert_discarded(fc: &MockFc, d: Dialect, link_up: bool, ctx: &str) {
+    assert!(
+        !fc.log.iter().any(|l| l == "save"),
+        "{ctx}: save sent {:?}",
+        fc.log
+    );
+    let tail: Vec<&str> = fc.log.iter().map(String::as_str).collect();
+    let want: &[&str] = match (d, link_up) {
+        (Dialect::V4_4, _) => &["exit"],
+        (_, true) => &["exit noreboot", "MSP_SET_REBOOT"],
+        (_, false) => &["exit noreboot"],
+    };
+    assert!(tail.ends_with(want), "{ctx}: {tail:?}");
 }
 
 #[test]
@@ -416,4 +437,189 @@ fn board_default_msp_port_is_not_taken_silently() {
         assert_eq!(e.code(), "CONFIG");
         assert!(e.to_string().contains("UART4"), "{e}");
     }
+}
+
+#[test]
+fn every_generated_script_passes_the_apply_allowlist() {
+    for (name, dialects) in GOLDEN {
+        let m = model(name);
+        for &d in *dialects {
+            let mut fc = MockFc::load(firmware_dir(d), board_for(name));
+            let script = session::plan(&mut fc, &m).unwrap();
+            super::guard::validate_script(&script.commands)
+                .unwrap_or_else(|e| panic!("{name} {d:?}: {e}"));
+        }
+    }
+}
+
+#[test]
+fn apply_rejects_persist_reboot_wipe_lines_before_sending_anything() {
+    for bad in [
+        "save",
+        "save noreboot",
+        "SAVE",
+        "defaults",
+        "defaults nosave",
+        "reboot",
+        "exit",
+        "bl",
+        "dfu",
+        "flash_erase",
+        "msc",
+        "batch start",
+        "batch end",
+        "restore",
+        "bind_rx",
+        "bind_rx_spi",
+        "diff all",
+        "dump",
+        "play_sound",
+        "set motor_poles = 14\nsave",
+    ] {
+        let mut fc = MockFc::load("4.5", "speedybeef405v4");
+        let store = tmp_store("guard");
+        let mut script = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap();
+        script.commands.insert(2, bad.to_string());
+        fc.log.clear();
+        let e = session::apply(&mut fc, &script, &store, "UIDG", &mut |_| {}).unwrap_err();
+        assert_eq!(e.code(), "CONFIG", "{bad:?}");
+        assert!(e.to_string().contains("line 3"), "{bad:?}: {e}");
+        assert!(fc.log.is_empty(), "{bad:?}: sent {:?}", fc.log);
+        assert_eq!(fc.reboots, 0);
+        assert!(store.list().unwrap().is_empty(), "no backup either");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_rejects_tampered_backup_before_sending_anything() {
+    for (inject, why) in [
+        ("save", "persists"),
+        ("defaults", "resets"),
+        ("bl", "bootloader"),
+        ("exit", "reboots"),
+        ("flash_erase", "flash"),
+        ("status", "not a command"),
+    ] {
+        let mut fc = MockFc::load("4.5", "speedybeef405v4");
+        let store = tmp_store("guard-rb");
+        let bk = session::backup(&mut fc, &store, "UIDR").unwrap();
+        let text = std::fs::read_to_string(&bk.path).unwrap();
+        let tampered = text.replacen(
+            "# master\r\n",
+            &format!("# master\r\n{inject}\r\nset motor_poles = 16\r\n"),
+            1,
+        );
+        assert_ne!(text, tampered);
+        std::fs::write(&bk.path, tampered).unwrap();
+        fc.log.clear();
+        let e = session::rollback(&mut fc, &bk, &store, "UIDR", &mut |_| {}).unwrap_err();
+        assert_eq!(e.code(), "CONFIG", "{inject}");
+        assert!(e.to_string().contains(why), "{inject}: {e}");
+        assert!(e.to_string().contains(inject), "{inject}: {e}");
+        assert!(fc.log.is_empty(), "{inject}: sent {:?}", fc.log);
+        assert_eq!(store.list().unwrap().len(), 1, "no safety backup taken");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_replays_only_guarded_lines() {
+    let mut fc = MockFc::load("2025.12", "speedybeef405v4");
+    let store = tmp_store("guard-replay");
+    fc.preset(&["set motor_poles = 16"]);
+    let bk = session::backup(&mut fc, &store, "UIDP").unwrap();
+    fc.log.clear();
+    session::rollback(&mut fc, &bk, &store, "UIDP", &mut |_| {}).unwrap();
+    // version + diff all (safety backup), then the batch.
+    let i = fc.log.iter().position(|l| l == "batch start").unwrap();
+    assert_eq!(fc.log[i + 1], "defaults nosave");
+    let replayed = &fc.log[i + 1..fc.log.len() - 1];
+    assert!(replayed.contains(&"set motor_poles = 16".to_string()));
+    for l in replayed {
+        assert!(
+            !l.starts_with("board_name") && !l.starts_with("batch") && l != "save",
+            "{l}"
+        );
+    }
+    assert_eq!(fc.log.iter().filter(|l| *l == "batch start").count(), 1);
+    assert_eq!(fc.log.last().map(String::as_str), Some("save"));
+    let _ = std::fs::remove_dir_all(store.root());
+}
+
+#[test]
+fn apply_link_failure_mid_batch_sends_exit_not_save() {
+    use super::mock::LinkFault;
+    for (d, at, fault) in Dialect::ALL.into_iter().flat_map(|d| {
+        [
+            (d, "set motor_pwm_protocol", LinkFault::Timeout),
+            (d, "batch start", LinkFault::Timeout),
+            (d, "serial", LinkFault::Timeout),
+            (d, "set motor_pwm_protocol", LinkFault::Unplug),
+        ]
+    }) {
+        let ctx = format!("{d:?} {at} {fault:?}");
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        let before = fc.snapshot();
+        let store = tmp_store("link");
+        let script = session::plan(&mut fc, &model("freestyle-5in-analog")).unwrap();
+        fc.log.clear();
+        fc.link_fault = Some((at.to_string(), fault));
+        let e = session::apply(&mut fc, &script, &store, "UIDL", &mut |_| {}).unwrap_err();
+        // The original error, not the one from the best-effort `exit`.
+        assert_eq!(e.code(), "SERIAL", "{ctx}");
+        let msg = e.to_string();
+        match fault {
+            LinkFault::Timeout => assert!(msg.contains("timeout"), "{ctx}: {msg}"),
+            LinkFault::Unplug => assert!(msg.contains("disconnected"), "{ctx}: {msg}"),
+        }
+        assert_discarded(&fc, d, fault == LinkFault::Timeout, &ctx);
+        if fault == LinkFault::Timeout {
+            assert_eq!(fc.reboots, 1, "{ctx}: the FC rebooted");
+        }
+        let after = fc.snapshot();
+        assert_eq!(after.ports, before.ports, "{ctx}: batch discarded");
+        assert_eq!(after.settings, before.settings, "{ctx}");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn rollback_link_failure_mid_replay_sends_exit_not_save() {
+    use super::mock::LinkFault;
+    for (d, fault) in Dialect::ALL
+        .into_iter()
+        .flat_map(|d| [(d, LinkFault::Timeout), (d, LinkFault::Unplug)])
+    {
+        let mut fc = MockFc::load(d.as_str(), "speedybeef405v4");
+        fc.preset(&["set motor_poles = 16"]);
+        let store = tmp_store("link-rb");
+        let bk = session::backup(&mut fc, &store, "UIDK").unwrap();
+        fc.preset(&["set motor_poles = 12"]);
+        let before = fc.snapshot();
+        fc.log.clear();
+        // After `defaults nosave` wiped RAM: the FC must not stay in CLI with it.
+        fc.link_fault = Some(("set motor_poles".into(), fault));
+        let e = session::rollback(&mut fc, &bk, &store, "UIDK", &mut |_| {}).unwrap_err();
+        let ctx = format!("{d:?} {fault:?}");
+        assert_eq!(e.code(), "SERIAL", "{ctx}");
+        assert!(fc.log.contains(&"defaults nosave".to_string()));
+        assert_discarded(&fc, d, fault == LinkFault::Timeout, &ctx);
+        assert_eq!(fc.snapshot().settings, before.settings, "{ctx}");
+        let _ = std::fs::remove_dir_all(store.root());
+    }
+}
+
+#[test]
+fn exit_noreboot_alone_would_keep_the_batch() {
+    // Why `discard` reboots over MSP on 4.5+: the device link's `exit noreboot` leaves
+    // the unsaved changes active (cli.c cliExit(false) does not reboot).
+    use crate::device::Connection;
+    let mut fc = MockFc::load("4.5", "speedybeef405v4");
+    fc.enter_cli().unwrap();
+    fc.cli_exec("set motor_poles = 22").unwrap();
+    fc.exit_cli(false).unwrap();
+    assert_eq!(fc.snapshot().setting("motor_poles"), Some("22"));
+    fc.msp_request(session::MSP_SET_REBOOT, &[0]).unwrap();
+    assert_ne!(fc.snapshot().setting("motor_poles"), Some("22"));
 }

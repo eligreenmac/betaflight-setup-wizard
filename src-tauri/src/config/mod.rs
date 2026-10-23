@@ -12,12 +12,14 @@
 //! - [`session`]: FC operations over `device::Connection` (read ports, plan, backup, apply, verify, rollback)
 //! - [`backup`]: backup files on disk
 //! - [`msp`]: MSP identification ids, encoders and decoders (checked against SITL)
+//! - [`guard`]: allowlists for what apply / rollback may send (script and backup replay)
 //! - `mock` (tests only): `MockFc` CLI simulator
 
 pub mod backup;
 pub mod commands;
 pub mod firmware;
 pub mod generate;
+pub mod guard;
 pub mod md5;
 pub mod modes;
 pub mod msp;
