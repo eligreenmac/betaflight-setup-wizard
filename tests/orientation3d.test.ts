@@ -12,6 +12,7 @@ import { i18n, setLocale } from "../src/i18n";
 import en from "../src/i18n/locales/en.json";
 import he from "../src/i18n/locales/he.json";
 import { installMock, uninstallMock } from "../src/mocks/install";
+import { ATTITUDE_DEFAULT_HZ, ATTITUDE_MAX_HZ } from "../src/mocks/scenarios";
 import type { ScenarioMock } from "../src/mocks/scenarios";
 import { apply, ATTITUDE_RATE_HZ, matrixToQuat, NOSE, relativeYaw, RIGHT, sceneMatrix, sceneQuat, smoothingStep, UP, webglAvailable, type Quat, type Vec3 } from "../src/wizard/attitude3d";
 import { nav, resetNav } from "../src/wizard/nav";
@@ -225,6 +226,31 @@ describe("attitude stream rate and lifetime", () => {
     await settle();
     expect(mock.device.attitudeTimer).toBeNull();
     expect(mock.device.attitudeRates).toEqual([30, 30]);
+  });
+
+  it("mock follows Device #94: default 30 Hz, clamped 1..50", async () => {
+    mock = installMock({ scenario: "happy", latencyMs: 0, stepMs: 0 });
+    await mock.backend("device_connect", { path: "COM5" });
+    const rate = async (hz: number | null) => {
+      await mock.backend("device_attitude_stream_start", { rateHz: hz });
+      await mock.backend("device_attitude_stream_stop", {});
+      return mock.device.attitudeHz;
+    };
+    expect([ATTITUDE_DEFAULT_HZ, ATTITUDE_MAX_HZ]).toEqual([30, 50]);
+    expect(await rate(null)).toBe(30);
+    expect(await rate(50)).toBe(50);
+    expect(await rate(80)).toBe(50);
+    expect(await rate(0)).toBe(1);
+  });
+
+  it("gaps in seq (latest value only) are fine: the view shows the newest sample", async () => {
+    await open();
+    await waitFor(() => mock.device.attitudeTimer !== null);
+    clearInterval(mock.device.attitudeTimer!); // only the samples below
+    mock.events.emit("device://attitude", { seq: 1000, timestampMs: 1, roll: 0, pitch: 30, yaw: 0 }); // nose down
+    mock.events.emit("device://attitude", { seq: 1007, timestampMs: 2, roll: 30, pitch: 0, yaw: 0 }); // 6 skipped: right side down
+    await settle();
+    expect(w!.get('[data-test="attitude-view"]').attributes("data-direction")).toBe("rightDown");
   });
 
   it("'Face forward again' makes the current heading the forward direction", async () => {
