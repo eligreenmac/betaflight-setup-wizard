@@ -6,7 +6,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AccCalibrationResult, AppInfo, ApplyResult, Attitude, Backup, BoardTarget, CliScript, DfuDevice, DriverStatus, DroneModel,
-  FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FlashOptions, HostPort,
+  FcInfo, FcSerialPort, FirmwareCatalog, FirmwareImage, MotorTestLimits, MotorTestSession, FirmwareRelease, FirmwareRequest, FirmwareRequirements, FlashOptions, HostPort,
   OsdLayout, OsdVideoSystem, SensorStatus, VerifyReport,
 } from "../types/model";
 
@@ -40,6 +40,7 @@ export interface CommandMap {
   flasher_list_dfu_devices: [Record<string, never>, DfuDevice[]];
   flasher_fetch_firmware: [{ request: FirmwareRequest }, FirmwareImage];
   flasher_list_cache: [Record<string, never>, FirmwareImage[]];
+  flasher_required_options: [{ requirements: FirmwareRequirements; release: string | null }, string[]];
   flasher_flash: [{ image: FirmwareImage; dfuSerial: string | null; options: FlashOptions }, void];
   flasher_remove_read_protection: [{ dfuSerial: string | null; confirmErase: boolean }, void];
   // config
@@ -122,6 +123,10 @@ export const api = {
     listDfuDevices: () => call("flasher_list_dfu_devices", none),
     fetchFirmware: (request: FirmwareRequest) => call("flasher_fetch_firmware", { request }),
     listCache: () => call("flasher_list_cache", none),
+    /** Build API options the wizard's answers need (pass as FirmwareRequest.requiredOptions). With a release:
+     * REQUIRED_OPTION_UNSUPPORTED if it does not offer one, BUILD_OPTIONS_UNAVAILABLE if its list can't be loaded. */
+    requiredOptions: (requirements: FirmwareRequirements, release: string | null = null) =>
+      call("flasher_required_options", { requirements, release }),
     flash: (image: FirmwareImage, dfuSerial: string | null, options: FlashOptions) =>
       call("flasher_flash", { image, dfuSerial, options }),
     /** Erases the whole chip. Only after the user explicitly confirmed. */

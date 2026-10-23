@@ -9,8 +9,8 @@ use crate::flasher::error::FlashError;
 use crate::flasher::service::{self, FirmwareService};
 use crate::flasher::{usb, PROGRESS_EVENT};
 use crate::model::{
-    BoardTarget, DfuDevice, FirmwareImage, FirmwareRelease, FirmwareRequest, FlashOptions,
-    FlashProgress, FlashStage,
+    BoardTarget, DfuDevice, FirmwareImage, FirmwareRelease, FirmwareRequest, FirmwareRequirements,
+    FlashOptions, FlashProgress, FlashStage,
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
@@ -104,6 +104,20 @@ pub async fn flasher_fetch_firmware(
         emit_failed(&app, r)
     })
     .await
+}
+
+/// Build API option values the wizard's answers need (`FirmwareRequest.requiredOptions`):
+/// receiver protocol and OSD type (ARCHITECTURE §6 "Build options"). With `release`, also
+/// checks that release offers them (`REQUIRED_OPTION_UNSUPPORTED`; the option list may be
+/// fetched: `BUILD_OPTIONS_UNAVAILABLE`). Read-only; no FC or USB I/O.
+#[tauri::command]
+pub async fn flasher_required_options(
+    app: AppHandle,
+    requirements: FirmwareRequirements,
+    release: Option<String>,
+) -> AppResult<Vec<String>> {
+    let _ = (app, requirements, release);
+    Err(AppError::NotImplemented("flasher_required_options"))
 }
 
 /// Cached firmware images available offline.
