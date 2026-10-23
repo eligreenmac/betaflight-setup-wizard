@@ -43,7 +43,7 @@ export interface RxSpiInfo {
 export interface FcSerialPort {
   /** "UART1".."UART15", "LPUART1", "SOFTSERIAL1", "SOFTSERIAL2", "VCP" */
   name: string;
-  /** firmware-specific id (4.4/4.5: UART1=0; 2025.12+: UART1=51) */
+  /** firmware-specific id (4.4/4.5: UART1=0; 2025.12+: UART1=51, UART11-15 = 61-65 on 2026.6) */
   identifier: number;
   functionMask: number;
   isConnectionPort: boolean;
@@ -177,7 +177,7 @@ export type Airmode = "ALWAYS" | "SWITCH" | "OFF";
 /** Stable names in `switches[].mode` for the optional modes (config::modes canonical names). */
 export type OptionalMode = "PREARM" | "FLIP OVER AFTER CRASH" | "AIR MODE";
 
-/** 4.4/4.5 CLI names. 2025.12: CRASH_FLIP is written as CRASHFLIP; RC_SMOOTHING_INIT_FAIL doesn't exist (warning). */
+/** 4.4/4.5 CLI names. 2025.12+: CRASH_FLIP is written as CRASHFLIP; RC_SMOOTHING_INIT_FAIL doesn't exist (warning). */
 export const BEEPER_NAMES = [
   "GYRO_CALIBRATED", "RX_LOST", "RX_LOST_LANDING", "DISARMING", "ARMING", "ARMING_GPS_FIX",
   "ARMING_GPS_NO_FIX", "BAT_CRIT_LOW", "BAT_LOW", "GPS_STATUS", "RX_SET", "ACC_CALIBRATION",
@@ -225,11 +225,11 @@ export interface OsdLayout {
 
 /** config_firmware_catalog(firmwareVersion): what a firmware line offers (a board's build may lack some; plan checks the FC). */
 export interface FirmwareCatalog {
-  /** Beeper conditions on that line (2025.12 has no RC_SMOOTHING_INIT_FAIL). */
+  /** Beeper conditions on that line (2025.12+ has no RC_SMOOTHING_INIT_FAIL). */
   beepers: BeeperName[];
   /** DShot beacon conditions: RX_LOST, RX_SET. */
   beaconEvents: DshotBeaconCondition[];
-  /** OSD element stable names, cli/settings.c order (4.4: 77, 4.5: 80, 2025.12: 82). */
+  /** OSD element stable names, cli/settings.c order (4.4: 77, 4.5: 80, 2025.12: 82, 2026.6: 94). */
   osdElements: OsdElementName[];
   /** Canonical mode names accepted in switches / removeModes. */
   modes: string[];
@@ -248,7 +248,7 @@ export const VTX_BAND_MAX = 8;
 export const VTX_CHANNEL_MAX = 8;
 
 export type SbasMode = "AUTO" | "EGNOS" | "WAAS" | "MSAS" | "GAGAN" | "NONE";
-/** Limits (4.4/4.5/2025.12): <= 8 bands, 8 channels, 8 power levels (only 1..VTX_POWER_MAX selectable); name <= 8, label <= 3 chars. */
+/** Limits (same on every supported firmware line): <= 8 bands, 8 channels, 8 power levels (only 1..VTX_POWER_MAX selectable); name <= 8, label <= 3 chars. */
 export interface VtxTable {
   bands: { name: string; letter: string; factory: boolean; frequencies: number[] }[];
   powerLevels: { value: number; label: string }[];

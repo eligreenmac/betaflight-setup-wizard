@@ -124,7 +124,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 / 2026.6 un
   - `OFF`: `feature -AIRMODE`, and AIR MODE ranges are removed.
   - Rejected with `CONFIG`: an AIR MODE switch together with `ALWAYS` or `OFF`.
 - **`beepers`.** The stable names are the 4.4/4.5 CLI names from `beeper list` (`io/beeper.c` `beeperTable`). When `beepers` is set, the generator writes every condition the firmware has: `beeper -X` for the listed ones and `beeper X` for the rest. This gives a full, verifiable state. Per-version differences:
-  - On 2025.12, `CRASH_FLIP` is written as `CRASHFLIP`.
+  - On 2025.12+, `CRASH_FLIP` is written as `CRASHFLIP`.
   - `RC_SMOOTHING_INIT_FAIL` doesn't exist on 2025.12. Listing it there gives a warning and nothing is written for it.
   - 2026.6 has the same beeper table as 2025.12.
   - The CLI matches names by prefix (`strncasecmp`), so the generator always writes full names.
@@ -136,12 +136,12 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 / 2026.6 un
   - `true` sets `acc_hardware` / `baro_hardware` / `mag_hardware` to `AUTO`. If the FC already names a specific chip, that chip is kept.
   - `false` sets it to `NONE`. No `feature` is involved on 4.4+.
   - The gyro is always on.
-  - With ACC off, the firmware hides ANGLE, HORIZON, HEADFREE and ACRO TRAINER (plus ALTHOLD and POSHOLD on 2025.12). Failsafe and GPS rescue can't self-level, because angle mode requires `sensors(SENSOR_ACC)` (`fc/core.c`). So `acc: false` together with an ANGLE, HORIZON, ALTHOLD, POSHOLD or GPS RESCUE switch is a `CONFIG` error.
+  - With ACC off, the firmware hides ANGLE, HORIZON, HEADFREE and ACRO TRAINER (plus ALTHOLD and POSHOLD on 2025.12+). Failsafe and GPS rescue can't self-level, because angle mode requires `sensors(SENSOR_ACC)` (`fc/core.c`). So `acc: false` together with an ANGLE, HORIZON, ALTHOLD, POSHOLD or GPS RESCUE switch is a `CONFIG` error.
   - `baro: false` with ALTHOLD gives a warning: ALTHOLD can fall back to GPS altitude.
   - Turning ACC on needs an accelerometer calibration before arming (Device's `device_acc_calibrate`).
   - Device's `SensorState.configuredHardware` reads the same settings: `NONE` = `false` (disabled), anything else = `true`.
   - **Calibration is never interleaved with a config batch.** The firmware saves the whole config to flash when an ACC calibration finishes. So the UI runs `device_acc_calibrate` only after `config_apply` has returned (saved, rebooted, reconnected), or before `config_plan`, never between them. The config script doesn't rely on unsaved RAM state outside its own batch: every batch ends in `save` + reboot (or `exit`), and the batch holds the port, so a calibration can't start mid-batch (`PORT_BUSY`).
-- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on all three lines (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device reports them as `SensorAlignment.boardRollDeg` / `boardPitchDeg` / `boardYawDeg` (signed whole degrees, #63), which are the same values as `boardAlignment.roll` / `pitch` / `yaw`.
+- **`boardAlignment`.** Maps to `align_board_roll` / `_pitch` / `_yaw`, in whole degrees, range −180..360 on every supported line (`cli/settings.c`). These are the same values that `MSP_BOARD_ALIGNMENT_CONFIG` reports. That message sends them as U16, so Device's `device_sensors()` must sign-extend them to int16. Device reports them as `SensorAlignment.boardRollDeg` / `boardPitchDeg` / `boardYawDeg` (signed whole degrees, #63), which are the same values as `boardAlignment.roll` / `pitch` / `yaw`.
 - **`osd`.**
   - **Setting `osd` writes:**
     - always: `feature OSD`;
@@ -154,7 +154,7 @@ All new fields are optional and mean the same on 4.4 / 4.5 / 2025.12 / 2026.6 un
     - The 4.4 list has 77 elements; 4.5 adds `GPS_LAP_TIME_*`; 2025.12 adds `DEBUG2` and `LIDAR_DIST`; 2026.6 adds `POS_HOLD_READY`, `BATTERY_PROFILE_NAME`, `CUSTOM_SERIAL_TEXT`, `WP_*` (8) and `NAV_MAP` (94). An unknown name for the firmware is a `CONFIG` error.
     - Elements not listed keep the FC's state.
     - An element whose x/y doesn't fit the grid is a `CONFIG` error.
-  - **Position encoding** is identical on all three lines (`osd/osd.h`):
+  - **Position encoding** is identical on every supported line (`osd/osd.h`):
     - x bits 0–4 plus bit 10 (x ≤ 63);
     - y bits 5–9;
     - bits 11–13: visible in OSD profile 1/2/3;
@@ -226,7 +226,7 @@ plus the device/flasher codes:
 |---|---|---|---|
 | `BOARD_NOT_FOUND` | Port path gone / FC unplugged | – | "Plug the FC in and pick its port" |
 | `PORT_BUSY` | Port held by another program, **or** a second caller inside the app (one connection manager, one owner) — there is no separate BUSY code | `{ port: string, heldBy: "APP" \| "EXTERNAL" }` | `EXTERNAL`: "Close Betaflight App / other tools"; `APP`: wait/retry |
-| `CONFIG` | The model can't be turned into a script for this FC (`config_generate`, `config_plan`, `config_verify`); nothing is sent. Usually no `details`. | `{ reason: "OSD_HD_NO_DISPLAYPORT" }` only when `osd.videoSystem = HD` but the FC's `dump all` has no MSP DisplayPort (`displayport_msp_*` missing), on all three firmware lines. This comes from `config_plan` / `config_verify`, which read the dump. `config_generate` has no dump, so it never raises it. | `OSD_HD_NO_DISPLAYPORT`: back to the OSD step (pick analog or flash firmware with HD OSD); otherwise show the message |
+| `CONFIG` | The model can't be turned into a script for this FC (`config_generate`, `config_plan`, `config_verify`); nothing is sent. Usually no `details`. | `{ reason: "OSD_HD_NO_DISPLAYPORT" }` only when `osd.videoSystem = HD` but the FC's `dump all` has no MSP DisplayPort (`displayport_msp_*` missing), on every supported firmware line. This comes from `config_plan` / `config_verify`, which read the dump. `config_generate` has no dump, so it never raises it. | `OSD_HD_NO_DISPLAYPORT`: back to the OSD step (pick analog or flash firmware with HD OSD); otherwise show the message |
 | `DRIVER_MISSING` | DFU device present but cannot be opened (Windows: no WinUSB bound) | `{ vid: number, pid: number, detail: string }` | Offer `system_install_dfu_driver` (owned by packaging), then retry `flasher_list_dfu_devices` |
 | `DFU_NOT_FOUND` | No DFU device appeared / requested `dfuSerial` absent | – | Bootloader-button help |
 | `READ_PROTECTED` | MCU flash is read-protected; returned by `flasher_flash` **before** anything is erased | – | Explain; offer unprotect (see below) |

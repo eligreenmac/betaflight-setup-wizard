@@ -43,7 +43,7 @@ pub enum HostPortKind {
 pub struct FcInfo {
     /// MSP_FC_VARIANT, e.g. "BTFL"
     pub fc_variant: String,
-    /// MSP_FC_VERSION, e.g. "4.5.2" or "2025.12.1"
+    /// MSP_FC_VERSION, e.g. "4.5.2", "2025.12.1" or "2026.6.2"
     pub firmware_version: String,
     /// MSP_API_VERSION, e.g. "1.46"
     pub api_version: String,
@@ -68,7 +68,7 @@ pub struct FcInfo {
     pub hd_osd_supported: Option<bool>,
     /// Serial ports exactly as the board reports them (MSP2_COMMON_SERIAL_CONFIG, falling
     /// back to MSP_CF_SERIAL_CONFIG). `identifier` is the raw firmware value (4.4/4.5:
-    /// UART1=0; 2025.12+: UART1=51). Empty if the firmware answered neither command.
+    /// UART1=0; 2025.12+: UART1=51, and on 2026.6 UART11-15 = 61-65). Empty if the firmware answered neither command.
     /// Snapshot taken by `device_identify`; `config_read_ports` stays the source for config.
     #[serde(default)]
     pub serial_ports: Vec<FcSerialPort>,
@@ -105,7 +105,8 @@ pub struct FcSerialPort {
     /// "LPUART1", "SOFTSERIAL1", "SOFTSERIAL2", "VCP".
     pub name: String,
     /// Firmware-specific numeric identifier used in the `serial` CLI command.
-    /// NOTE: differs by firmware version (4.4/4.5: UART1=0; 2025.12+: UART1=51).
+    /// NOTE: differs by firmware version (4.4/4.5: UART1=0; 2025.12+: UART1=51;
+    /// 2026.6 adds UART11-15 = 61-65).
     /// Never hard-code - always take it from config_read_ports.
     pub identifier: i32,
     /// Current function bitmask (FUNCTION_* in betaflight src/main/io/serial.h).
@@ -308,7 +309,7 @@ pub struct BoardTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirmwareRelease {
-    /// e.g. "4.5.2", "2025.12.1"
+    /// e.g. "4.5.2", "2025.12.1", "2026.6.2"
     pub release: String,
     pub prerelease: bool,
 }
@@ -453,7 +454,7 @@ pub struct DroneModel {
     pub extras: Extras,
     /// Air mode: ALWAYS = `feature AIRMODE`; SWITCH = `feature -AIRMODE` plus an "AIR MODE"
     /// entry in `switches` (required); OFF = `feature -AIRMODE` and no AIR MODE range.
-    /// null = keep (feature and ranges untouched). Same mechanism on 4.4 / 4.5 / 2025.12.
+    /// null = keep (feature and ranges untouched). Same mechanism on every supported firmware line.
     #[serde(default)]
     pub airmode: Option<Airmode>,
     /// Optional modes (PREARM, FLIP OVER AFTER CRASH, AIR MODE) whose ranges on the FC are
@@ -585,7 +586,7 @@ pub struct Vtx {
     pub power: Option<u8>,
 }
 
-/// Betaflight VTX table. Limits (drivers/vtx_table.h, same on 4.4 / 4.5 / 2025.12):
+/// Betaflight VTX table. Limits (drivers/vtx_table.h, same on every supported firmware line):
 /// at most 8 bands, 8 channels per band, 8 power levels; band name <= 8 chars,
 /// power label <= 3 chars; user frequencies <= 5999 MHz.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -650,7 +651,7 @@ pub struct Gps {
     pub port: Option<String>,
     pub provider: Option<GpsProvider>,
     /// UBLOX only: also track Galileo (`gps_ublox_use_galileo`). GPS is always on;
-    /// GLONASS / BeiDou are not configurable in 4.4 / 4.5 / 2025.12. null = keep.
+    /// GLONASS / BeiDou are not configurable on any supported firmware line. null = keep.
     #[serde(default)]
     pub galileo: Option<bool>,
     /// SBAS augmentation (`gps_sbas_mode`); null = keep.
@@ -658,7 +659,7 @@ pub struct Gps {
     pub sbas_mode: Option<SbasMode>,
 }
 
-/// `gps_sbas_mode` values (same table on 4.4 / 4.5 / 2025.12).
+/// `gps_sbas_mode` values (same table on every supported firmware line).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SbasMode {
@@ -692,10 +693,10 @@ pub struct Esc {
     #[serde(default)]
     pub props_out: bool,
     /// Motor idle in 0.01 % (550 = 5.5 %), 0..=2000. Written as `dshot_idle_value` on
-    /// 4.4 / 4.5 (exists only with DShot) and `motor_idle` on 2025.12; null = keep.
+    /// 4.4 / 4.5 (exists only with DShot) and `motor_idle` on 2025.12+; null = keep.
     #[serde(default)]
     pub idle: Option<u16>,
-    /// Motor remap (`motor_output_reordering`, 4.4 / 4.5 / 2025.12): entry i is the
+    /// Motor remap (`motor_output_reordering`, every supported firmware line): entry i is the
     /// 0-based output that drives motor i+1. Must be a permutation of 0..n where n is
     /// the motor count (4 for a quad); null = keep.
     #[serde(default)]
@@ -730,7 +731,7 @@ pub struct SwitchAssignment {
 pub struct Extras {
     pub beeper: Option<bool>,
     pub led_strip: Option<bool>,
-    /// Name shown in OSD / Configurator (`set craft_name = ...`, all of 4.4 / 4.5 / 2025.12;
+    /// Name shown in OSD / Configurator (`set craft_name = ...`, every supported firmware line;
     /// the old `name` command no longer exists). See [`craft_name_valid`];
     /// `""` clears it (written as `-`, the firmware's empty value); null = keep.
     pub craft_name: Option<String>,
@@ -740,7 +741,7 @@ pub struct Extras {
 /// compares them). Equivalent to [`craft_name_valid`].
 pub const CRAFT_NAME_PATTERN: &str = r"^(?:[\x21\x22\x24-\x2C\x2E-\x3E\x40-\x7E]|[\x21\x22\x24-\x3E\x40-\x7E][\x20-\x22\x24-\x3E\x40-\x7E]{0,14}[\x21\x22\x24-\x3E\x40-\x7E])?$";
 
-/// What Betaflight 4.4 / 4.5 / 2025.12 can store through `set craft_name = <name>`
+/// What every supported Betaflight line can store through `set craft_name = <name>`
 /// (craft_name is MODE_STRING 1..MAX_NAME_LENGTH = 16, cli/settings.c; parsing in cli.c):
 /// - processCharacter only buffers 0x20..=0x7E;
 /// - `#` starts a comment (the rest of the line is cut), `?` is tab-completion in the
@@ -763,7 +764,7 @@ pub fn craft_name_valid(name: &str) -> bool {
 pub const MAX_CRAFT_NAME_LENGTH: usize = 16;
 
 /// Highest `vtx.power` the CLI accepts: `vtx_power` is 1-based (0 = unknown) with range
-/// 0..VTX_TABLE_MAX_POWER_LEVELS-1 = 0..7 in 4.4 / 4.5 / 2025.12 (cli/settings.c), so a
+/// 0..VTX_TABLE_MAX_POWER_LEVELS-1 = 0..7 on every supported firmware line (cli/settings.c), so a
 /// table's 8th power level cannot be selected via the CLI. Band / channel are 1..=8.
 pub const VTX_POWER_MAX: u8 = 7;
 pub const VTX_BAND_MAX: u8 = 8;
@@ -781,8 +782,8 @@ pub enum Airmode {
 }
 
 /// Stable beeper condition names = the 4.4 / 4.5 CLI names (`beeper list`). Config maps
-/// them per firmware: CRASH_FLIP is `CRASHFLIP` on 2025.12; RC_SMOOTHING_INIT_FAIL does
-/// not exist on 2025.12 (a warning, nothing written).
+/// them per firmware: CRASH_FLIP is `CRASHFLIP` on 2025.12+; RC_SMOOTHING_INIT_FAIL does
+/// not exist on 2025.12+ (a warning, nothing written).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum BeeperName {
@@ -846,7 +847,7 @@ pub struct Sensors {
     pub mag: Option<bool>,
 }
 
-/// Whole degrees, the firmware range -180..=360 on 4.4 / 4.5 / 2025.12 (cli/settings.c);
+/// Whole degrees, the firmware range -180..=360 on every supported firmware line (cli/settings.c);
 /// the same values MSP_BOARD_ALIGNMENT_CONFIG reports (int16 each).
 /// `roll` / `pitch` / `yaw` = device `SensorAlignment.board_roll_deg` / `_pitch_deg` / `_yaw_deg`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -859,7 +860,7 @@ pub struct BoardAlignment {
 pub const BOARD_ALIGNMENT_MIN: i16 = -180;
 pub const BOARD_ALIGNMENT_MAX: i16 = 360;
 
-/// `vcd_video_system` (same table on 4.4 / 4.5 / 2025.12). The OSD grid is
+/// `vcd_video_system` (same table on every supported firmware line). The OSD grid is
 /// PAL 30x16, NTSC 30x13, AUTO 30x13 (fits either camera), HD 53x20.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -933,7 +934,7 @@ pub struct OsdLayoutElement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FirmwareCatalog {
-    /// Beeper conditions the line has (stable names; 2025.12 lacks RC_SMOOTHING_INIT_FAIL).
+    /// Beeper conditions the line has (stable names; 2025.12+ lacks RC_SMOOTHING_INIT_FAIL).
     pub beepers: Vec<BeeperName>,
     /// DShot beacon conditions (RX_LOST, RX_SET on every line).
     pub beacon_events: Vec<DshotBeaconCondition>,
@@ -954,7 +955,8 @@ pub struct CliScript {
     pub commands: Vec<String>,
     /// Non-fatal issues to show the user (e.g. "UART3 also used by GPS").
     pub warnings: Vec<String>,
-    /// Firmware dialect used: "4.4", "4.5" or "2025.12".
+    /// Firmware dialect used: "4.4", "4.5", "2025.12" or "2026.6" (one per
+    /// `config::firmware::SUPPORTED_LINES` entry).
     pub dialect: String,
     /// Wizard-managed serial functions this script removes from ports that no
     /// longer need them (shown in the review step before applying).
