@@ -170,8 +170,11 @@ pub async fn device_get_attitude(app: AppHandle) -> AppResult<Attitude> {
     blocking(app, |m, _| m.get_attitude()).await
 }
 
-/// Stream MSP_ATTITUDE on `device://attitude` (`rate_hz` default 10, clamped 1..=30).
-/// Exclusive with the motor test and the RC stream (`PORT_BUSY {heldBy: APP}`).
+/// Stream MSP_ATTITUDE on `device://attitude` (`rate_hz` default 30, clamped 1..=50), latest
+/// sample only (a slow listener sees gaps in `seq`, never a backlog). Exclusive with the
+/// motor test and the RC stream (`PORT_BUSY {heldBy: APP}`); `device_identify`,
+/// `device_sensors`, `device_get_attitude` and the unsaved-changes check share the port
+/// with it (the stream pauses for them), other port commands get `PORT_BUSY`.
 #[tauri::command]
 pub async fn device_attitude_stream_start(app: AppHandle, rate_hz: Option<u32>) -> AppResult<()> {
     blocking(app, move |m, app| {

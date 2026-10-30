@@ -47,7 +47,7 @@ impl RusbDfuTransport {
         Ok(RusbDfuTransport {
             handle,
             interface,
-            timeout: Duration::from_secs(5),
+            timeout: crate::flasher::dfu::DEFAULT_CONTROL_TIMEOUT,
         })
     }
 
@@ -129,6 +129,10 @@ impl DfuTransport for RusbDfuTransport {
             }
         }
         Ok(out)
+    }
+
+    fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
     }
 
     fn transfer_size(&mut self) -> Result<Option<u16>> {

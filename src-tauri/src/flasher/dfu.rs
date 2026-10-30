@@ -72,6 +72,31 @@ pub mod cmd {
 /// Default when the functional descriptor gives no wTransferSize (F3/F4/F7).
 pub const DEFAULT_TRANSFER_SIZE: usize = 2048;
 
+/// Control-transfer timeout outside a mass erase (`usb::RusbDfuTransport` default).
+pub const DEFAULT_CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Control-transfer timeout while a mass erase runs: some ROM bootloaders do not answer
+/// GETSTATUS (NAK) until the erase is done.
+pub const MASS_ERASE_CONTROL_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Mass erase never takes longer than this, whatever the flash size.
+pub const MASS_ERASE_MIN_DEADLINE_MS: u64 = 60_000;
+
+/// Interval between GETSTATUS polls (and erase progress events) while a mass erase runs.
+pub const MASS_ERASE_POLL_MS: u32 = 250;
+
+/// Expected duration of a mass erase: ~10 ms per KiB, at least 3 s, at most 30 s
+/// (datasheet bank/mass erase times: F405 1 MiB ~8-16 s, H743 2 MiB ~4-20 s with both banks).
+/// Drives the erase progress fraction; the deadline is [`mass_erase_deadline_ms`].
+pub fn mass_erase_estimate_ms(flash_size: u64) -> u64 {
+    (flash_size / 1024 * 10).clamp(3_000, 30_000)
+}
+
+/// Give up waiting for a mass erase after 3x the estimate, at least 60 s.
+pub fn mass_erase_deadline_ms(flash_size: u64) -> u64 {
+    (mass_erase_estimate_ms(flash_size) * 3).max(MASS_ERASE_MIN_DEADLINE_MS)
+}
+
 /// The USB side, one claimed DFU interface. Requests are class/interface control transfers on
 /// that interface. Implemented over rusb by `usb::RusbDfuTransport` and by a simulator in tests.
 pub trait DfuTransport {
@@ -81,6 +106,8 @@ pub trait DfuTransport {
     fn memory_descriptors(&mut self) -> Result<Vec<String>>;
     /// wTransferSize from the DFU functional descriptor, if present.
     fn transfer_size(&mut self) -> Result<Option<u16>>;
+    /// Timeout of each control transfer (raised while a mass erase runs). Default: ignored.
+    fn set_timeout(&mut self, _timeout: Duration) {}
 }
 
 impl<T: DfuTransport + ?Sized> DfuTransport for Box<T> {
@@ -95,6 +122,9 @@ impl<T: DfuTransport + ?Sized> DfuTransport for Box<T> {
     }
     fn transfer_size(&mut self) -> Result<Option<u16>> {
         (**self).transfer_size()
+    }
+    fn set_timeout(&mut self, timeout: Duration) {
+        (**self).set_timeout(timeout)
     }
 }
 
@@ -124,16 +154,32 @@ impl DfuStatus {
     }
 }
 
-/// Which pages to erase.
+/// Which pages to erase (ARCHITECTURE.md §6 "Erase modes").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EraseMode {
-    /// Only pages the firmware touches (keeps settings outside the image, e.g. on boards whose
-    /// config lives in a separate flash sector).
+    /// Only the pages the image writes to. Betaflight keeps its settings in a flash sector of
+    /// their own that the image never covers (F4/F7/G4/AT32 0x08004000, H7 0x08020000), so
+    /// they survive; the firmware itself resets them at boot when the stored config version
+    /// or board identifier differs.
     #[default]
     Pages,
-    /// Every page of the flash region ("Full chip erase" in the configurator).
+    /// The whole flash region, settings sector included: DfuSe mass erase where the layout
+    /// allows it (internal flash, every sector erasable), checked blank afterwards, else
+    /// every page of the layout one by one (the configurator's "Full chip erase").
     Full,
+}
+
+/// How a full erase was done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EraseMethod {
+    /// Only the pages the image covers ([`EraseMode::Pages`]).
+    ImagePages,
+    /// DfuSe mass erase (0x41 without an address).
+    MassErase,
+    /// Every page of the layout, one ERASE command each.
+    AllPages,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -189,6 +235,8 @@ pub struct FlashReport {
     pub flash_region: String,
     pub flash_size: u64,
     pub transfer_size: usize,
+    pub erase_method: EraseMethod,
+    /// Pages erased one by one (a mass erase counts every page of the layout).
     pub pages_erased: usize,
     pub bytes_written: usize,
     pub verified: bool,
@@ -313,11 +361,170 @@ impl<T: DfuTransport> DfuSe<T> {
         self.finish_erase(s, &step)
     }
 
-    /// DfuSe mass erase (0x41 with no address). Not used by the default flow, which erases page
-    /// by page like the configurator.
-    pub fn mass_erase(&mut self) -> Result<()> {
-        let s = self.download_and_poll(0, &[cmd::ERASE], "mass erase")?;
-        self.finish_erase(s, "mass erase")
+    /// DfuSe mass erase (0x41 with no address) of a flash of `flash_size` bytes. `progress`
+    /// gets (elapsed, expected) in ms while it runs. The result tells a refusal (the
+    /// bootloader does not support it, nothing erased: fall back to page erase) apart from a
+    /// failure after it started.
+    pub fn mass_erase(
+        &mut self,
+        flash_size: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<MassErase> {
+        let expected = mass_erase_estimate_ms(flash_size);
+        let deadline = mass_erase_deadline_ms(flash_size);
+        if let Err(e) = self
+            .transport
+            .control_out(request::DNLOAD, 0, &[cmd::ERASE])
+        {
+            log::info!("mass erase refused by the bootloader ({e}); erasing page by page");
+            self.clear_status(false)?;
+            return Ok(MassErase::Refused);
+        }
+        // DfuSe runs the erase on the GETSTATUS that follows the command, and some
+        // bootloaders only answer that one when the erase is done: long timeout from here on.
+        self.transport.set_timeout(MASS_ERASE_CONTROL_TIMEOUT);
+        let r = self.finish_mass_erase(expected, deadline, progress);
+        self.transport.set_timeout(DEFAULT_CONTROL_TIMEOUT);
+        r
+    }
+
+    fn finish_mass_erase(
+        &mut self,
+        expected: u64,
+        deadline: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<MassErase> {
+        let s = self.get_status()?;
+        match s.state {
+            state::DFU_DNBUSY => {}
+            state::DFU_ERROR | state::DFU_IDLE | state::DFU_DNLOAD_IDLE => {
+                log::info!(
+                    "mass erase refused by the bootloader (status {:#04x}, state {}); erasing page by page",
+                    s.status,
+                    s.state
+                );
+                self.clear_status(false)?;
+                return Ok(MassErase::Refused);
+            }
+            _ => return Err(Self::fail("mass erase", s)),
+        }
+        self.wait_mass_erase(s.poll_timeout_ms, expected, deadline, progress)
+            .map(|()| MassErase::Done)
+    }
+
+    /// Poll until the mass erase ends. Elapsed time counts the requested sleeps plus the
+    /// time spent in transfers, so a test with a no-op sleep still reaches the deadline.
+    fn wait_mass_erase(
+        &mut self,
+        first_poll_ms: u32,
+        expected: u64,
+        deadline: u64,
+        progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<()> {
+        let mut elapsed = first_poll_ms as u64;
+        self.wait_ms(first_poll_ms);
+        let mut unstick_tried = false;
+        loop {
+            let t0 = Instant::now();
+            let r = self.get_status();
+            elapsed += t0.elapsed().as_millis() as u64;
+            match r {
+                Ok(s) if s.state == state::DFU_DNLOAD_IDLE || s.state == state::DFU_IDLE => {
+                    return Ok(())
+                }
+                Ok(s) if s.state == state::DFU_DNBUSY => {
+                    // H743 Rev.V stays in dfuDNBUSY after an erase (see `finish_erase`). Only
+                    // treated as stuck once the expected time has passed; the blank check
+                    // after the mass erase catches an erase that was not done.
+                    if elapsed >= expected && !unstick_tried {
+                        unstick_tried = true;
+                        log::info!("mass erase: still dfuDNBUSY after {elapsed} ms, clearing");
+                        // A bootloader that is really still erasing may stall CLRSTATUS; keep
+                        // polling then (an error state ends the loop below).
+                        match self.clear_status(true) {
+                            Ok(()) => return Ok(()),
+                            Err(e) => log::info!("mass erase: CLRSTATUS while busy failed: {e}"),
+                        }
+                    }
+                }
+                Ok(s) => return Err(Self::fail("mass erase", s)),
+                // Busy bootloaders NAK GETSTATUS until the erase is done.
+                Err(e) => log::debug!("mass erase: GETSTATUS failed while busy: {e}"),
+            }
+            if elapsed >= deadline {
+                // FLASH_FAILED like any other DFU failure (`Timeout` maps to FIRMWARE).
+                return Err(FlashError::Dfu {
+                    step: format!("mass erase (not finished after {} s)", deadline / 1000),
+                    status: status::OK,
+                    state: state::DFU_DNBUSY,
+                });
+            }
+            progress(elapsed.min(expected.saturating_sub(1)), expected);
+            self.wait_ms(MASS_ERASE_POLL_MS);
+            elapsed += MASS_ERASE_POLL_MS as u64;
+        }
+    }
+
+    /// Whether the first `len` bytes at `address` read back erased (0xFF).
+    fn is_blank(&mut self, address: u32, len: usize) -> Result<bool> {
+        self.clear_status(false)?;
+        self.set_address(address)?;
+        self.clear_status(false)?;
+        let got = self.upload_block(2, len)?;
+        Ok(got.len() == len && got.iter().all(|&b| b == 0xFF))
+    }
+
+    /// [`EraseMode::Full`]: mass erase + blank check when the layout allows it, else (or
+    /// when the bootloader refuses it) every page. Returns how, and the pages erased one by
+    /// one (all of them for a mass erase).
+    fn erase_full(
+        &mut self,
+        region: &MemoryRegion,
+        progress: &mut dyn FnMut(u64, u64),
+        check_cancel: &dyn Fn() -> Result<()>,
+    ) -> Result<(EraseMethod, usize)> {
+        let all = region.all_pages();
+        if mass_erase_allowed(region) {
+            // Progress in permille: 0-900 the erase itself, 900-1000 the blank check.
+            let mut on_time = |done: u64, total: u64| progress(done * 900 / total.max(1), 1000);
+            if self.mass_erase(region.total_size(), &mut on_time)? == MassErase::Done {
+                progress(900, 1000);
+                // Blank-check the start of every page (one transfer each): a bootloader that
+                // acks the command without erasing (or erases only part of the chip) would
+                // otherwise leave settings behind or fail the write with errPROG.
+                let check = &all;
+                let mut left = Vec::new();
+                for (i, &(addr, size)) in check.iter().enumerate() {
+                    check_cancel()?;
+                    let len = (size as usize).min(self.transfer_size);
+                    if !self.is_blank(addr, len)? {
+                        left.push(addr);
+                    }
+                    progress(900 + (i as u64 + 1) * 100 / check.len() as u64, 1000);
+                }
+                if !left.is_empty() {
+                    log::warn!(
+                        "mass erase left {} page(s) unerased ({:#010x}...); erasing them",
+                        left.len(),
+                        left[0]
+                    );
+                    self.clear_status(false)?;
+                    for addr in &left {
+                        self.erase_page(*addr)?;
+                    }
+                }
+                self.clear_status(false)?;
+                progress(1000, 1000);
+                return Ok((EraseMethod::MassErase, all.len()));
+            }
+        }
+        let total = all.len() as u64;
+        for (i, (addr, _)) in all.iter().enumerate() {
+            check_cancel()?;
+            self.erase_page(*addr)?;
+            progress(i as u64 + 1, total);
+        }
+        Ok((EraseMethod::AllPages, all.len()))
     }
 
     fn finish_erase(&mut self, s: DfuStatus, step: &str) -> Result<()> {
@@ -472,28 +679,33 @@ impl<T: DfuTransport> DfuSe<T> {
 
         let w = Weights::new(opts);
         // Erase
-        let mut pages: Vec<(u32, u32)> = match opts.erase {
-            EraseMode::Full => region.all_pages(),
-            EraseMode::Pages => image
-                .segments
-                .iter()
-                .flat_map(|s| region.pages_overlapping(s.address, s.data.len()))
-                .collect(),
-        };
-        pages.sort_unstable();
-        pages.dedup();
-        let total_pages = pages.len() as u64;
-        for (i, (addr, _size)) in pages.iter().enumerate() {
-            check_cancel()?;
-            self.erase_page(*addr)?;
-            let done = i as u64 + 1;
+        let mut erase_progress = |done: u64, total: u64| {
             progress(DfuProgress {
                 phase: DfuPhase::Erase,
-                percent: w.at(w.erase, done, total_pages),
+                percent: w.at(w.erase, done, total),
                 done,
-                total: total_pages,
-            });
-        }
+                total,
+            })
+        };
+        let (erase_method, pages_erased) = match opts.erase {
+            EraseMode::Full => self.erase_full(&region, &mut erase_progress, &check_cancel)?,
+            EraseMode::Pages => {
+                let mut pages: Vec<(u32, u32)> = image
+                    .segments
+                    .iter()
+                    .flat_map(|s| region.pages_overlapping(s.address, s.data.len()))
+                    .collect();
+                pages.sort_unstable();
+                pages.dedup();
+                let total_pages = pages.len() as u64;
+                for (i, (addr, _size)) in pages.iter().enumerate() {
+                    check_cancel()?;
+                    self.erase_page(*addr)?;
+                    erase_progress(i as u64 + 1, total_pages);
+                }
+                (EraseMethod::ImagePages, pages.len())
+            }
+        };
 
         // Write
         let total = image.bytes_total() as u64;
@@ -565,12 +777,30 @@ impl<T: DfuTransport> DfuSe<T> {
             flash_region: region.name.clone(),
             flash_size: region.total_size(),
             transfer_size: ts,
-            pages_erased: pages.len(),
+            erase_method,
+            pages_erased,
             bytes_written: image.bytes_total(),
             verified: opts.verify,
             duration_ms: started.elapsed().as_millis() as u64,
         })
     }
+}
+
+/// Result of [`DfuSe::mass_erase`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MassErase {
+    Done,
+    /// The bootloader rejected the command before erasing anything.
+    Refused,
+}
+
+/// Mass erase only on internal flash whose layout marks every sector erasable. A read-only
+/// sector means a flash-resident bootloader or a protected area that a mass erase would wipe
+/// anyway (dfu-util refuses without `force` for the same reason); AT32F435/437 ROMs report
+/// their first 32 KiB as read-only although they erase it page by page, so they take the
+/// page path like in the configurator. External flash (H7 EXST) uses a custom loader.
+pub fn mass_erase_allowed(region: &MemoryRegion) -> bool {
+    region.key() == "internal_flash" && region.sectors.iter().all(|s| s.erasable())
 }
 
 fn block_number(i: usize) -> Result<u16> {
@@ -627,6 +857,22 @@ pub(crate) mod sim {
         Write(u16, Vec<u8>),
     }
 
+    /// How the simulated bootloader answers a mass erase (0x41 without an address).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SimMassErase {
+        /// Erases everything; GETSTATUS NAKs `nak_polls` times, then reports dfuDNBUSY
+        /// `busy_polls` times before it is done.
+        Supported { nak_polls: u32, busy_polls: u32 },
+        /// Rejects the command with dfuERROR / errTARGET.
+        RefuseStatus,
+        /// Stalls the DNLOAD.
+        RefuseStall,
+        /// Reports success without erasing anything.
+        Noop,
+        /// Never answers GETSTATUS again.
+        NeverEnds,
+    }
+
     pub struct SimDfu {
         pub descriptors: Vec<String>,
         pub transfer: Option<u16>,
@@ -635,40 +881,62 @@ pub(crate) mod sim {
         pub read_protected: bool,
         /// Stay in dfuDNBUSY after the next erase, as the H743 Rev.V does.
         pub stuck_busy_after_erase: bool,
+        pub mass_erase: SimMassErase,
         /// Flip a bit of the byte written at this address.
         pub corrupt_write_at: Option<u32>,
         pub log: Vec<String>,
+        /// Control timeouts set by the host, in order.
+        pub timeouts: Vec<Duration>,
         pub left: bool,
         state: u8,
         status: u8,
         addr: u32,
         pending: Option<Pending>,
         stuck: bool,
+        nak_left: u32,
+        busy_left: u32,
         erased: BTreeMap<u32, ()>,
+        layout: MemoryRegion,
     }
 
     impl SimDfu {
         /// F405-like: 4x16K, 1x64K, 7x128K at 0x08000000, plus option bytes.
         pub fn f405() -> Self {
+            Self::with_layout(
+                "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg",
+                Some("@Option Bytes  /0x1FFFC000/01*016 e"),
+            )
+        }
+
+        /// A bootloader with this flash layout (flash starts all 0x00, i.e. not erased).
+        pub fn with_layout(flash: &str, option_bytes: Option<&str>) -> Self {
+            let layout = crate::flasher::layout::parse_memory_descriptor(flash).unwrap();
+            let mut descriptors = vec![flash.to_string()];
+            descriptors.extend(option_bytes.map(str::to_string));
             SimDfu {
-                descriptors: vec![
-                    "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg".into(),
-                    "@Option Bytes  /0x1FFFC000/01*016 e".into(),
-                ],
+                descriptors,
                 transfer: Some(2048),
-                flash_base: 0x0800_0000,
-                flash: vec![0x00; 1024 * 1024], // not erased
+                flash_base: layout.start_address,
+                flash: vec![0x00; layout.total_size() as usize],
                 read_protected: false,
                 stuck_busy_after_erase: false,
+                mass_erase: SimMassErase::Supported {
+                    nak_polls: 0,
+                    busy_polls: 0,
+                },
                 corrupt_write_at: None,
                 log: Vec::new(),
+                timeouts: Vec::new(),
                 left: false,
                 state: state::DFU_IDLE,
                 status: status::OK,
                 addr: 0,
                 pending: None,
                 stuck: false,
+                nak_left: 0,
+                busy_left: 0,
                 erased: BTreeMap::new(),
+                layout,
             }
         }
 
@@ -676,13 +944,23 @@ pub(crate) mod sim {
             self.erased.keys().copied().collect()
         }
 
+        pub fn bytes(&self, address: u32, len: usize) -> &[u8] {
+            let off = (address - self.flash_base) as usize;
+            &self.flash[off..off + len]
+        }
+
+        pub fn fill(&mut self, address: u32, len: usize, v: u8) {
+            let off = (address - self.flash_base) as usize;
+            self.flash[off..off + len].fill(v);
+        }
+
         fn page_len(&self, addr: u32) -> u32 {
-            let off = addr - self.flash_base;
-            match off {
-                0..=0xFFFF => 16 * 1024,
-                0x1_0000..=0x1_FFFF => 64 * 1024,
-                _ => 128 * 1024,
-            }
+            self.layout
+                .sectors
+                .iter()
+                .find(|s| (addr as u64) >= s.start_address as u64 && (addr as u64) < s.end())
+                .map(|s| s.page_size)
+                .unwrap_or(1)
         }
 
         fn status_bytes(&self, poll: u32) -> Vec<u8> {
@@ -732,8 +1010,16 @@ pub(crate) mod sim {
                     }
                 }
                 Pending::Erase(None) => {
-                    self.flash.fill(0xFF);
-                    self.state = state::DFU_DNLOAD_IDLE;
+                    if self.mass_erase != SimMassErase::Noop {
+                        self.flash.fill(0xFF);
+                    }
+                    if self.stuck_busy_after_erase {
+                        self.stuck_busy_after_erase = false;
+                        self.stuck = true;
+                        self.state = state::DFU_DNBUSY;
+                    } else {
+                        self.state = state::DFU_DNLOAD_IDLE;
+                    }
                 }
                 Pending::Unprotect => {
                     self.flash.fill(0xFF);
@@ -772,6 +1058,14 @@ pub(crate) mod sim {
                         state::DFU_DNLOAD_SYNC => {
                             self.state = state::DFU_DNBUSY;
                             Ok(self.status_bytes(5))
+                        }
+                        state::DFU_DNBUSY if !self.stuck && self.nak_left > 0 => {
+                            self.nak_left -= 1;
+                            Err(FlashError::Usb("Operation timed out".into()))
+                        }
+                        state::DFU_DNBUSY if !self.stuck && self.busy_left > 0 => {
+                            self.busy_left -= 1;
+                            Ok(self.status_bytes(100))
                         }
                         state::DFU_DNBUSY if !self.stuck => {
                             if let Some(p) = self.pending.take() {
@@ -825,6 +1119,27 @@ pub(crate) mod sim {
                         self.state = state::DFU_MANIFEST;
                         return Ok(());
                     }
+                    if value == 0 && data == [cmd::ERASE] {
+                        match self.mass_erase {
+                            SimMassErase::RefuseStatus => {
+                                self.error(status::ERR_TARGET);
+                                return Ok(());
+                            }
+                            SimMassErase::RefuseStall => {
+                                self.error(status::ERR_STALLEDPKT);
+                                return Err(FlashError::Usb("stall".into()));
+                            }
+                            SimMassErase::Supported {
+                                nak_polls,
+                                busy_polls,
+                            } => {
+                                self.nak_left = nak_polls;
+                                self.busy_left = busy_polls;
+                            }
+                            SimMassErase::NeverEnds => self.nak_left = u32::MAX,
+                            SimMassErase::Noop => {}
+                        }
+                    }
                     let p = if value == 0 {
                         let a = (data.len() >= 5)
                             .then(|| u32::from_le_bytes([data[1], data[2], data[3], data[4]]));
@@ -873,12 +1188,17 @@ pub(crate) mod sim {
         fn transfer_size(&mut self) -> Result<Option<u16>> {
             Ok(self.transfer)
         }
+
+        fn set_timeout(&mut self, timeout: Duration) {
+            self.timeouts.push(timeout);
+            self.log.push(format!("TIMEOUT {}ms", timeout.as_millis()));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sim::SimDfu;
+    use super::sim::{SimDfu, SimMassErase};
     use super::*;
     use crate::flasher::hex::Segment;
 
@@ -969,16 +1289,342 @@ mod tests {
         assert!(sim.log.iter().any(|l| l == "ABORT"));
     }
 
-    #[test]
-    fn full_erase_erases_every_page() {
-        let opts = DfuOptions {
+    fn full() -> DfuOptions {
+        DfuOptions {
             erase: EraseMode::Full,
             ..Default::default()
+        }
+    }
+
+    const F405_CONFIG: (u32, usize) = (0x0800_4000, 16 * 1024);
+
+    fn with_settings(mut sim: SimDfu) -> SimDfu {
+        sim.fill(F405_CONFIG.0, F405_CONFIG.1, 0xC5);
+        sim
+    }
+
+    fn all_ff(b: &[u8]) -> bool {
+        b.iter().all(|&v| v == 0xFF)
+    }
+
+    fn mass_erase_cmds(sim: &SimDfu) -> usize {
+        sim.log
+            .iter()
+            .filter(|l| *l == "DNLOAD 0 [41] len=1")
+            .count()
+    }
+
+    fn page_erase_cmds(sim: &SimDfu) -> usize {
+        sim.log
+            .iter()
+            .filter(|l| l.starts_with("DNLOAD 0 [41 "))
+            .count()
+    }
+
+    #[test]
+    fn full_erase_mass_erases_and_wipes_settings() {
+        let (r, sim, _) = run(with_settings(SimDfu::f405()), full());
+        let report = r.unwrap();
+        assert_eq!(report.erase_method, EraseMethod::MassErase);
+        assert_eq!(report.pages_erased, 12);
+        assert_eq!(mass_erase_cmds(&sim), 1);
+        assert_eq!(page_erase_cmds(&sim), 0);
+        assert!(sim.erased_pages().is_empty());
+        assert!(all_ff(sim.bytes(F405_CONFIG.0, F405_CONFIG.1)));
+        // Everything outside the image is blank.
+        assert!(all_ff(sim.bytes(0x0802_0000, 0x0810_0000 - 0x0802_0000)));
+        assert_flashed(&sim);
+        // Long control timeout only around the mass erase.
+        assert_eq!(
+            sim.timeouts,
+            vec![MASS_ERASE_CONTROL_TIMEOUT, DEFAULT_CONTROL_TIMEOUT]
+        );
+    }
+
+    #[test]
+    fn long_timeout_is_set_before_the_first_status_poll_of_a_mass_erase() {
+        let mass = format!("TIMEOUT {}ms", MASS_ERASE_CONTROL_TIMEOUT.as_millis());
+        let default = format!("TIMEOUT {}ms", DEFAULT_CONTROL_TIMEOUT.as_millis());
+        for refusal in [None, Some(SimMassErase::RefuseStatus)] {
+            let mut sim = with_settings(SimDfu::f405());
+            if let Some(r) = refusal {
+                sim.mass_erase = r;
+            }
+            let (r, sim, _) = run(sim, full());
+            r.unwrap();
+            let cmd = sim
+                .log
+                .iter()
+                .position(|l| l == "DNLOAD 0 [41] len=1")
+                .unwrap();
+            let after: Vec<&str> = sim.log[cmd + 1..].iter().map(String::as_str).collect();
+            assert_eq!(after[0], mass, "{refusal:?}: {after:?}");
+            assert_eq!(after[1], "GETSTATUS", "{refusal:?}: {after:?}");
+            // Back to the default before anything else is written.
+            let restored = after.iter().position(|l| *l == default).unwrap();
+            assert!(after[..restored].iter().all(|l| !l.starts_with("DNLOAD")));
+            assert_eq!(sim.timeouts.last(), Some(&DEFAULT_CONTROL_TIMEOUT));
+        }
+    }
+
+    #[test]
+    fn mass_erase_progress_stays_in_erase_phase() {
+        let mut sim = SimDfu::f405();
+        sim.mass_erase = SimMassErase::Supported {
+            nak_polls: 8,
+            busy_polls: 28,
         };
-        let (r, sim, _) = run(SimDfu::f405(), opts);
-        assert_eq!(r.unwrap().pages_erased, 12);
+        let (r, _, events) = run(sim, full());
+        r.unwrap();
+        let erase: Vec<&DfuProgress> = events
+            .iter()
+            .skip_while(|e| e.phase == DfuPhase::Detect)
+            .take_while(|e| e.phase != DfuPhase::Write)
+            .collect();
+        assert!(erase.iter().all(|e| e.phase == DfuPhase::Erase));
+        assert!(erase.len() >= 36, "{} erase events", erase.len());
+        assert!(erase
+            .windows(2)
+            .all(|w| w[1].percent >= w[0].percent
+                && w[1].done * w[0].total >= w[0].done * w[1].total));
+        let last = erase.last().unwrap();
+        assert_eq!((last.done, last.total), (1000, 1000));
+        // Busy polling never claims to be done before it is.
+        assert!(erase.iter().filter(|e| e.done < 900).count() >= 30);
+    }
+
+    #[test]
+    fn refused_mass_erase_falls_back_to_every_page() {
+        for refusal in [SimMassErase::RefuseStatus, SimMassErase::RefuseStall] {
+            let mut sim = with_settings(SimDfu::f405());
+            sim.mass_erase = refusal;
+            let (r, sim, _) = run(sim, full());
+            let report = r.unwrap_or_else(|e| panic!("{refusal:?}: {e}"));
+            assert_eq!(report.erase_method, EraseMethod::AllPages, "{refusal:?}");
+            assert_eq!(report.pages_erased, 12);
+            assert_eq!(sim.erased_pages().len(), 12);
+            assert_eq!(mass_erase_cmds(&sim), 1);
+            assert!(all_ff(sim.bytes(F405_CONFIG.0, F405_CONFIG.1)));
+            assert_flashed(&sim);
+        }
+    }
+
+    #[test]
+    fn blank_check_catches_a_mass_erase_that_did_nothing() {
+        let mut sim = SimDfu::f405();
+        sim.flash.fill(0xFF);
+        let mut sim = with_settings(sim);
+        sim.mass_erase = SimMassErase::Noop;
+        let (r, sim, _) = run(sim, full());
+        assert_eq!(r.unwrap().erase_method, EraseMethod::MassErase);
+        assert_eq!(sim.erased_pages(), vec![F405_CONFIG.0]);
+        assert!(all_ff(sim.bytes(F405_CONFIG.0, F405_CONFIG.1)));
+        assert_flashed(&sim);
+
+        // Nothing erased at all: every page is caught, the image still writes.
+        let mut sim = SimDfu::f405();
+        sim.mass_erase = SimMassErase::Noop;
+        let (r, sim, _) = run(sim, full());
+        r.unwrap();
         assert_eq!(sim.erased_pages().len(), 12);
         assert_flashed(&sim);
+    }
+
+    #[test]
+    fn mass_erase_times_out() {
+        let mut sim = SimDfu::f405();
+        sim.mass_erase = SimMassErase::NeverEnds;
+        let (r, sim, events) = run(sim, full());
+        match r {
+            Err(e @ FlashError::Dfu { .. }) => {
+                assert!(
+                    e.to_string()
+                        .contains("mass erase (not finished after 60 s)"),
+                    "{e}"
+                );
+                assert_eq!(crate::error::AppError::from(e).code(), "FLASH_FAILED");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(!sim.log.iter().any(|l| l.starts_with("DNLOAD 2")));
+        assert!(!sim.left);
+        assert_eq!(sim.timeouts.last(), Some(&DEFAULT_CONTROL_TIMEOUT));
+        assert!(events
+            .iter()
+            .all(|e| matches!(e.phase, DfuPhase::Detect | DfuPhase::Erase)));
+        assert!(mass_erase_deadline_ms(1024 * 1024) >= 60_000);
+    }
+
+    #[test]
+    fn mass_erase_survives_h7_stuck_busy() {
+        let mut sim = with_settings(SimDfu::with_layout(
+            "@Internal Flash  /0x08000000/16*128Kg",
+            None,
+        ));
+        sim.stuck_busy_after_erase = true;
+        let (r, sim, _) = run(sim, full());
+        assert_eq!(r.unwrap().erase_method, EraseMethod::MassErase);
+        assert!(sim.log.iter().filter(|l| *l == "CLRSTATUS").count() >= 2);
+        assert!(sim.erased_pages().is_empty());
+        assert!(all_ff(sim.bytes(F405_CONFIG.0, F405_CONFIG.1)));
+        assert_flashed(&sim);
+    }
+
+    #[test]
+    fn mass_erase_only_on_fully_erasable_internal_flash() {
+        let allowed = |d: &str| {
+            mass_erase_allowed(&crate::flasher::layout::parse_memory_descriptor(d).unwrap())
+        };
+        assert!(allowed(
+            "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg"
+        ));
+        assert!(allowed("@Internal Flash  /0x08000000/16*128Kg"));
+        assert!(allowed("@Internal Flash  /0x08000000/256*02Kg"));
+        assert!(!allowed("@Internal Flash   /0x08000000/08*04Ka,1000*04Kg"));
+        assert!(!allowed("@External Flash  /0x90000000/1024*4Kg"));
+    }
+
+    struct Family {
+        name: &'static str,
+        layout: &'static str,
+        /// Segment map of a real Betaflight hex (4.3.2 release hexes; AT32 from its linker
+        /// script): vector table, the 0x08002800 marker, then code after the config sector.
+        segments: [(u32, usize); 3],
+        config: (u32, usize),
+        full_method: EraseMethod,
+    }
+
+    const FAMILIES: [Family; 5] = [
+        Family {
+            name: "STM32F405",
+            layout: "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,07*128Kg",
+            segments: [
+                (0x0800_0000, 0x188),
+                (0x0800_2800, 8),
+                (0x0800_8000, 0x8_22dc),
+            ],
+            config: (0x0800_4000, 16 * 1024),
+            full_method: EraseMethod::MassErase,
+        },
+        Family {
+            name: "STM32F722",
+            layout: "@Internal Flash  /0x08000000/04*016Kg,01*064Kg,03*128Kg",
+            segments: [
+                (0x0800_0000, 0x1f8),
+                (0x0800_2800, 8),
+                (0x0800_8000, 0x6_cf48),
+            ],
+            config: (0x0800_4000, 16 * 1024),
+            full_method: EraseMethod::MassErase,
+        },
+        Family {
+            name: "STM32G474",
+            layout: "@Internal Flash  /0x08000000/256*02Kg",
+            segments: [
+                (0x0800_0000, 0x1e0),
+                (0x0800_2800, 8),
+                (0x0800_6000, 0x6_d1bc),
+            ],
+            config: (0x0800_4000, 8 * 1024),
+            full_method: EraseMethod::MassErase,
+        },
+        Family {
+            name: "STM32H743",
+            layout: "@Internal Flash  /0x08000000/16*128Kg",
+            segments: [
+                (0x0800_0000, 0x298),
+                (0x0800_2800, 8),
+                (0x0804_0000, 0x8_ad32),
+            ],
+            config: (0x0802_0000, 128 * 1024),
+            full_method: EraseMethod::MassErase,
+        },
+        Family {
+            name: "AT32F437",
+            layout: "@Internal Flash   /0x08000000/08*04Ka,1000*04Kg",
+            segments: [
+                (0x0800_0000, 0x1c0),
+                (0x0800_2800, 8),
+                (0x0800_8000, 0x8_0000),
+            ],
+            config: (0x0800_4000, 16 * 1024),
+            full_method: EraseMethod::AllPages,
+        },
+    ];
+
+    fn family_image(f: &Family) -> HexImage {
+        HexImage {
+            segments: f
+                .segments
+                .iter()
+                .map(|&(address, len)| Segment {
+                    address,
+                    data: (0..len).map(|i| (i % 253) as u8).collect(),
+                })
+                .collect(),
+            start_linear_address: None,
+        }
+    }
+
+    fn flash_family(f: &Family, erase: EraseMode) -> (FlashReport, SimDfu) {
+        let mut sim = SimDfu::with_layout(f.layout, None);
+        sim.fill(f.config.0, f.config.1, 0xC5);
+        let img = family_image(f);
+        let mut dfu = DfuSe::new(sim).with_sleep(|_| {});
+        let opts = DfuOptions {
+            erase,
+            ..Default::default()
+        };
+        let report = dfu
+            .flash(&img, &opts, &mut |_| {}, &AtomicBool::new(false))
+            .unwrap_or_else(|e| panic!("{} {erase:?}: {e}", f.name));
+        let sim = dfu.into_transport();
+        for seg in &img.segments {
+            assert_eq!(
+                sim.bytes(seg.address, seg.data.len()),
+                seg.data.as_slice(),
+                "{}",
+                f.name
+            );
+        }
+        (report, sim)
+    }
+
+    #[test]
+    fn normal_flash_keeps_the_settings_sector_full_erase_wipes_it() {
+        for f in &FAMILIES {
+            let (report, sim) = flash_family(f, EraseMode::Pages);
+            assert_eq!(report.erase_method, EraseMethod::ImagePages);
+            assert!(
+                sim.bytes(f.config.0, f.config.1).iter().all(|&b| b == 0xC5),
+                "{}: settings lost by a normal flash",
+                f.name
+            );
+            let (cfg, cfg_end) = (f.config.0, f.config.0 + f.config.1 as u32);
+            assert!(
+                sim.erased_pages().iter().all(|&p| p < cfg || p >= cfg_end),
+                "{}: settings page erased",
+                f.name
+            );
+            assert_eq!(mass_erase_cmds(&sim), 0);
+
+            let (report, sim) = flash_family(f, EraseMode::Full);
+            assert_eq!(report.erase_method, f.full_method, "{}", f.name);
+            assert!(all_ff(sim.bytes(f.config.0, f.config.1)), "{}", f.name);
+            // Nothing left from before outside the image.
+            let mut outside = sim.flash.clone();
+            for &(address, len) in &f.segments {
+                let off = (address - sim.flash_base) as usize;
+                outside[off..off + len].fill(0xFF);
+            }
+            assert!(all_ff(&outside), "{}", f.name);
+            assert_eq!(
+                mass_erase_cmds(&sim),
+                usize::from(f.full_method == EraseMethod::MassErase),
+                "{}",
+                f.name
+            );
+        }
     }
 
     #[test]

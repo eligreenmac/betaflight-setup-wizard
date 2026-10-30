@@ -5,7 +5,8 @@
 //! `parseDescriptor` (GPL-3.0-or-later), including its fix-ups for known-bad bootloader strings
 //! (SPRacing H7 EXST, AT32F43x option bytes, GD32H7 "InternalFlash"). Differences: the `M`
 //! unit is 1024*1024 (the original multiplies by 1024 only), and the sector attribute letter is
-//! kept (but, as in the original, not enforced).
+//! kept. As in the original it is not enforced for page erase/write; it only decides whether a
+//! full erase may use a DfuSe mass erase (`dfu::mass_erase_allowed`).
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -28,6 +29,11 @@ impl Sector {
     pub fn end(&self) -> u64 {
         self.start_address as u64 + self.total_size()
     }
+    /// DfuSe attribute bit "erasable" (b, c, f, g). Unknown letters count as not erasable.
+    pub fn erasable(&self) -> bool {
+        matches!(self.attributes, 'a'..='g') && ((self.attributes as u8 - b'a' + 1) & 0b010) != 0
+    }
+
     /// Start addresses of every page.
     pub fn pages(&self) -> impl Iterator<Item = u32> + '_ {
         (0..self.num_pages).map(move |i| self.start_address + i * self.page_size)
@@ -264,6 +270,8 @@ mod tests {
         let at32 =
             parse_memory_descriptor("@Internal Flash   /0x08000000/08*04Ka,1000*04Kg").unwrap();
         assert_eq!(at32.sectors[0].attributes, 'a');
+        assert!(!at32.sectors[0].erasable());
+        assert!(at32.sectors[1].erasable());
         assert_eq!(at32.sectors[1].start_address, 0x0800_8000);
         assert_eq!(at32.total_size(), 1008 * 4096);
         let ob = parse_memory_descriptor("@Option byte   /0x1FFFC000/01*4096 g").unwrap();
@@ -281,6 +289,21 @@ mod tests {
         assert_eq!(gd.key(), "internal_flash");
         let mb = parse_memory_descriptor("@Big /0x00000000/2*1Mg").unwrap();
         assert_eq!(mb.total_size(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn erasable_attribute() {
+        let sector = |attributes| Sector {
+            start_address: 0,
+            num_pages: 1,
+            page_size: 1,
+            attributes,
+        };
+        let erasable: Vec<char> = "abcdefg ?"
+            .chars()
+            .filter(|&c| sector(c).erasable())
+            .collect();
+        assert_eq!(erasable, vec!['b', 'c', 'f', 'g']);
     }
 
     #[test]
