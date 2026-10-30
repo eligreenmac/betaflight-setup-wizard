@@ -166,6 +166,8 @@ interface MockDevice {
   attitudeTimer: ReturnType<typeof setInterval> | null;
   /** rateHz of every device_attitude_stream_start call, as requested (tests). */
   attitudeRates: (number | null)[];
+  /** The rate the running (or last) attitude stream uses after the default and the clamp (tests). */
+  attitudeHz: number | null;
   /** The next N commands that need the port to themselves get PORT_BUSY {heldBy: "APP"} anyway (tests). */
   portBusyOnce: number;
   /**
@@ -256,6 +258,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     tilt: null,
     attitudeTimer: null,
     attitudeRates: [],
+    attitudeHz: null,
     portBusyOnce: 0,
     stopBusyLeft: 0,
     stopBusyStopsAnyway: false,
@@ -683,8 +686,9 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
       if (device.rcTimer) throw portBusy("COM5", "APP", "RC stream running");
       if (device.attitudeTimer) clearInterval(device.attitudeTimer);
       device.attitudeRates.push(rateHz);
-      // Device clamps to 1..30 today (the cap is being raised to 50).
-      const hz = Math.min(30, Math.max(1, rateHz ?? 10));
+      // Device #94: default 30 Hz, clamped 1..50.
+      const hz = Math.min(ATTITUDE_MAX_HZ, Math.max(1, rateHz ?? ATTITUDE_DEFAULT_HZ));
+      device.attitudeHz = hz;
       let seq = 0;
       device.attitudeTimer = setInterval(() => {
         seq++;
@@ -755,6 +759,10 @@ const NEEDS_PORT_ALONE: readonly string[] = [
   "config_rollback",
   "config_restore",
 ];
+
+/** device_attitude_stream_start: Device #94 default and cap (ARCHITECTURE §4.3). */
+export const ATTITUDE_DEFAULT_HZ = 30;
+export const ATTITUDE_MAX_HZ = 50;
 
 /** Scenarios whose firmware has no MSP DisplayPort: config_plan refuses an HD OSD (osd-hd-plan-error: the board reports "unknown"). */
 const NO_DISPLAYPORT: readonly string[] = ["osd-sd-only", "osd-hd-unsupported", "osd-hd-plan-error", "osd-hd-reflash", "reflash-after-apply"];

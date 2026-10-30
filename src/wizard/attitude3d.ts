@@ -26,7 +26,7 @@ export interface Quat {
 
 /**
  * Attitude stream rate while the orientation check is on screen. 30 Hz is Device's default
- * for the 3D view and inside the current 1..30 clamp (the cap is being raised to 50).
+ * for the 3D view (Device #94: default 30, clamped 1..50; latest sample only, so `seq` may skip).
  * The stream runs only while the step is visible (stopped on leave and while the window is hidden).
  */
 export const ATTITUDE_RATE_HZ = 30;
