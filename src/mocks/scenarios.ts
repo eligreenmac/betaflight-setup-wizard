@@ -52,6 +52,14 @@
  * 2026.12.0-alpha, a line the config engine can't set up yet (like 2026.6 on v0.1.0-2); the
  * releases include 2026.12.x, which the wizard marks and won't pick.
  *
+ * Restore after flash (Config #92, wizard/restore.ts): config_restore_after_flash restores the
+ * backup taken before the update. Same firmware line: everything applies. Another line (e.g.
+ * 4.5.1 -> 2025.12.0-RC1 or 4.4.3): a cross-line restore where some lines fail (out of range
+ * on the new line) and some are skipped (pins, a removed setting, D-term, a mode with no
+ * equivalent), with a "re-tune D" warning. `fw-restore-dropped`: the first restore loses the
+ * board mid-way (BOARD_NOT_RECONNECTED, stage RESTORING); Try again works.
+ * `fw-restore-other-board`: the backup is refused as another board's (BOARD_UID_MISMATCH).
+ *
  * Pick a scenario with `?mock=<name>` or VITE_MOCK_SCENARIO.
  */
 import type { Backend, CommandMap, CommandName } from "../api/commands";
@@ -66,6 +74,7 @@ import type { ExtendedDroneModel, BoardAlignment } from "../wizard/modelExt";
 import { reportedWithAlignment, type Euler } from "../wizard/orientation";
 import { DEFAULT_MAX_TEST_THROTTLE, DEFAULT_MOTOR_WATCHDOG_MS, HARD_MAX_TEST_THROTTLE } from "../wizard/motorTest";
 import { versionAtLeast } from "../wizard/version";
+import { RESTORE_COMMAND, type RestoreReport } from "../wizard/restore";
 
 export const SCENARIOS = [
   "happy",
@@ -100,6 +109,8 @@ export const SCENARIOS = [
   "fw-option-unsupported",
   "fw-too-new",
   "fw-2026",
+  "fw-restore-dropped",
+  "fw-restore-other-board",
 ] as const;
 export type Scenario = (typeof SCENARIOS)[number];
 
@@ -189,6 +200,10 @@ interface MockDevice {
   optionsFailuresLeft: number;
   /** flasher_required_options calls, with their release (tests). */
   requiredOptionsLog: (string | null)[];
+  /** config_restore_after_flash calls, with their backupId (tests). */
+  restoreCalls: string[];
+  /** The next restores are refused with these CONFIG reasons (and `stage`), in order. */
+  restoreRefusals: { reason: string; stage?: string }[];
 }
 
 /** Errors in the DESIGN.md §6 UiError shape. NOT_IMPLEMENTED mimics the Phase 0 stubs. */
@@ -229,6 +244,13 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     droppedOptions: [],
     optionsFailuresLeft: scenario === "fw-options-unavailable" ? 1 : 0,
     requiredOptionsLog: [],
+    restoreCalls: [],
+    restoreRefusals:
+      scenario === "fw-restore-dropped"
+        ? [{ reason: "BOARD_NOT_RECONNECTED", stage: "RESTORING" }]
+        : scenario === "fw-restore-other-board"
+          ? [{ reason: "BOARD_UID_MISMATCH" }]
+          : [],
     verifyFailuresLeft: scenario === "verify-mismatch" ? 1 : 0,
     readProtected: scenario === "read-protected",
     unprotectLog: [],
@@ -718,6 +740,42 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
     },
   };
 
+  // ---- Config #92 (wizard/restore.ts adapter until it is in CommandMap): restore after flash.
+  const restoreHandlers: Record<string, (args: never) => unknown> = {
+    [RESTORE_COMMAND]: async ({ backupId }: { backupId: string }) => {
+      legacy(RESTORE_COMMAND);
+      device.restoreCalls.push(backupId);
+      const hit = device.backups.find((b) => b.backup.id === backupId);
+      const refuse = (reason: string, message: string, stage?: string) => {
+        throw { code: "CONFIG", message: `configuration error: ${message}`, details: { reason, backupId, ...(hit ? { path: hit.backup.path } : {}), ...(stage ? { stage } : {}) } };
+      };
+      if (!hit) return refuse("BACKUP_UNREADABLE", `backup not found: ${backupId}`);
+      const refusal = device.restoreRefusals.shift();
+      if (refusal?.stage === "RESTORING") {
+        events.emit("config://progress", { stage: "RESTORING", fraction: 0.2, message: "line 40/200", line: 40, total: 200 } as never);
+        await sleep(stepMs);
+      }
+      if (refusal) return refuse(refusal.reason, refusal.reason === "BOARD_UID_MISMATCH" ? "the backup is from another board" : "the board stopped answering during the restore", refusal.stage);
+      mockCheckLine(device.firmwareVersion);
+      const report = mockRestoreReport(hit.backup.firmwareVersion, device.firmwareVersion);
+      const total = report.applied + report.failed.length + report.skipped.length;
+      for (const line of [0, Math.round(total / 2), total]) {
+        events.emit("config://progress", { stage: "RESTORING", fraction: total ? line / total : 1, message: `line ${line}/${total}`, line, total } as never);
+        await sleep(stepMs / 3);
+      }
+      for (const stage of ["SAVING", "REBOOTING", "RECONNECTED"] as const) {
+        events.emit("config://progress", { stage, fraction: 0, message: null });
+        await sleep(stepMs / 3);
+      }
+      // The ports come back by name (UART identifiers differ between lines).
+      for (const p of device.ports) {
+        const old = hit.ports.find((o) => o.name === p.name);
+        if (old) p.functionMask = old.functionMask;
+      }
+      return report;
+    },
+  };
+
   const inner = createMockBackend({ ...handlers, ...deviceHandlers });
   // Motor test / RC stream calls answer faster (the 200 ms keepalive must keep up).
   const fast = (cmd: string) => cmd.startsWith("device_motor_test_") || cmd.startsWith("device_rc_stream_") || cmd.startsWith("device_attitude_stream_");
@@ -736,7 +794,7 @@ export function createScenarioMock(opts: MockOptions = {}): ScenarioMock {
         throw portBusy("COM5", "APP", "port in use");
       }
     }
-    const p = pendingHandlers[cmd as unknown as PendingCommandName];
+    const p = pendingHandlers[cmd as unknown as PendingCommandName] ?? restoreHandlers[cmd as string];
     if (p) return p(args);
     return inner(cmd, args);
   }) as Backend;
@@ -758,6 +816,7 @@ const NEEDS_PORT_ALONE: readonly string[] = [
   "config_verify",
   "config_rollback",
   "config_restore",
+  "config_restore_after_flash",
 ];
 
 /** device_attitude_stream_start: Device #94 default and cap (ARCHITECTURE §4.3). */
@@ -794,6 +853,71 @@ function mockDialect(firmwareVersion: string | null | undefined): string {
 }
 
 /** UNSUPPORTED_FIRMWARE for a parseable version outside MOCK_CONFIG_LINES (empty / unparseable = lenient, the 4.5 lists). */
+/**
+ * Demo RestoreReport, worded like Config's real one (#97 config/restore.rs: skip reasons,
+ * `detail` and `warnings` sentences). Same line: everything applies. Another line: some lines
+ * fail and some are skipped, as the dialect mapping (ARCHITECTURE §5.2) does for this board:
+ * pins (resource / timer), a removed setting, a setting left out of the build, a serial port
+ * and a mode the target lacks; D-term across 2025.12, horizon across 4.5, battery profiles
+ * from 2026.6 to an older line.
+ */
+function mockRestoreReport(fromVersion: string, toVersion: string): RestoreReport {
+  const line = (v: string) => (/^\s*(\d+)\.(\d+)/.exec(v) ?? []).slice(1, 3).map(Number).join(".");
+  const from = line(fromVersion);
+  const to = line(toVersion);
+  const lineChanged = from !== to;
+  const crosses = (boundary: number) => parseFloat(from) < boundary !== parseFloat(to) < boundary;
+  const bookkeeping: RestoreReport["skipped"] = [
+    { line: "# version", reason: "COMMENT", detail: "" },
+    { line: "batch start", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
+    { line: "board_name SPEEDYBEEF405V4", reason: "BOARD_IDENTITY", detail: "identity of the hardware, never replayed" },
+    { line: "batch end", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
+    { line: "save", reason: "SESSION_CONTROL", detail: "the restore sends its own" },
+  ];
+  if (!lineChanged) return { applied: 212, failed: [], skipped: bookkeeping, warnings: [], saved: true, lineChanged, fromVersion, toVersion };
+  const pins = `pin maps differ between Betaflight ${from} and ${to}; the new firmware's board defaults are kept`;
+  const skipped: RestoreReport["skipped"] = [
+    ...bookkeeping,
+    { line: "resource MOTOR 1 B06", reason: "HARDWARE_LINE_CHANGED", detail: pins },
+    { line: "timer B06 AF2", reason: "HARDWARE_LINE_CHANGED", detail: pins },
+    { line: "set iterm_limit = 400", reason: "REMOVED_ON_TARGET", detail: `setting iterm_limit does not exist on Betaflight ${to}` },
+    { line: "set gps_ublox_use_galileo = ON", reason: "NOT_IN_BUILD", detail: `gps_ublox_use_galileo exists on Betaflight ${to} but not in this build` },
+    { line: "serial UART6 64 115200 57600 0 115200", reason: "PORT_NOT_AVAILABLE", detail: "UART6 does not exist on this board / firmware" },
+    { line: "aux 6 40 2 1800 2100 0 0", reason: "NO_EQUIVALENT_MODE", detail: `mode VTX CONTROL DISABLE (40) does not exist on Betaflight ${to}` },
+  ];
+  const warnings = [`Settings were converted from Betaflight ${from} to ${to}; check the skipped lines.`];
+  if (crosses(2025.12)) {
+    skipped.push({
+      line: "set d_roll = 40",
+      reason: "SEMANTICS_CHANGED",
+      detail: "D-term changed meaning in 2025.12 (4.x: d_* is the maximum and d_min_* the minimum; 2025.12+: d_* is the base and d_max_* the maximum); re-tune D",
+    });
+    warnings.push("D-term settings were not restored: their meaning changed in 2025.12. Re-tune D (or re-apply your tune) before flying.");
+  }
+  if (crosses(4.5)) skipped.push({ line: "set horizon_limit_sticks = 75", reason: "SEMANTICS_CHANGED", detail: "horizon mode was reworked in 4.5" });
+  if (from === "2026.6") {
+    skipped.push({
+      line: "set vbat_max_cell_voltage = 435",
+      reason: "OTHER_BATTERY_PROFILE",
+      detail: `battery profile 1; Betaflight ${to} has one set of battery settings (profile 0 is restored)`,
+    });
+    warnings.push(`Only battery profile 0 was restored: Betaflight ${to} has one set of battery settings.`);
+  }
+  return {
+    applied: 186,
+    failed: [
+      { line: "set angle_limit = 85", error: "###ERROR IN set: INVALID VALUE### (angle_limit: 10 - 80)" },
+      { line: "set gyro_lpf1_static_hz = 1100", error: "###ERROR IN set: INVALID VALUE### (gyro_lpf1_static_hz: 0 - 1000)" },
+    ],
+    skipped,
+    warnings,
+    saved: true,
+    lineChanged,
+    fromVersion,
+    toVersion,
+  };
+}
+
 function mockCheckLine(firmwareVersion: string): void {
   const m = /^\s*(\d+)\.(\d+)/.exec(firmwareVersion ?? "");
   if (m && !MOCK_CONFIG_LINES.includes(`${+m[1]}.${+m[2]}`))

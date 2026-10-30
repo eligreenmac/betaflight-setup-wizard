@@ -91,10 +91,14 @@ describe("firmware update orchestration", () => {
     const stages: string[] = [];
     const flash: string[] = [];
     const res = await runFirmwareUpdate(fc, "4.5.2", { onStage: (s) => stages.push(s), onProgress: (p) => flash.push(p.stage) }, poll);
-    expect(stages).toEqual(["download", "backup", "bootloader", "flash", "reconnect"]);
+    // keepSettings is on by default: the backup is put back after the reconnect.
+    expect(stages).toEqual(["download", "backup", "bootloader", "flash", "reconnect", "restore"]);
     expect(flash.at(-1)).toBe("DONE");
     expect(res.fc.firmwareVersion).toBe("4.5.2");
     expect(res.backup).not.toBeNull();
+    expect(res.restoreBackupId).toBe(res.backup!.id);
+    expect(res.restore?.saved).toBe(true);
+    expect(res.restoreError).toBeNull();
   });
 
   it("asks the backend for the required options and passes them with the board's options", async () => {
