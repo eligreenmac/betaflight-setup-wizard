@@ -82,14 +82,24 @@ pub struct MockFc {
     pub mcu_id: String,
     /// Features compiled out of this build: `feature X` answers "unavailable".
     pub unavailable_features: Vec<String>,
-    /// Number of `save` commands accepted while the batch had errors (real firmware saves).
+    /// Number of `save` commands accepted after a batch that had errors was ended with
+    /// `batch end` (real firmware saves).
     pub saves_after_error: usize,
+    /// Number of `save` commands refused because a batch with errors was still active
+    /// (cli.c `prepareSave` / `tryPrepareSave`, all four lines: warns, resets the batch, does
+    /// not save or reboot).
+    pub saves_refused: usize,
+    /// `exit_cli(true)` fails with a transport error (port lost during `save`).
+    pub save_fault: bool,
+    /// `reconnect` fails (the FC does not come back after the reboot).
+    pub reconnect_fault: bool,
     dialect: Dialect,
     defaults: State,
     saved: State,
     live: State,
     in_cli: bool,
     batch_error: bool,
+    batch_active: bool,
     /// Commands (exact or prefix) the FC will reject.
     pub fail_on: Vec<String>,
     /// Every line received, in order.
@@ -208,6 +218,10 @@ impl MockFc {
             live: st,
             in_cli: false,
             batch_error: false,
+            batch_active: false,
+            saves_refused: 0,
+            save_fault: false,
+            reconnect_fault: false,
             fail_on: Vec::new(),
             log: Vec::new(),
             reboots: 0,
@@ -417,13 +431,20 @@ impl MockFc {
             "batch" => match args {
                 "start" => {
                     self.batch_error = false;
+                    self.batch_active = true;
                     "Command batch started\r\n".into()
                 }
-                "end" if self.batch_error => err(
-                    "batch",
-                    "ERRORS WERE DETECTED - PLEASE REVIEW BEFORE CONTINUING",
-                ),
-                "end" => "Command batch ended\r\n".into(),
+                "end" if self.batch_error => {
+                    self.batch_active = false;
+                    err(
+                        "batch",
+                        "ERRORS WERE DETECTED - PLEASE REVIEW BEFORE CONTINUING",
+                    )
+                }
+                "end" => {
+                    self.batch_active = false;
+                    "Command batch ended\r\n".into()
+                }
                 _ => unknown_command(),
             },
             "defaults" if args == "nosave" => {
@@ -431,6 +452,31 @@ impl MockFc {
                 String::new()
             }
             "board_name" => String::new(),
+            // Profile selection (RAM). MockFc keeps one flat settings map, so only the index
+            // range is checked (PID_PROFILE_COUNT / CONTROL_RATE_PROFILE_COUNT = 4).
+            "profile" | "rateprofile" => match args.parse::<u8>() {
+                Ok(i) if i < 4 => format!("{cmd} {i}\r\n"),
+                _ => err(cmd, "PROFILE OUTSIDE OF [0..3]"),
+            },
+            // cli.c cliAdjustmentRange: the function index must be < ADJUSTMENT_FUNCTION_COUNT
+            // of this line (2026.6 renumbered the table).
+            "adjrange" => {
+                let t: Vec<&str> = args.split_whitespace().collect();
+                let count = super::restore_tables::ADJUSTMENT_FUNCTIONS[Dialect::ALL
+                    .iter()
+                    .position(|d| *d == self.dialect)
+                    .unwrap()]
+                .len();
+                match t.get(5).and_then(|x| x.parse::<usize>().ok()) {
+                    Some(f) if f < count => String::new(),
+                    Some(_) => err("adjrange", "INVALID ARGUMENT"),
+                    None => err("adjrange", "INVALID ARGUMENT COUNT"),
+                }
+            }
+            // Replayed `diff all` sections MockFc does not model: accepted silently.
+            "timer" | "dma" | "mixer" | "mmix" | "smix" | "servo" | "map" | "led" | "color"
+            | "mode_color" | "rxrange" | "vtx" | "rxfail" => String::new(),
+            "waypoint" if self.dialect.has_battery_profiles() => String::new(),
             // 2026.6 cliBatteryProfile: 0..BATTERY_PROFILE_COUNT-1 (3), RAM only.
             "battery_profile" if self.dialect.has_battery_profiles() => match args.parse::<u8>() {
                 Ok(i) if i < 3 => format!("battery_profile {i}\r\n"),
@@ -669,10 +715,24 @@ impl Connection for MockFc {
         if !self.in_cli {
             return Err(AppError::Cli("not in CLI mode".into()));
         }
+        if save && self.save_fault {
+            self.log.push("save".into());
+            self.in_cli = false;
+            return Err(AppError::Serial("device disconnected during save".into()));
+        }
         if save {
             self.log.push("save".into());
+            if self.batch_active && self.batch_error {
+                // cli.c tryPrepareSave: refused while a batch with errors is active; the batch
+                // is reset, nothing is saved, the FC stays in the CLI.
+                self.saves_refused += 1;
+                self.batch_active = false;
+                self.batch_error = false;
+                return Ok(());
+            }
             if self.batch_error {
-                // Verified on 4.4.3 / 4.5.5 / 2025.12.5 SITL: the failed batch is saved anyway.
+                // Verified on 4.4.3 / 4.5.5 / 2025.12.5 SITL (tests_sitl): after `batch end`
+                // reported the errors, `save` writes the batch anyway.
                 self.saves_after_error += 1;
             }
             self.saved = self.live.clone();
@@ -689,6 +749,7 @@ impl Connection for MockFc {
         }
         self.in_cli = false;
         self.batch_error = false;
+        self.batch_active = false;
         self.reboots += 1;
         Ok(())
     }
@@ -696,6 +757,9 @@ impl Connection for MockFc {
 
 impl Reconnect for MockFc {
     fn reconnect(&mut self, _timeout: std::time::Duration) -> AppResult<()> {
+        if self.reconnect_fault {
+            return Err(AppError::BoardNotFound("the FC did not come back".into()));
+        }
         Ok(())
     }
 }

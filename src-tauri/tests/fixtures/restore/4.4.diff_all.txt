@@ -1,0 +1,115 @@
+diff all
+
+# version
+# Betaflight / STM32F405 (S405) 4.4.3 Oct 23 2026 / 07:45:27 (norevision) MSP API: 1.45
+
+# start the command batch
+batch start
+
+# reset configuration to default settings
+defaults nosave
+
+board_name SPEEDYBEEF405V4
+manufacturer_id SPBE
+mcu_id 000000000000000100000002
+signature 
+
+# resources
+resource LED_STRIP 1 A08
+
+# timer
+timer A08 AF1
+# pin A08: TIM1 CH1 (AF1)
+
+# dma
+dma pin A08 0
+# pin A08: DMA2 Stream 6 Channel 0
+
+# feature
+feature GPS
+feature LED_STRIP
+feature -RX_SERIAL
+feature RX_MSP
+
+# beeper
+beeper -CRASH_FLIP
+beeper -RC_SMOOTHING_INIT_FAIL
+beeper -ON_USB
+
+# beacon
+beacon RX_LOST
+
+# map
+map TAER1234
+
+# serial
+serial 0 2 115200 57600 0 115200
+serial 1 64 115200 57600 0 115200
+serial 2 131073 115200 57600 0 115200
+
+# aux
+aux 0 0 0 1700 2100 0 0
+aux 1 1 1 1300 1700 0 0
+aux 2 35 2 1700 2100 0 0
+
+# adjrange
+adjrange 0 0 3 1700 2100 29 3 0 0
+adjrange 1 0 3 900 1300 25 3 0 0
+
+# rxfail
+rxfail 4 s 1500
+
+# master
+set mag_hardware = QMC5883
+set debug_mode = D_MIN
+set acc_hardware = FAKE
+set dshot_idle_value = 450
+set serialrx_provider = CRSF
+set gps_rescue_throttle_hover = 300
+set iterm_limit = 300
+set abs_control_gain = 5
+set expresslrs_uid = 41,42,43,44,45,46
+set bat_capacity = 1500
+set vbat_max_cell_voltage = 435
+set osd_vbat_pos = 2465
+set craft_name = RESTORE
+
+profile 0
+
+# profile 0
+set p_roll = 50
+set d_roll = 35
+set d_min_roll = 25
+set simplified_dmax_gain = 90
+set angle_level_strength = 60
+set level_limit = 60
+set horizon_transition = 70
+set feedforward_jitter_factor = 10
+
+profile 1
+
+# profile 1
+set p_roll = 55
+set d_roll = 35
+set d_min_roll = 25
+set simplified_dmax_gain = 90
+set angle_level_strength = 60
+set level_limit = 60
+set horizon_transition = 70
+set feedforward_jitter_factor = 10
+
+# restore original profile selection
+profile 0
+
+rateprofile 0
+
+# rateprofile 0
+set rates_type = ACTUAL
+set roll_rc_rate = 12
+
+# restore original rateprofile selection
+rateprofile 0
+
+# save configuration
+save
+# 
